@@ -2,8 +2,10 @@ package wrapper
 
 import (
 	"testing"
+	"time"
 
 	llmtypes "github.com/hollis-labs/go-llm-types"
+	pevents "github.com/hollis-labs/go-providers/provider/events"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -122,5 +124,57 @@ func TestTranslateUnknownReturnsNotMapped(t *testing.T) {
 	})
 	if ok {
 		t.Error("unknown EventType should return ok=false (skip rather than placeholder)")
+	}
+}
+
+func TestTranslateProviderToolResult(t *testing.T) {
+	kind, payload, ok := translateProviderEvent(pevents.ToolResult{
+		ID:             "tool_1",
+		IsError:        true,
+		ContentPreview: "permission denied",
+	})
+	if !ok {
+		t.Fatal("ToolResult should be mapped")
+	}
+	if kind != runtimeevents.KindAgentToolResult {
+		t.Errorf("kind = %q, want agent.tool_result", kind)
+	}
+	p, _ := payload.(map[string]any)
+	tr, _ := p["tool_result"].(map[string]any)
+	if got, _ := tr["content_preview"].(string); got != "permission denied" {
+		t.Errorf("content_preview = %q", got)
+	}
+}
+
+func TestTranslateProviderSubagentSpawn(t *testing.T) {
+	kind, payload, ok := translateProviderEvent(pevents.SubagentSpawn{
+		Tool: "Task",
+		Args: map[string]any{"description": "scan repo"},
+	})
+	if !ok {
+		t.Fatal("SubagentSpawn should be mapped")
+	}
+	if kind != runtimeevents.KindAgentSubagentSpawn {
+		t.Errorf("kind = %q, want agent.subagent_spawn", kind)
+	}
+	p, _ := payload.(map[string]any)
+	spawn, _ := p["subagent_spawn"].(map[string]any)
+	if got, _ := spawn["tool"].(string); got != "Task" {
+		t.Errorf("tool = %q", got)
+	}
+}
+
+func TestTranslateProviderHeartbeat(t *testing.T) {
+	ts := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
+	kind, payload, ok := translateProviderEvent(pevents.Heartbeat{LastActivityAt: ts})
+	if !ok {
+		t.Fatal("Heartbeat should be mapped")
+	}
+	if kind != runtimeevents.KindSessionHeartbeat {
+		t.Errorf("kind = %q, want session.heartbeat", kind)
+	}
+	p, _ := payload.(map[string]any)
+	if got, _ := p["last_activity_at"].(time.Time); !got.Equal(ts) {
+		t.Errorf("last_activity_at = %v, want %v", got, ts)
 	}
 }

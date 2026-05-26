@@ -2,14 +2,18 @@ package wrapper
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/hollis-labs/agentkit/agentsessions"
 	llmtypes "github.com/hollis-labs/go-llm-types"
+	pevents "github.com/hollis-labs/go-providers/provider/events"
+	sandboxprofile "github.com/hollis-labs/go-sandbox/sandbox"
 
 	"github.com/hollis-labs/go-agent-wrapper/activity"
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
@@ -98,6 +102,11 @@ type Config struct {
 	// jsonrpc-stdio).
 	Sandbox sandbox.Applier
 
+	// SandboxProfile is forwarded to agentsessions.StartOptions.Profile so
+	// runtimes that support pre-spawn go-sandbox wrapping can constrain the
+	// child before exec. The zero-value profile (empty ID) disables this path.
+	SandboxProfile sandboxprofile.Profile
+
 	// Policy, when set, is consulted by the wrapper's translator
 	// goroutine for every observed [runtimeevents.KindAgentToolUse]
 	// event. [Wrapper.Run] builds a [policy.Request] from the
@@ -117,9 +126,14 @@ type Config struct {
 
 	// Filters, when set, runs the harness filter pipeline against agent
 	// text, tool output, command output, and envelopes. Nil means no
-	// filtering. NOTE: skeleton scope — Filters is not invoked in this
-	// pass.
+	// filtering. Repairs replace the wrapper-emitted event payload; raw
+	// child execution is unchanged.
 	Filters filters.Pipeline
+
+	// HeartbeatInterval, when positive, emits session.heartbeat events at
+	// this cadence while Run is active. Zero disables wrapper-synthesized
+	// heartbeats; adapter-provided heartbeat events may still be surfaced.
+	HeartbeatInterval time.Duration
 }
 
 // Wrapper owns the launch boundary for one wrapped subprocess. A
@@ -243,15 +257,127 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	fanout := make(chan llmtypes.StreamEvent, 128)
 
 	stdoutStream := newStreamWriter(ctx, w.cfg.Activity, rawSource,
-		runtimeevents.KindStdoutRaw, runtimeevents.KindStdoutLine)
+		runtimeevents.KindStdoutRaw, runtimeevents.KindStdoutLine, w.cfg.Filters)
 	stderrStream := newStreamWriter(ctx, w.cfg.Activity, rawSource,
-		runtimeevents.KindStderrRaw, runtimeevents.KindStderrLine)
+		runtimeevents.KindStderrRaw, runtimeevents.KindStderrLine, w.cfg.Filters)
+
+	var turnMu sync.Mutex
+	var currentTurnID string
+	emitObserved := func(kind runtimeevents.EventKind, payload any, ev llmtypes.StreamEvent) {
+		payload = w.filterPayload(ctx, kind, payload)
+		turnMu.Lock()
+		defer turnMu.Unlock()
+
+		if currentTurnID == "" && isTurnInternal(kind) {
+			currentTurnID = runtimeevents.NewTurnID()
+			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindTurnStarted, source, nil,
+				runtimeevents.WithTurnID(currentTurnID))
+			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionProcessing, source,
+				map[string]any{"turn_id": currentTurnID},
+				runtimeevents.WithTurnID(currentTurnID))
+		}
+
+		eventID := runtimeevents.NewEventID()
+		opts := []runtimeevents.EmitOption{runtimeevents.WithID(eventID)}
+		if currentTurnID != "" && isTurnScoped(kind) {
+			opts = append(opts, runtimeevents.WithTurnID(currentTurnID))
+		}
+		_ = w.cfg.Activity.Emit(ctx, kind, source, payload, opts...)
+
+		if kind == runtimeevents.KindAgentToolUse {
+			w.applyToolUsePolicy(ctx, source, ev, eventID, currentTurnID)
+		}
+
+		if kind == runtimeevents.KindTurnCompleted || kind == runtimeevents.KindTurnFailed {
+			closedTurnID := currentTurnID
+			currentTurnID = ""
+			if closedTurnID != "" {
+				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionIdle, source,
+					map[string]any{"turn_id": closedTurnID},
+					runtimeevents.WithTurnID(closedTurnID))
+			}
+		}
+	}
+	emitProviderObserved := func(kind runtimeevents.EventKind, payload any) {
+		payload = w.filterPayload(ctx, kind, payload)
+		turnMu.Lock()
+		defer turnMu.Unlock()
+
+		if currentTurnID == "" && isTurnInternal(kind) {
+			currentTurnID = runtimeevents.NewTurnID()
+			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindTurnStarted, source, nil,
+				runtimeevents.WithTurnID(currentTurnID))
+			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionProcessing, source,
+				map[string]any{"turn_id": currentTurnID},
+				runtimeevents.WithTurnID(currentTurnID))
+		}
+
+		opts := []runtimeevents.EmitOption{}
+		if currentTurnID != "" && isTurnScoped(kind) {
+			opts = append(opts, runtimeevents.WithTurnID(currentTurnID))
+		}
+		_ = w.cfg.Activity.Emit(ctx, kind, source, payload, opts...)
+	}
+
+	heartbeatStop := make(chan struct{})
+	if w.cfg.HeartbeatInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(w.cfg.HeartbeatInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionHeartbeat, source,
+						map[string]any{"last_activity_at": time.Now().UTC()})
+				case <-heartbeatStop:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+	defer close(heartbeatStop)
 
 	session, err := runtime.Start(ctx, agentsessions.StartOptions{
 		Workdir:     w.cfg.Workdir,
 		EventFanout: fanout,
 		Fanout:      stdoutStream,
 		Stderr:      stderrStream,
+		Profile:     w.cfg.SandboxProfile,
+		TypedEventCallback: func(ev pevents.Event) {
+			kind, payload, mapped := translateProviderEvent(ev)
+			if !mapped {
+				return
+			}
+			emitProviderObserved(kind, payload)
+		},
+		JsonRpcRequestHook: func(method string, params json.RawMessage) (any, *agentsessions.JsonRpcError) {
+			turnMu.Lock()
+			if currentTurnID == "" {
+				currentTurnID = runtimeevents.NewTurnID()
+				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindTurnStarted, source, nil,
+					runtimeevents.WithTurnID(currentTurnID))
+				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionProcessing, source,
+					map[string]any{"turn_id": currentTurnID},
+					runtimeevents.WithTurnID(currentTurnID))
+			}
+			turnID := currentTurnID
+			turnMu.Unlock()
+
+			requestID := runtimeevents.NewEventID()
+			payload := map[string]any{"method": method, "params": params}
+			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindAgentPermissionRequested, source, payload,
+				runtimeevents.WithID(requestID), runtimeevents.WithTurnID(turnID))
+			rpcErr := &agentsessions.JsonRpcError{
+				Code:    -32601,
+				Message: "go-agent-wrapper: no approval handler configured for server-initiated request " + method,
+			}
+			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindAgentPermissionResolved, source,
+				map[string]any{"method": method, "allowed": false, "error": rpcErr.Message},
+				runtimeevents.WithParentID(requestID), runtimeevents.WithTurnID(turnID))
+			return nil, rpcErr
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("wrapper: runtime.Start: %w", err)
@@ -276,7 +402,6 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	translatorDone := make(chan struct{})
 	go func() {
 		defer close(translatorDone)
-		var currentTurnID string
 		for ev := range fanout {
 			if ev.Type == llmtypes.EventSessionID && ev.SessionID != "" {
 				// Provider-side session ID: rebind the Process so
@@ -286,38 +411,12 @@ func (w *Wrapper) Run(ctx context.Context) error {
 				w.cfg.Activity.Emitter().SetProviderSessionID(ev.SessionID)
 				continue
 			}
+			ev = w.filterStreamEvent(ctx, ev)
 			kind, payload, mapped := translateStreamEvent(ev)
 			if !mapped {
 				continue
 			}
-
-			// Turn-boundary management: emit a turn.started event
-			// the first time a turn-internal event appears with no
-			// active turn ID. The turn ends on turn.completed /
-			// turn.failed and the next turn-internal event allocates
-			// a fresh ID.
-			if currentTurnID == "" && isTurnInternal(kind) {
-				currentTurnID = runtimeevents.NewTurnID()
-				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindTurnStarted, source, nil,
-					runtimeevents.WithTurnID(currentTurnID))
-			}
-
-			// Pre-generate the event ID so policy events emitted
-			// downstream can correlate via ParentID.
-			eventID := runtimeevents.NewEventID()
-			opts := []runtimeevents.EmitOption{runtimeevents.WithID(eventID)}
-			if currentTurnID != "" && isTurnScoped(kind) {
-				opts = append(opts, runtimeevents.WithTurnID(currentTurnID))
-			}
-			_ = w.cfg.Activity.Emit(ctx, kind, source, payload, opts...)
-
-			if kind == runtimeevents.KindAgentToolUse {
-				w.applyToolUsePolicy(ctx, source, ev, eventID, currentTurnID)
-			}
-
-			if kind == runtimeevents.KindTurnCompleted || kind == runtimeevents.KindTurnFailed {
-				currentTurnID = ""
-			}
+			emitObserved(kind, payload, ev)
 		}
 	}()
 
@@ -465,11 +564,11 @@ func (w *Wrapper) runPlanter(ctx context.Context, source runtimeevents.Source) e
 	}
 
 	_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindPlantStarted, source, map[string]any{
-		"boot_dir":           bootDir,
-		"files_planned":      countSpecFiles(w.cfg.PlantSpec),
-		"hooks_planned":      len(w.cfg.PlantSpec.Hooks),
-		"providers_planned":  len(w.cfg.PlantSpec.ProviderSettings),
-		"has_mcp":            w.cfg.PlantSpec.MCPConfig != nil,
+		"boot_dir":            bootDir,
+		"files_planned":       countSpecFiles(w.cfg.PlantSpec),
+		"hooks_planned":       len(w.cfg.PlantSpec.Hooks),
+		"providers_planned":   len(w.cfg.PlantSpec.ProviderSettings),
+		"has_mcp":             w.cfg.PlantSpec.MCPConfig != nil,
 		"has_recovery_prompt": w.cfg.PlantSpec.RecoveryPrompt != "",
 	})
 

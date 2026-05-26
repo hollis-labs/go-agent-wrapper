@@ -23,17 +23,23 @@ End-to-end launch path is wired:
   `agentsessions.NewFromAdapter` → `Prepare` → `Start` → `Wait`, and
   translates `llmtypes.StreamEvent`s into `runtimeevents.Event`s.
 - Lifecycle events emitted: `session.ready`, `process.started`,
-  `process.exited`, `turn.started`/`turn.completed`/`turn.failed` (with
-  monotonic per-session TurnIDs), `stdin.write`,
+  `process.exited`, `session.processing`/`session.idle`, optional
+  `session.heartbeat`, `turn.started`/`turn.completed`/`turn.failed`
+  (with monotonic per-session TurnIDs), `stdin.write`,
   `stdout.raw`/`stdout.line`, `stderr.raw`/`stderr.line`,
   `interrupt.requested`/`interrupt.acknowledged`.
-- `agent.delta` / `agent.tool_use` events flow through the translator;
+- `agent.delta`, `agent.tool_use`, `agent.tool_result`,
+  `agent.subagent_spawn`, and JSON-RPC permission request/resolution
+  events flow through the translator;
   if `Config.Policy` is set, tool_use events trigger a
   `policy.Engine.Decide` call and emit a correlated
-  `policy.nudge`/`rewrite`/`block` event (observation half — no
-  rewrite-back to the child yet).
-- `plant.started`/`plant.completed` and `sandbox.applied` events fire
-  when `Config.Planter` / `Config.Sandbox` are configured.
+  `policy.nudge`/`rewrite`/`block`/`approval_requested` event
+  (observation half — no rewrite-back to the child yet).
+- `plant.started`/`plant.completed`, `sandbox.applied`, and pre-spawn
+  `SandboxProfile` plumbing are wired when configured.
+- `Config.Filters` can process agent text, tool envelopes/results, and
+  command output; `filters.RepairPipeline` adapts concrete
+  `go-harness-filters/repair` rules.
 - Three concrete adapters: Claude (streaming-stdio), Codex
   (jsonrpc-stdio), OpenCode (http-sse).
 - `classifybridge.Engine` lets a `go-harness-filters/classify.Classifier`

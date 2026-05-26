@@ -32,15 +32,20 @@ Status as of v0.1.0 (2026-05-26). See
 
 The full kind set from
 `cli-runner-wrapper-architecture-2026-05-26.md` is defined in
-`go-runtime-events`, but several aren't yet emitted by `Wrapper.Run`:
+`go-runtime-events`. Headless semantic coverage now includes:
 
-- `agent.tool_result` — currently no translator mapping. The fake CLI
-  in integration tests doesn't emit tool_results either.
-- `agent.subagent_spawn` — same.
-- `agent.permission_requested` / `agent.permission_resolved` — same.
-- `session.idle` / `session.processing` / `session.heartbeat` — no
-  state-machine tracking in the translator. Idle / processing would
-  derive from agent activity windows; heartbeat from a periodic timer.
+- `agent.tool_result` from agentkit's provider typed-event callback.
+- `agent.subagent_spawn` from provider typed events (e.g. Claude `Task`).
+- `agent.permission_requested` / `agent.permission_resolved` for
+  server-initiated JSON-RPC requests. The wrapper currently answers with
+  a method-not-handled error so headless sessions fail fast instead of
+  hanging; real approval handling remains part of policy enforcement.
+- `session.processing` / `session.idle` around observed turn boundaries.
+- `session.heartbeat` from provider typed heartbeats, plus optional
+  wrapper-synthesized heartbeats via `Config.HeartbeatInterval`.
+
+Remaining validation: exercise the provider typed-event paths against
+live Claude/Codex/OpenCode binaries, especially JSON-RPC approval shapes.
 
 ### Policy enforcement (the rewrite-back half)
 
@@ -55,11 +60,13 @@ enforcement.
 
 ### Filters
 
-`Config.Filters` is a Config field but `Wrapper.Run` never calls
-`Pipeline.Process`. Add invocation points on `agent.delta` text,
-`agent.tool_result` output, and incoming tool_call envelopes once the
-pipeline is concrete (`go-harness-filters` repair/normalize rule sets
-need to land first).
+`Config.Filters` now invokes `Pipeline.Process` for `agent.delta` text,
+tool-use envelopes, `agent.tool_result` previews, and stdout/stderr
+command-output observations. Repairs replace wrapper-emitted event
+payloads only; they do not rewrite child execution. The wrapper also
+ships `filters.RepairPipeline`, which adapts concrete
+`go-harness-filters/repair` repairers such as
+`MissingClosingDelimiterJSON` into `Config.Filters`.
 
 ### Tachyon `cmd/agent-wrap` reference CLI
 
@@ -80,9 +87,9 @@ module's `cmd/agent-wrap` is the reference shape.
 `Sandbox.Apply` runs against `session.Health().PID` after Start. For
 the subprocess-per-turn adapter runtime, PID is 0 between turns — the
 applier has no live child to constrain. Pre-spawn enforcement on that
-runtime belongs in `agentsessions.StartOptions.Profile` (which the
-wrapper doesn't currently plumb from Config). Add a
-`Config.SandboxProfile sandbox.Profile` field and forward it.
+runtime belongs in `agentsessions.StartOptions.Profile`; the wrapper now
+exposes `Config.SandboxProfile sandbox.Profile` and forwards it. Keep
+`Config.Sandbox` for long-lived PID post-start appliers.
 
 ### Stdio fidelity per runtime
 
@@ -102,13 +109,10 @@ calls for byte-exact raw events.
 
 ## Open design questions
 
-1. **Approval mode event kind.** `policy.ModeApproval` currently maps
-   to `runtimeevents.KindPolicyBlock`. A real approval flow (where the
-   wrapper pauses the session, asks the operator, and resumes on
-   accept) needs:
-   - A `KindPolicyApprovalRequested` event kind in `go-runtime-events`.
-   - A pause/resume mechanism in `Wrapper.Run` (currently Run blocks on
-     `session.Wait` with no pause primitive).
+1. **Approval flow.** `policy.ModeApproval` now emits
+   `runtimeevents.KindPolicyApprovalRequested`, but a real approval flow
+   still needs an app/operator decision path and a pause/resume or
+   request/response mechanism appropriate to the runtime.
 2. **`WithID` option misuse.** `runtimeevents.WithID` lets callers
    pre-generate an event ID for `ParentID` correlation. Duplicate IDs
    in the same session would break correlation. Document the contract
@@ -132,8 +136,6 @@ calls for byte-exact raw events.
 
 - Per-package `doc.go` files exist for every subpackage; spot-check
   they read well as godoc.
-- The `Config.Filters` field still documents "no invocation" in v0.1.0
-  — update once filters are wired.
 - `examples/README.md` is empty. Drop runnable usage examples in
   before the public tag.
 

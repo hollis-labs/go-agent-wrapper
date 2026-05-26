@@ -81,19 +81,16 @@ func (w *Wrapper) applyToolUsePolicy(
 // policyModeToEventKind maps a [policy.Mode] to the corresponding
 // [runtimeevents.EventKind]. Returns ok=false for modes that should
 // not emit a derived event (ModeObserve and any unmapped values).
-//
-// ModeApproval intentionally maps to policy.block in this skeleton —
-// there is no separate approval-request event yet, and block is the
-// closest existing kind. A dedicated approval flow lands when the
-// wrapper learns to pause and resume sessions.
 func policyModeToEventKind(mode policy.Mode) (runtimeevents.EventKind, bool) {
 	switch mode {
 	case policy.ModeNudge:
 		return runtimeevents.KindPolicyNudge, true
 	case policy.ModeRewrite:
 		return runtimeevents.KindPolicyRewrite, true
-	case policy.ModeBlock, policy.ModeApproval:
+	case policy.ModeBlock:
 		return runtimeevents.KindPolicyBlock, true
+	case policy.ModeApproval:
+		return runtimeevents.KindPolicyApprovalRequested, true
 	default:
 		return "", false
 	}

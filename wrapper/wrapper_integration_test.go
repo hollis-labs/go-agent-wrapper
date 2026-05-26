@@ -19,6 +19,7 @@ import (
 	"github.com/hollis-labs/go-agent-wrapper/activity"
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	"github.com/hollis-labs/go-agent-wrapper/classifybridge"
+	"github.com/hollis-labs/go-agent-wrapper/filters"
 	"github.com/hollis-labs/go-agent-wrapper/plant"
 	"github.com/hollis-labs/go-agent-wrapper/policy"
 	"github.com/hollis-labs/go-agent-wrapper/sandbox"
@@ -38,7 +39,7 @@ type fakeCLI struct {
 	script string
 }
 
-func (f *fakeCLI) Name() string                                       { return f.name }
+func (f *fakeCLI) Name() string                                           { return f.name }
 func (f *fakeCLI) BuildArgs(prompt, sysPrompt, sessionID string) []string { return nil }
 
 func (f *fakeCLI) ParseLine(line []byte) ([]llmtypes.StreamEvent, error) {
@@ -209,6 +210,23 @@ type recordingApplier struct {
 	lastPID int
 	result  sandbox.Result
 	err     error
+}
+
+type replacingFilter struct {
+	mu    sync.Mutex
+	kinds []string
+	from  string
+	to    string
+}
+
+func (f *replacingFilter) Process(_ context.Context, in filters.Input) (filters.Output, error) {
+	f.mu.Lock()
+	f.kinds = append(f.kinds, in.Kind)
+	f.mu.Unlock()
+	if strings.Contains(string(in.Content), f.from) {
+		return filters.Output{Repaired: []byte(strings.ReplaceAll(string(in.Content), f.from, f.to))}, nil
+	}
+	return filters.Output{}, nil
 }
 
 func (a *recordingApplier) Apply(_ context.Context, pid int) (sandbox.Result, error) {
@@ -686,6 +704,122 @@ func TestRunSandboxErrorStopsSession(t *testing.T) {
 	}
 }
 
+func TestRunFiltersAgentDeltaAndStdout(t *testing.T) {
+	dir := t.TempDir()
+	script := writeFakeScript(t, dir, []string{
+		"delta:unsafe text",
+		"done",
+	})
+
+	filter := &replacingFilter{from: "unsafe", to: "safe"}
+	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: script}}
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App:      "test-filter",
+		Adapter:  adapter,
+		Activity: activity.NewBridge(sink),
+		Workdir:  dir,
+		Filters:  filter,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- w.Run(ctx) }()
+	sink.waitFor(t, runtimeevents.KindSessionReady, 5*time.Second)
+	_ = w.SendInput(context.Background(), []byte("trigger"))
+	sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)
+	_ = w.Stop(context.Background())
+	<-runErrCh
+
+	var sawFilteredDelta, sawFilteredStdout bool
+	for _, ev := range sink.snapshot() {
+		var p map[string]any
+		_ = json.Unmarshal(ev.Payload, &p)
+		switch ev.Kind {
+		case runtimeevents.KindAgentDelta:
+			if got, _ := p["content"].(string); got == "safe text" {
+				sawFilteredDelta = true
+			}
+		case runtimeevents.KindStdoutRaw, runtimeevents.KindStdoutLine:
+			raw := ""
+			if s, _ := p["bytes"].(string); s != "" {
+				raw = s
+			}
+			if s, _ := p["line"].(string); s != "" {
+				raw = s
+			}
+			if strings.Contains(raw, "safe text") {
+				sawFilteredStdout = true
+			}
+		}
+	}
+	if !sawFilteredDelta {
+		t.Fatalf("agent.delta was not filtered; kinds: %v", kindList(sink.snapshot()))
+	}
+	if !sawFilteredStdout {
+		t.Fatalf("stdout events were not filtered; kinds: %v", kindList(sink.snapshot()))
+	}
+
+	filter.mu.Lock()
+	defer filter.mu.Unlock()
+	if !containsString(filter.kinds, "agent_text") {
+		t.Errorf("filter kinds = %v, want agent_text", filter.kinds)
+	}
+	if !containsString(filter.kinds, "command_output") {
+		t.Errorf("filter kinds = %v, want command_output", filter.kinds)
+	}
+}
+
+func TestRunEmitsSessionProcessingIdleAndHeartbeat(t *testing.T) {
+	dir := t.TempDir()
+	script := writeFakeScript(t, dir, []string{"delta:hello", "done"})
+	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: script}}
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App:               "test-session-state",
+		Adapter:           adapter,
+		Activity:          activity.NewBridge(sink),
+		Workdir:           dir,
+		HeartbeatInterval: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- w.Run(ctx) }()
+	sink.waitFor(t, runtimeevents.KindSessionReady, 5*time.Second)
+	sink.waitFor(t, runtimeevents.KindSessionHeartbeat, 5*time.Second)
+	_ = w.SendInput(context.Background(), []byte("trigger"))
+	sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)
+	_ = w.Stop(context.Background())
+	<-runErrCh
+
+	evs := sink.snapshot()
+	idxProcessing := indexOfKind(evs, runtimeevents.KindSessionProcessing)
+	idxDelta := indexOfKind(evs, runtimeevents.KindAgentDelta)
+	idxDone := indexOfKind(evs, runtimeevents.KindTurnCompleted)
+	idxIdle := indexOfKind(evs, runtimeevents.KindSessionIdle)
+	if idxProcessing < 0 || idxDelta < 0 || idxDone < 0 || idxIdle < 0 {
+		t.Fatalf("missing session state events: processing=%d delta=%d done=%d idle=%d kinds=%v",
+			idxProcessing, idxDelta, idxDone, idxIdle, kindList(evs))
+	}
+	if !(idxProcessing < idxDelta && idxDone < idxIdle) {
+		t.Errorf("session state order wrong: processing=%d delta=%d done=%d idle=%d",
+			idxProcessing, idxDelta, idxDone, idxIdle)
+	}
+	if evs[idxProcessing].TurnID == "" || evs[idxIdle].TurnID != evs[idxProcessing].TurnID {
+		t.Errorf("session state TurnID mismatch: processing=%q idle=%q",
+			evs[idxProcessing].TurnID, evs[idxIdle].TurnID)
+	}
+}
+
 func indexOfKind(evs []runtimeevents.Event, kind runtimeevents.EventKind) int {
 	for i, e := range evs {
 		if e.Kind == kind {
@@ -693,6 +827,15 @@ func indexOfKind(evs []runtimeevents.Event, kind runtimeevents.EventKind) int {
 		}
 	}
 	return -1
+}
+
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }
 
 // toolUseScriptLine returns the printf-safe line the fake script
@@ -851,6 +994,29 @@ func TestRunPolicyBlockEmitsBlockEvent(t *testing.T) {
 	}
 }
 
+func TestRunPolicyApprovalEmitsApprovalRequestedEvent(t *testing.T) {
+	pol := &recordingPolicy{
+		decision: policy.Decision{
+			Mode:    policy.ModeApproval,
+			RuleID:  "test.approval",
+			Message: "operator approval required",
+		},
+	}
+	_, evs := runWrapperUntilToolUsePolicy(t, t.TempDir(), "Write", pol, false)
+
+	idx := indexOfKind(evs, runtimeevents.KindPolicyApprovalRequested)
+	if idx < 0 {
+		t.Fatalf("missing policy.approval_requested event; kinds: %v", kindList(evs))
+	}
+	var p map[string]any
+	if err := json.Unmarshal(evs[idx].Payload, &p); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if got, _ := p["mode"].(string); got != "approval" {
+		t.Errorf("mode = %q", got)
+	}
+}
+
 func TestRunPolicyObserveEmitsNoDerivedEvent(t *testing.T) {
 	pol := &recordingPolicy{
 		decision: policy.Decision{Mode: policy.ModeObserve},
@@ -861,6 +1027,7 @@ func TestRunPolicyObserveEmitsNoDerivedEvent(t *testing.T) {
 		runtimeevents.KindPolicyNudge,
 		runtimeevents.KindPolicyRewrite,
 		runtimeevents.KindPolicyBlock,
+		runtimeevents.KindPolicyApprovalRequested,
 	} {
 		if indexOfKind(evs, kind) >= 0 {
 			t.Errorf("ModeObserve should emit no derived events, saw %q", kind)
@@ -889,6 +1056,7 @@ func TestRunPolicyDecideErrorIsSwallowed(t *testing.T) {
 		runtimeevents.KindPolicyNudge,
 		runtimeevents.KindPolicyRewrite,
 		runtimeevents.KindPolicyBlock,
+		runtimeevents.KindPolicyApprovalRequested,
 	} {
 		if indexOfKind(evs, kind) >= 0 {
 			t.Errorf("Decide error should suppress derived policy events, saw %q", kind)

@@ -1,7 +1,10 @@
 package wrapper
 
 import (
+	"time"
+
 	llmtypes "github.com/hollis-labs/go-llm-types"
+	pevents "github.com/hollis-labs/go-providers/provider/events"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -62,6 +65,40 @@ func translateStreamEvent(ev llmtypes.StreamEvent) (kind runtimeevents.EventKind
 		// downstream consumers don't see "agent.delta with no
 		// meaningful payload" frames for events the wrapper doesn't
 		// yet model.
+		return "", nil, false
+	}
+}
+
+// translateProviderEvent converts richer provider/events.Event frames
+// into runtime events that the legacy llmtypes.StreamEvent surface cannot
+// represent. Delta/tool_use/terminal/session events are intentionally skipped
+// here because EventFanout already carries those through translateStreamEvent.
+func translateProviderEvent(ev pevents.Event) (kind runtimeevents.EventKind, payload any, ok bool) {
+	switch e := ev.(type) {
+	case pevents.ToolResult:
+		return runtimeevents.KindAgentToolResult, map[string]any{
+			"tool_result": map[string]any{
+				"id":              e.ID,
+				"is_error":        e.IsError,
+				"content_preview": e.ContentPreview,
+			},
+		}, true
+	case pevents.SubagentSpawn:
+		return runtimeevents.KindAgentSubagentSpawn, map[string]any{
+			"subagent_spawn": map[string]any{
+				"tool": e.Tool,
+				"args": e.Args,
+			},
+		}, true
+	case pevents.Heartbeat:
+		last := e.LastActivityAt
+		if last.IsZero() {
+			last = time.Now().UTC()
+		}
+		return runtimeevents.KindSessionHeartbeat, map[string]any{
+			"last_activity_at": last,
+		}, true
+	default:
 		return "", nil, false
 	}
 }

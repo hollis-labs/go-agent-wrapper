@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/hollis-labs/go-agent-wrapper/activity"
+	"github.com/hollis-labs/go-agent-wrapper/filters"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -37,6 +38,7 @@ type streamWriter struct {
 	source   runtimeevents.Source
 	rawKind  runtimeevents.EventKind
 	lineKind runtimeevents.EventKind
+	filter   filters.Pipeline
 
 	mu      sync.Mutex
 	offset  int64
@@ -52,6 +54,7 @@ func newStreamWriter(
 	bridge *activity.Bridge,
 	source runtimeevents.Source,
 	rawKind, lineKind runtimeevents.EventKind,
+	filter filters.Pipeline,
 ) *streamWriter {
 	return &streamWriter{
 		bridge:   bridge,
@@ -59,6 +62,7 @@ func newStreamWriter(
 		source:   source,
 		rawKind:  rawKind,
 		lineKind: lineKind,
+		filter:   filter,
 	}
 }
 
@@ -80,8 +84,9 @@ func (s *streamWriter) Write(p []byte) (int, error) {
 	// complete stream in order. Copy p — the agentkit reader is
 	// allowed to reuse its buffer after Write returns.
 	chunk := append([]byte(nil), p...)
+	emitChunk := s.filterBytes("command_output", chunk)
 	_ = s.bridge.Emit(s.ctx, s.rawKind, s.source, map[string]any{
-		"bytes": string(chunk),
+		"bytes": string(emitChunk),
 	}, runtimeevents.WithRawOffset(chunkOffset))
 
 	// Append to the line buffer and emit one event per complete
@@ -95,9 +100,10 @@ func (s *streamWriter) Write(p []byte) (int, error) {
 		}
 		line := s.lineBuf[:i]
 		line = bytes.TrimSuffix(line, []byte{'\r'})
+		emitLine := s.filterBytes("command_output_line", line)
 
 		_ = s.bridge.Emit(s.ctx, s.lineKind, s.source, map[string]any{
-			"line": string(line),
+			"line": string(emitLine),
 		}, runtimeevents.WithRawOffset(lineStart))
 
 		// Advance lineStart to just after the \n we consumed —
@@ -107,4 +113,22 @@ func (s *streamWriter) Write(p []byte) (int, error) {
 	}
 
 	return len(p), nil
+}
+
+func (s *streamWriter) filterBytes(kind string, b []byte) []byte {
+	if s.filter == nil {
+		return b
+	}
+	out, err := s.filter.Process(s.ctx, filters.Input{
+		Kind:    kind,
+		Content: append([]byte(nil), b...),
+		Metadata: map[string]string{
+			"event_kind": string(s.rawKind),
+			"channel":    string(s.source.Channel),
+		},
+	})
+	if err != nil || out.Repaired == nil {
+		return b
+	}
+	return out.Repaired
 }

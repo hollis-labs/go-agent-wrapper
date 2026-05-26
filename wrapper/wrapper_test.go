@@ -14,8 +14,10 @@ import (
 // exec-shape adapters that can't drive the agentkit runtime.
 type stubAdapter struct{}
 
-func (stubAdapter) Name() string                  { return "stub" }
-func (stubAdapter) Describe() adapters.Descriptor { return adapters.Descriptor{Provider: "stub", Runtime: "stub"} }
+func (stubAdapter) Name() string { return "stub" }
+func (stubAdapter) Describe() adapters.Descriptor {
+	return adapters.Descriptor{Provider: "stub", Runtime: "stub"}
+}
 func (stubAdapter) Resolve(adapters.ResolveContext) (adapters.Spec, error) {
 	return adapters.Spec{Binary: "/bin/true"}, nil
 }
