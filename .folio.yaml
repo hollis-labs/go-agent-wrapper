@@ -1,0 +1,55 @@
+folio_version: "0.1"
+generated_at: 2026-05-25T22:35:22.652163-05:00
+generator: folio/0.1.0
+presets:
+  - id: go-lib
+    version: 0.1.0
+    source: bundled
+    resolved_path: bundled:presets/go-lib
+inputs:
+  copyright_holder: Hollis Labs
+  description: Shared harness for launching, observing, and governing CLI-agent subprocesses
+  github_owner: hollis-labs
+  go_version: 1.26.1
+  package_name: wrapper
+  repo_name: go-agent-wrapper
+computed:
+  module_path: github.com/hollis-labs/go-agent-wrapper
+  year: "2026"
+files:
+  .github/workflows/check.yml:
+    preset: go-lib
+    digest_at_gen: sha256:aac94411d0d8efc16c742a9dd048689ede1c8b84c8d6984a5d80fea09fb295d5
+  .gitignore:
+    preset: go-lib
+    digest_at_gen: sha256:1abae72d1b570e1dca6465bad43ba51f8a19bf92dd09eb9e6692d2b143282b4a
+  CHANGELOG.md:
+    preset: go-lib
+    digest_at_gen: sha256:362d47e9d3678ca0696e766af2f9134c995d489aa0aff87fca83407f26bc9e64
+  LICENSE:
+    preset: go-lib
+    digest_at_gen: sha256:29fde794587339581b8d68aa7753337b321da45cbe49cf5a0be907db7e67e7d8
+  README.md:
+    preset: go-lib
+    digest_at_gen: sha256:3fdcdc6e0fddbc71d8c6e9ff082e6ff4b2083bd4ea77d9dade6ba580c50be0d2
+  examples/README.md:
+    preset: go-lib
+    digest_at_gen: sha256:9c9e43d3bbee671742c577b7150b9633c1ce4a913f11f66ad6f4fa01dd28c960
+  go.mod:
+    preset: go-lib
+    digest_at_gen: sha256:6474158658a28f2ca24b5ffd56bd161713ee634c787b24ce5f0524d1611d614a
+  wrapper/doc.go:
+    preset: go-lib
+    digest_at_gen: sha256:de9061132b5930c65856c4f9374d2f38dc3be907b1e2371b7ec1af8dcaadf5f5
+  wrapper/wrapper.go:
+    preset: go-lib
+    digest_at_gen: sha256:beb244cad140bd1cd6988f83d133ba97aa716854fa92be112d016906b97a4dac
+  wrapper/wrapper_test.go:
+    preset: go-lib
+    digest_at_gen: sha256:cba4068d4d9edc9463c2ae7aaae8f589c384f5ee361a0a45e195ed7e2310af59
+sync_history:
+  - at: 2026-05-25T22:35:22.652163-05:00
+    operation: init
+    presets:
+      - id: go-lib
+        version: 0.1.0
