@@ -4,6 +4,99 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.0 — 2026-08-21
+
+**New `adapters/copilotacp` package** (`TASKS/agent-host-acp/10`, Nanite's
+own tracker): the second native ACP adapter — GitHub Copilot CLI, driven
+via its own `--acp` flag, over **both** stdio and TCP transports — the
+first shipped adapter to genuinely exercise `adapters.Transport` as a
+real, functioning per-adapter choice rather than a single hardcoded
+value.
+
+### Added
+
+- **`copilotacp.Client`** — a real, self-contained `acp.Client`
+  implementation supporting `adapters.TransportStdio` and
+  `adapters.TransportTCP`. For stdio it spawns and owns `copilot --acp`
+  directly via os/exec; for TCP it spawns `copilot --acp --port <N>` (or,
+  via `WithDialOnly`, connects to an already-running daemon) and owns the
+  TCP connection. Either way: real request/response correlation (an
+  id-keyed pending map), real `session/update` notification dispatch, no
+  bridge library, no dependency on agentkit/jsonrpc-stdio machinery. Wire
+  behavior — newline-delimited JSON-RPC 2.0; `initialize`/`session/new`/
+  `session/prompt`/`session/cancel`/`session/update` shapes — was
+  verified directly against a real Copilot CLI 1.0.12 binary on both
+  transports, not assumed from documentation. `--port` genuinely binds
+  and LISTENs (confirmed via `lsof`; a second instance on the same port
+  gets a real `EADDRINUSE`) — no `--host`/`--acp --help` exists; not
+  documented anywhere found, only confirmed by testing the flag directly.
+- **Verified live `InterruptCapability`: `adapters.InterruptTurn`.**
+  `session/cancel` (a notification, not a request — confirmed against
+  the spec) was tested mid-generation against a real ~2000-word-essay
+  prompt: generation was cut off within ~3 seconds of Cancel, with an
+  agent-emitted "Info: Operation cancelled by user" message chunk,
+  rather than running to natural completion — a genuine abort, not
+  acknowledge-and-let-finish.
+- **`session/update` → `runtimeevents` mapping**: `agent_message_chunk`/
+  `agent_thought_chunk` → `agent.delta`; `tool_call`/`tool_call_update` →
+  `agent.tool_use`/`agent.tool_result`. `plan`/`available_commands_update`/
+  `usage_update` are deliberately left unmapped (no current
+  runtimeevents analog). Any server-initiated request (`fs/*`,
+  `terminal/*`, `session/request_permission`) is declined with a
+  JSON-RPC error rather than left to hang — real fs/terminal proxying is
+  out of scope (matches docs/engineering/architecture/17-acp.md's own
+  flagged unknown).
+- **`copilotacp.Adapter`** — `adapters.Adapter` + `adapters.RuntimeAdapter`
+  (`Name() == "copilot"`). `Describe()` reflects whichever transport the
+  Adapter was configured with (`WithAdapterTransport`), proving
+  `Descriptor.Transport` is a real per-adapter choice, not a hardcoded
+  value. `CLIAdapter()` returns a `provider.CLIAdapter` bridge with real
+  Detect/BuildArgs (so a `wrapper.Wrapper.Run()` caller spawns the one
+  real `copilot --acp` process, not a duplicate) and — a deliberate,
+  small divergence from task 09's sibling adapter's pure pass-through —
+  a ParseLine that does real `session/update` translation, reusing the
+  same logic `Client` itself needs regardless. Neither variant drives the
+  handshake/turn-sending automatically through that composition; see the
+  package doc's "Wrapper.Run composition" section for the confirmed
+  seam-gap finding this is built around (independently re-confirmed here;
+  first found by task 09 for OpenCode's own ACP adapter).
+- **Confirmed, real gap: no agentkit TCP-session runtime kind exists.**
+  `ProtocolACP`+`TransportTCP` has no `wrapper/runtime_dispatch.go` entry
+  (task 08 left it deliberately unmapped) and cannot get one without
+  `agentkit/agentsessions` growing an actual TCP-socket-based Runtime/
+  Session kind first — agentkit ships exactly four kinds today (PTY,
+  streaming-stdio, jsonrpc-stdio, serve-http), none TCP-based. Out of
+  this repo's scope; `Client`'s TCP transport is fully real and tested
+  standalone (see below), independent of that gap.
+
+### Verified live (not mocked)
+
+Against a real, authenticated `copilot` (1.0.12) binary: `Test
+RealCopilotACP_Stdio_EndToEnd` and `TestRealCopilotACP_TCP_EndToEnd`
+(one real completed turn each, skip — not fail — when `copilot` isn't on
+PATH), `TestRealCopilotACP_CancelInterruptsTurn` (real mid-generation
+cancel), and `TestRealCopilotACP_EventsMapToActivityBridge` (drives
+`Client.Events()` through the same `activity.Bridge` every other
+adapter's turn activity flows through in production). All four
+gracefully skip rather than fail if the live account hits a real
+"exceeded your monthly quota" condition mid-test (hit during this task's
+own implementation) — a live account-state fact, not an adapter defect;
+structural assertions (turn lifecycle, TurnID correlation, Bridge
+binding) still run regardless of quota state.
+
+### Notes
+
+- No new dependency: `adapters/copilotacp` imports only `acp`,
+  `activity`, `adapters` (this module), `go-providers/provider`,
+  `go-llm-types`, and `go-runtime-events` — all already required.
+  `go.mod` is unchanged.
+- A genuine `sync.WaitGroup` Add-before-Wait race in `Client`'s own
+  turn-completion/events-close sequencing was caught live by
+  `go test -race` during implementation (a fast responder's terminal
+  event could be silently dropped if the underlying connection closed in
+  the same instant) and fixed — see `Client.closeEvents`'/`Client.Prompt`'s
+  doc comments. `go test ./... -race` is clean across the whole module.
+
 ## v0.6.0 — 2026-08-21
 
 **New `adapters/opencodeacp` package** (`TASKS/agent-host-acp/09`, Nanite's
