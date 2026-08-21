@@ -4,6 +4,30 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.0 — 2026-08-21
+
+Two changes, landed together as this release:
+
+- **Adds the `snapshot` package**: `FilesystemSnapshotProvider` interface + a
+  `ShadowGit` implementation (`TASKS/filesystem-snapshots/01`, Nanite's own
+  tracker) — capture/diff/preview/selective-restore of an agent's granted
+  filesystem paths via a separate internal git object database, isolated
+  from any real repo's own `.git`. Additive; nothing else in this repo
+  changes shape.
+- **Bumps the `agentkit` pin to v0.5.0** (from v0.3.0), picking up two real
+  correctness fixes to session-waiter/completion-signaling code found by
+  Nanite's own live dogfeed (`TASKS/agent-host-acp/07`, `20`, `22`):
+  the unsupervised waiter now surfaces a real `*agentsessions.ExitError` on
+  abnormal exit (previously silently swallowed for the overwhelming
+  majority of real-world kills/crashes — see agentkit's own v0.4.0
+  CHANGELOG entry for the full detail, since it's a real behavioral change
+  for any direct `agentkit` consumer too), and adapter-runtime sessions now
+  synthesize a terminal event when the driven CLI adapter's own `ParseLine`
+  never emits one (true for OpenCode's default mode). **The agentkit local
+  `replace` this repo carried since v0.1.0 is dropped as of this release** —
+  v0.5.0 is pushed and tagged on origin, so the plain `require` line
+  resolves directly; no local checkout needed anymore.
+
 ## v0.3.0 — 2026-08-21
 
 Real-adapter viability release. Closes the gap between what
