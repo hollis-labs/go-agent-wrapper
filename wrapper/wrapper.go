@@ -107,6 +107,68 @@ type Config struct {
 	// child before exec. The zero-value profile (empty ID) disables this path.
 	SandboxProfile sandboxprofile.Profile
 
+	// WorkspaceDir is the per-session persistent root forwarded to
+	// agentsessions.StartOptions.WorkspaceDir — distinct from Workdir
+	// (the spawned process's cwd). Every one of agentkit's
+	// streaming-stdio, jsonrpc-stdio, and serve-http runtime kinds
+	// (i.e. every real shipped adapter — Claude, Codex, OpenCode) hard-
+	// errors before spawning anything when both WorkspaceDir and LogPath
+	// are empty. When both are left empty here, [Wrapper.Run]
+	// synthesizes <Workdir>/.wrapper-workspace/<SessionID> — the same
+	// "degrade cleanly on a zero value" contract this Config already
+	// gives BootDir (above), rather than trading it for a required-field
+	// error a caller has to know about agentkit internals to avoid.
+	WorkspaceDir string
+
+	// LogPath overrides the per-session log file path forwarded to
+	// agentsessions.StartOptions.LogPath. Empty defers to WorkspaceDir
+	// (agentkit derives <WorkspaceDir>/logs/session.log). See
+	// WorkspaceDir above for the synthesized default when both are
+	// empty.
+	LogPath string
+
+	// SessionIDPreset, when non-empty, is forwarded to
+	// agentsessions.StartOptions.SessionIDPreset — the provider-side
+	// session id an adapter should resume from on its very first turn
+	// (e.g. Claude streaming-stdio's `--resume <id>`). Adapters that
+	// don't understand resume ignore it silently.
+	SessionIDPreset string
+
+	// OnSessionID, when non-nil, is invoked the first time the running
+	// session observes a provider-assigned session id — in addition to,
+	// not instead of, [Wrapper.Run]'s own unconditional
+	// Process.ProviderSessionID rebind (see Run's doc comment). This
+	// field exists because not every agentkit runtime's session-id
+	// delivery reaches EventFanout: the serve-http runtime's initial
+	// session-creation call (agentkit's serveHTTPSession.createSession —
+	// OpenCode's primary, first-session delivery point) invokes
+	// StartOptions.OnSessionID directly and never pushes a matching
+	// EventFanout frame, so a caller that only observes the
+	// activity.Bridge's Sink would never see that particular session id
+	// without this field. (Claude's streaming-stdio and OpenCode's
+	// secondary SSE session.created path fire OnSessionID and
+	// EventFanout together from the same observed event, so for those
+	// two the Sink-observed rebind alone would have sufficed — this
+	// field closes the one path where it doesn't.) Called from the
+	// adapter's own read goroutine — callers must not block inside it.
+	OnSessionID func(id string)
+
+	// AutoFireFirstTurn, when true, is forwarded to
+	// agentsessions.StartOptions.AutoFireFirstTurn together with
+	// FirstTurnPayload (as bytes) — the runtime delivers FirstTurnPayload
+	// as the first SendInput automatically once Start succeeds, closing
+	// the Launch/SendInput race a caller-driven first turn is otherwise
+	// exposed to. Needed by every ModeOneShot/ModeSubagent/ModeBackground
+	// boot, which relies on the runtime auto-delivering the kickoff
+	// payload as the first turn rather than a caller racing its own
+	// SendInput against Start's return.
+	AutoFireFirstTurn bool
+
+	// FirstTurnPayload is the kickoff string sent on the auto-fired
+	// first turn when AutoFireFirstTurn is true. Ignored when
+	// AutoFireFirstTurn is false.
+	FirstTurnPayload string
+
 	// Policy, when set, is consulted by the wrapper's translator
 	// goroutine for every observed [runtimeevents.KindAgentToolUse]
 	// event. [Wrapper.Run] builds a [policy.Request] from the
@@ -190,7 +252,15 @@ func (w *Wrapper) SessionID() string { return w.sessionID }
 // process.exited, plus per-stream-event translations (agent.delta,
 // agent.tool_use, turn.completed, turn.failed). Provider session_id
 // frames re-bind the [activity.Bridge] Process.ProviderSessionID
-// rather than producing an event.
+// rather than producing an event; so does [Config.OnSessionID] firing
+// (see its doc comment for why both paths exist).
+//
+// When Config.WorkspaceDir and Config.LogPath are both empty, Run
+// synthesizes <Workdir>/.wrapper-workspace/<SessionID> as the
+// WorkspaceDir forwarded to agentsessions.StartOptions — every real
+// shipped adapter's runtime kind (streaming-stdio, jsonrpc-stdio,
+// serve-http) requires one of the two to be set before it will spawn
+// anything.
 //
 // Returns the Session.Wait error if any. ctx.Err() is preserved when
 // the wrapper stopped because the caller cancelled.
@@ -339,12 +409,34 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	}
 	defer close(heartbeatStop)
 
+	workspaceDir, logPath := resolveWorkspaceLogPath(w.cfg.Workdir, w.sessionID, w.cfg.WorkspaceDir, w.cfg.LogPath)
+
 	session, err := runtime.Start(ctx, agentsessions.StartOptions{
-		Workdir:     w.cfg.Workdir,
-		EventFanout: fanout,
-		Fanout:      stdoutStream,
-		Stderr:      stderrStream,
-		Profile:     w.cfg.SandboxProfile,
+		Workdir:           w.cfg.Workdir,
+		WorkspaceDir:      workspaceDir,
+		LogPath:           logPath,
+		EventFanout:       fanout,
+		Fanout:            stdoutStream,
+		Stderr:            stderrStream,
+		Profile:           w.cfg.SandboxProfile,
+		SessionIDPreset:   w.cfg.SessionIDPreset,
+		AutoFireFirstTurn: w.cfg.AutoFireFirstTurn,
+		FirstTurnPayload:  []byte(w.cfg.FirstTurnPayload),
+		OnSessionID: func(id string) {
+			if id == "" {
+				return
+			}
+			// Unconditional rebind: keeps the Sink-observed
+			// Process.ProviderSessionID path (below, in the fanout
+			// consumer loop) correct even for runtimes/paths — e.g.
+			// serve-http's createSession — that call OnSessionID
+			// without also pushing an EventFanout frame. See Config.
+			// OnSessionID's doc comment.
+			w.cfg.Activity.Emitter().SetProviderSessionID(id)
+			if w.cfg.OnSessionID != nil {
+				w.cfg.OnSessionID(id)
+			}
+		},
 		TypedEventCallback: func(ev pevents.Event) {
 			kind, payload, mapped := translateProviderEvent(ev)
 			if !mapped {
@@ -543,6 +635,22 @@ func isTurnScoped(kind runtimeevents.EventKind) bool {
 		return true
 	}
 	return kind == runtimeevents.KindTurnCompleted || kind == runtimeevents.KindTurnFailed
+}
+
+// resolveWorkspaceLogPath applies Config.WorkspaceDir/LogPath's
+// documented default: both forward verbatim when the caller set
+// either one, and when both are empty a WorkspaceDir is synthesized
+// under workdir so [Wrapper.Run] doesn't hand agentkit's
+// streaming-stdio/jsonrpc-stdio/serve-http runtimes an empty pair —
+// every one of them returns a hard error from Start before spawning
+// anything in that case. Pulled out of Run as a pure function so the
+// default-synthesis decision is independently unit-testable without
+// spawning a process.
+func resolveWorkspaceLogPath(workdir, sessionID, workspaceDir, logPath string) (resolvedWorkspaceDir, resolvedLogPath string) {
+	if workspaceDir == "" && logPath == "" {
+		workspaceDir = filepath.Join(workdir, ".wrapper-workspace", sessionID)
+	}
+	return workspaceDir, logPath
 }
 
 // runPlanter resolves the boot directory, emits plant.started, calls

@@ -144,6 +144,68 @@ func TestStopBeforeRunIsNoOp(t *testing.T) {
 	}
 }
 
+// TestResolveWorkspaceLogPath covers Config.WorkspaceDir/LogPath's
+// documented default-synthesis contract: verbatim forwarding when the
+// caller sets either field, and a synthesized default under Workdir
+// when both are empty. See TASKS/agent-host-acp/05a in the Nanite repo
+// for the "implicit default vs. required-field error" decision this
+// pins.
+func TestResolveWorkspaceLogPath(t *testing.T) {
+	cases := []struct {
+		name             string
+		workdir          string
+		sessionID        string
+		workspaceDir     string
+		logPath          string
+		wantWorkspaceDir string
+		wantLogPath      string
+	}{
+		{
+			name:             "both empty synthesizes a workspace dir under workdir",
+			workdir:          "/tmp/wd",
+			sessionID:        "ses_abc",
+			wantWorkspaceDir: "/tmp/wd/.wrapper-workspace/ses_abc",
+			wantLogPath:      "",
+		},
+		{
+			name:             "explicit WorkspaceDir forwards verbatim, no synthesis",
+			workdir:          "/tmp/wd",
+			sessionID:        "ses_abc",
+			workspaceDir:     "/var/data/ses_abc",
+			wantWorkspaceDir: "/var/data/ses_abc",
+			wantLogPath:      "",
+		},
+		{
+			name:             "explicit LogPath alone forwards verbatim, no synthesis",
+			workdir:          "/tmp/wd",
+			sessionID:        "ses_abc",
+			logPath:          "/var/log/ses_abc.log",
+			wantWorkspaceDir: "",
+			wantLogPath:      "/var/log/ses_abc.log",
+		},
+		{
+			name:             "both explicit forward verbatim",
+			workdir:          "/tmp/wd",
+			sessionID:        "ses_abc",
+			workspaceDir:     "/var/data/ses_abc",
+			logPath:          "/var/log/ses_abc.log",
+			wantWorkspaceDir: "/var/data/ses_abc",
+			wantLogPath:      "/var/log/ses_abc.log",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotWorkspaceDir, gotLogPath := resolveWorkspaceLogPath(tc.workdir, tc.sessionID, tc.workspaceDir, tc.logPath)
+			if gotWorkspaceDir != tc.wantWorkspaceDir {
+				t.Errorf("workspaceDir = %q, want %q", gotWorkspaceDir, tc.wantWorkspaceDir)
+			}
+			if gotLogPath != tc.wantLogPath {
+				t.Errorf("logPath = %q, want %q", gotLogPath, tc.wantLogPath)
+			}
+		})
+	}
+}
+
 func contains(haystack, needle string) bool {
 	for i := 0; i+len(needle) <= len(haystack); i++ {
 		if haystack[i:i+len(needle)] == needle {

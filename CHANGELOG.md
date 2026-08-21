@@ -4,6 +4,111 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.0 — 2026-08-21
+
+Real-adapter viability release. Closes the gap between what
+`Wrapper.Run` actually forwarded to `agentsessions.StartOptions` and
+what its own three shipped adapters (`adapters/claude`/`codex`/
+`opencode`) need to run at all — every one of them selects an agentkit
+runtime kind (streaming-stdio / jsonrpc-stdio / serve-http) that
+hard-errors before spawning anything when `StartOptions.WorkspaceDir`
+and `LogPath` are both empty, and until this release `Wrapper.Run`'s
+hardcoded `StartOptions{}` literal never set either — confirmed
+non-functional for all three real adapters, not just read (Nanite
+`TASKS/agent-host-acp/06`, logged in Nanite's `TASKS/ESCALATIONS.md`,
+2026-08-21). Also backfills the changelog entry for the
+`Descriptor.Protocol`/`Transport` split (commit `371c9d0`), which
+landed on `main` after `v0.2.0` was tagged and had not previously been
+changelogged.
+
+### Added
+
+- **`Config.WorkspaceDir` / `Config.LogPath`** — forwarded to
+  `agentsessions.StartOptions.WorkspaceDir`/`LogPath`. When both are
+  left empty, `Wrapper.Run` synthesizes
+  `<Workdir>/.wrapper-workspace/<SessionID>` rather than returning a
+  required-field error — the same "zero values degrade cleanly"
+  contract `Config.BootDir` already gives callers. Closes the hard,
+  unconditional blocker described above.
+- **`Config.SessionIDPreset`** — forwarded to
+  `agentsessions.StartOptions.SessionIDPreset`. Needed by Claude's
+  post-restart `--resume <id>` resume flow; a new integration test
+  confirms it reaches the real `ClaudeAdapter.BuildArgs` argv shape end
+  to end (against the real adapter, not a fake).
+- **`Config.OnSessionID`** — forwarded to
+  `agentsessions.StartOptions.OnSessionID`. `Wrapper.Run` now also
+  unconditionally rebinds `Process.ProviderSessionID` from inside that
+  same callback (previously this rebind only happened from the
+  `EventFanout` consumer goroutine). Needed because not every
+  runtime's session-id delivery reaches `EventFanout`: agentkit's
+  `serveHTTPSession.createSession` (OpenCode's primary, first-session
+  delivery point) calls `OnSessionID` directly and never pushes a
+  matching `EventFanout` frame, so a caller observing only the
+  `activity.Bridge`'s `Sink` would never have seen that session id at
+  all. Claude's streaming-stdio path and OpenCode's own secondary SSE
+  `session.created` path already fire `OnSessionID` and `EventFanout`
+  together, so for those two the pre-existing rebind alone would have
+  sufficed — this field specifically closes the `createSession` gap.
+  See the doc comment on `Config.OnSessionID` for the full
+  investigation this finding is based on.
+- **`Config.AutoFireFirstTurn` / `Config.FirstTurnPayload`** —
+  forwarded to `agentsessions.StartOptions.AutoFireFirstTurn`/
+  `FirstTurnPayload`. Needed by every `ModeOneShot`/`ModeSubagent`/
+  `ModeBackground` boot, which relies on the runtime auto-delivering
+  the kickoff payload as the first turn rather than the caller racing
+  its own `SendInput` against `Start`'s return.
+- **New integration tests** (`wrapper/wrapper_real_adapters_test.go`)
+  drive `Wrapper.Run` against the real, non-empty `Descriptor` of all
+  three shipped adapters (`ProtocolClaudeStreamJSON`/`TransportStdio`,
+  `ProtocolCodexAppServer`/`TransportStdio`,
+  `ProtocolOpenCodeNative`/`TransportHTTPSSE`) via each adapter's real
+  env-var `Detect()` override (`CLAUDE_CLI_PATH`/`CODEX_CLI_PATH`/
+  `OPENCODE_CLI_PATH`) pointed at a fake binary — not the
+  empty-Protocol/Transport fallback pair every prior integration test
+  in this repo used, which is exactly why the `WorkspaceDir`/`LogPath`
+  gap went undetected in the first place.
+
+### Changed (backfilled from commit `371c9d0`, unreleased since `v0.2.0`)
+
+- **`adapters.Descriptor.Runtime` (a bare string) removed, replaced by
+  typed `Protocol` + `Transport` fields.** The single string conflated
+  wire-format shape (streaming NDJSON vs. JSON-RPC vs. plain PTY
+  bytes) with transport medium (stdio vs. HTTP+SSE) — a collapse that
+  was harmless while every runtime implied a unique transport but
+  breaks once ACP (same protocol over stdio or TCP) lands. This is a
+  breaking change to `Descriptor`'s literal shape for any external
+  caller (`go-agent-wrapper` has zero adopters to date, so nothing in
+  the portfolio is broken by it in practice) — acceptable pre-1.0 per
+  this repo's own SemVer discipline. `wrapper/runtime_dispatch.go`'s
+  dispatch/mapping functions now key off `Protocol`+`Transport` pairs;
+  a `legacyRuntimeToken` helper preserves the exact pre-split token
+  mirrored into `runtimeevents.Process.Runtime` so downstream
+  consumers of that (separate, go-runtime-events) field see no
+  behavior change. No behavior change for the three shipped adapters
+  themselves — same `agentsessions.Capabilities` flags, same source
+  channels, same legacy `Process.Runtime` token values as before the
+  split.
+- **`adapters.Descriptor.InterruptCapability`** (`none`/`process`/
+  `turn`/`steer`) — new capability-discovery field, set to the
+  verified real value per shipped adapter: Claude and Codex are
+  `InterruptProcess` (their agentkit sessions close stdin and escalate
+  straight to SIGTERM/SIGKILL, no wire-level cancel frame); OpenCode
+  is `InterruptTurn` (calls its native `/global/dispose` +
+  `/session/{id}/abort` endpoints before the same escalation).
+
+### Notes
+
+- `Config`'s six new fields above (`WorkspaceDir`, `LogPath`,
+  `SessionIDPreset`, `OnSessionID`, `AutoFireFirstTurn`,
+  `FirstTurnPayload`) are purely additive and keyed-literal compatible
+  — no existing `Config{...}` construction needs to change. The one
+  breaking change in this release is `Descriptor.Runtime`'s removal,
+  covered above.
+- The local `replace github.com/hollis-labs/agentkit => ../agentkit`
+  block (see the comment above the `replace (...)` block in `go.mod`)
+  stays in place for the same reason `v0.2.0`'s entry documented —
+  unchanged by this release.
+
 ## v0.2.0 — 2026-08-21
 
 Dependency-currency + core-strengthening release. No breaking change to
