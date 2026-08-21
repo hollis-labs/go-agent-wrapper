@@ -4,6 +4,75 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.0 — 2026-08-21
+
+**New `acp` package** (`TASKS/agent-host-acp/08`, Nanite's own tracker):
+the ACP (Agent Client Protocol, agentclientprotocol.com) *client*
+abstraction — a Hollis host driving an underlying CLI agent over ACP,
+not the (separate, prior-art, untouched-here) server role. Interface and
+wiring only; no concrete ACP wire-connection logic ships in this
+release — that's follow-on work (native OpenCode/Copilot CLI adapters,
+then a Claude/Codex/Pi bridge).
+
+### Added
+
+- **`acp.Client`** — the single Go interface (`Launch`, `Prompt`,
+  `Cancel`, `Events`, `InterruptCapability`, `Close`) a concrete ACP
+  implementation (native direct-wire or third-party-bridge-mediated)
+  satisfies. `Events()` yields `runtimeevents.Event` values directly —
+  no parallel event vocabulary — so an ACP-driving implementation feeds
+  the same activity-bridge translation path
+  (`wrapper/event_translator.go`) every other adapter already uses.
+  `InterruptCapability()` returns the same `adapters.InterruptCapability`
+  vocabulary (`none`/`process`/`turn`/`steer`) task 02's `Descriptor`
+  split introduced, since a given ACP implementation's real
+  `session/cancel` behavior is a per-implementation fact, not a
+  protocol-level guarantee.
+- **`acp.DescriptorFor(client, providerName, transport)`** — builds the
+  `adapters.Descriptor` an ACP-backed `Adapter.Describe()` should
+  return (`Protocol: adapters.ProtocolACP` always; `Transport` threaded
+  through for stdio vs. TCP daemon modes; `Interrupt` mirrored from the
+  Client). The one place the Client's real capability reaches the
+  Descriptor seam.
+- **`wrapper/runtime_dispatch.go`: `ProtocolACP`/`TransportStdio`
+  dispatch entry.** ACP is JSON-RPC 2.0 over stdio — the same framing
+  agentkit's `JsonRpcStdio` runtime already speaks generically for
+  Codex's app-server — so this is a framing-level-only table addition
+  (`agentsessions.Capabilities{JsonRpcStdio: true}`,
+  `runtimeevents.ChannelJSONRPC`, new `RuntimeACPStdio` legacy token). It
+  says nothing about ACP's own method vocabulary
+  (`initialize`/`session/new`/`session/prompt`/`session/cancel`/
+  `session/update`), which a concrete ACP adapter's `CLIAdapter`
+  implementation supplies in follow-on work. ACP over TCP (Copilot
+  CLI's `--acp` daemon mode) is deliberately left unmapped — agentkit
+  has no TCP-session runtime kind yet; `TestRuntimeCapsACPTCPUnmapped`
+  pins the current "not yet supported" state on purpose.
+- **`wrapper/wrapper_acp_test.go`** — end-to-end proof that a
+  fake/no-op `acp.Client`, composed into a fake `adapters.RuntimeAdapter`
+  via `acp.DescriptorFor` + a minimal `provider.CLIAdapter` shim, drives
+  through `Wrapper.Run`'s real agentkit jsonrpc-stdio path: the Client's
+  `Launch`/`Prompt` are genuinely invoked from the spawn/parse-line
+  path (not just declared side by side), and its `Events()` output
+  reaches `runtimeevents.Event` values in the sink via the existing
+  translation path. No real ACP wire-format knowledge appears in the
+  fake — it's a JSON-echo script, not an ACP implementation.
+
+### Notes
+
+- **Pre-existing flaky test found, not fixed, during this task's
+  verification pass**: `TestRunEndToEndAdapterRuntime`
+  (`wrapper/wrapper_integration_test.go`) intermittently reports
+  "sequence not monotonic" under `-count=20`+ repeats — reproduced on a
+  clean `v0.4.0` checkout (commit `4eed6c7`) in an isolated worktree,
+  unrelated to any change in this release. Looks like a real race in
+  concurrent `Emit` ordering across `Wrapper.Run`'s several
+  emitter-calling goroutines (fanout translator, provider typed-event
+  callback, stdout/stderr stream writers) racing the shared
+  `runtimeevents.Sequencer`, not a test-harness artifact — worth a
+  dedicated follow-up, out of scope for this release.
+- No new dependency: `acp` imports only `adapters` (this module) and
+  `go-runtime-events` (already required). `go.mod` is unchanged.
+
 ## v0.4.0 — 2026-08-21
 
 Two changes, landed together as this release:

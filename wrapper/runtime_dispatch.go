@@ -28,6 +28,16 @@ const (
 	// values selects this shape — matching the pre-split behavior
 	// where an empty Descriptor.Runtime string aliased this token.
 	RuntimeAdapter = "adapter"
+
+	// RuntimeACPStdio is the runtime token for the
+	// [adapters.ProtocolACP] + [adapters.TransportStdio] pairing.
+	// Unlike the other Runtime* tokens above, this one has no legacy
+	// predecessor — ACP is new as of the Protocol/Transport split
+	// (task 02 in TASKS/agent-host-acp, the Nanite repo), reserved but
+	// unmapped until this task (08) gave it a dispatch entry. It exists
+	// purely as a stable [runtimeevents.Process.Runtime] string for
+	// ACP-driven adapters, not as backward-compat scaffolding.
+	RuntimeACPStdio = "acp-stdio"
 )
 
 // runtimeCaps maps an adapter-declared Protocol+Transport pair to the
@@ -43,6 +53,22 @@ func runtimeCaps(protocol adapters.Protocol, transport adapters.Transport) (agen
 		return agentsessions.Capabilities{JsonRpcStdio: true, BinaryRequired: true}, nil
 	case protocol == adapters.ProtocolOpenCodeNative && transport == adapters.TransportHTTPSSE:
 		return agentsessions.Capabilities{ServeHTTP: true, BinaryRequired: true}, nil
+	case protocol == adapters.ProtocolACP && transport == adapters.TransportStdio:
+		// ACP is JSON-RPC 2.0 over stdio (agentclientprotocol.com) —
+		// the same wire framing agentkit's JsonRpcStdio runtime already
+		// speaks generically for Codex's app-server. This mapping is
+		// framing-level only: it says nothing about ACP's own method
+		// vocabulary (`initialize`/`session/new`/`session/prompt`/
+		// `session/cancel`/`session/update`), which a concrete ACP
+		// adapter's [adapters.RuntimeAdapter.CLIAdapter] implementation
+		// supplies (TASKS/agent-host-acp/09, 10, Phase 4 — the Nanite
+		// repo). TCP-transport ACP (e.g. Copilot CLI's `--acp` daemon
+		// mode) has no case here yet — agentkit has no TCP-session
+		// runtime kind to select, and adding one is out of scope for
+		// this dispatch-table wiring task; falls to the default
+		// [ErrUnknownRuntime] case below until a concrete TCP-based ACP
+		// adapter needs it.
+		return agentsessions.Capabilities{JsonRpcStdio: true, BinaryRequired: true}, nil
 	case protocol == "" && transport == "":
 		// Empty Protocol/Transport: subprocess-per-turn fallback, no
 		// agentkit lifecycle flag. Equivalent to the pre-split empty
@@ -69,6 +95,8 @@ func runtimeSourceChannel(protocol adapters.Protocol, transport adapters.Transpo
 		return runtimeevents.ChannelPTY
 	case protocol == adapters.ProtocolCodexAppServer && transport == adapters.TransportStdio:
 		return runtimeevents.ChannelJSONRPC
+	case protocol == adapters.ProtocolACP && transport == adapters.TransportStdio:
+		return runtimeevents.ChannelJSONRPC
 	default:
 		return runtimeevents.ChannelStdio
 	}
@@ -89,14 +117,19 @@ func rawSourceChannel(protocol adapters.Protocol, transport adapters.Transport) 
 	return runtimeevents.ChannelStdio
 }
 
-// legacyRuntimeToken maps a Protocol+Transport pair to the pre-split
-// runtime token string, mirrored into [runtimeevents.Process.Runtime]
-// (a field in the separate go-runtime-events package, out of scope
-// for this split) so downstream consumers that already parse that
-// field's string values keep seeing the same shapes they did before.
-// Returns "" for combinations with no legacy equivalent — [Wrapper.Run]
-// only calls this after [runtimeCaps] has already validated the pair,
-// so in practice every call here hits a known case.
+// legacyRuntimeToken maps a Protocol+Transport pair to a stable
+// [runtimeevents.Process.Runtime] token string (a field in the
+// separate go-runtime-events package, out of scope for the task 02
+// split). For the four pairs that predate the split, the token is the
+// literal pre-split runtime string, so downstream consumers that
+// already parse that field's values keep seeing the same shapes they
+// did before. [RuntimeACPStdio] is the one exception — ACP has no
+// pre-split predecessor (it did not exist as a Descriptor.Runtime
+// value at all) — its token exists purely as a stable string, not as
+// backward-compat scaffolding. Returns "" for combinations with no
+// token at all — [Wrapper.Run] only calls this after [runtimeCaps] has
+// already validated the pair, so in practice every call here hits a
+// known case.
 func legacyRuntimeToken(protocol adapters.Protocol, transport adapters.Transport) string {
 	switch {
 	case protocol == adapters.ProtocolPTYRaw && transport == adapters.TransportPTY:
@@ -107,6 +140,8 @@ func legacyRuntimeToken(protocol adapters.Protocol, transport adapters.Transport
 		return RuntimeJSONRPCStdio
 	case protocol == adapters.ProtocolOpenCodeNative && transport == adapters.TransportHTTPSSE:
 		return RuntimeHTTPSSE
+	case protocol == adapters.ProtocolACP && transport == adapters.TransportStdio:
+		return RuntimeACPStdio
 	case protocol == "" && transport == "":
 		return RuntimeAdapter
 	default:
