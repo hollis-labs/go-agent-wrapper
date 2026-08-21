@@ -50,13 +50,20 @@ func New(opts ...Option) *Adapter {
 // Name implements [adapters.Adapter].
 func (*Adapter) Name() string { return "opencode" }
 
-// Describe implements [adapters.Adapter]. It advertises http-sse as
-// the runtime and the OpenCode plugin channel as the event source.
+// Describe implements [adapters.Adapter]. It advertises OpenCode's
+// native protocol over HTTP+SSE and the OpenCode plugin channel as the
+// event source. Interrupt is [adapters.InterruptTurn] — OpenCode's
+// serve-http session (agentkit's serveHTTPSession) calls the native
+// `/global/dispose` and `/session/{id}/abort` HTTP endpoints and
+// cancels the SSE stream before falling back to the same
+// SIGTERM/SIGKILL escalation the other adapters use unconditionally.
 func (*Adapter) Describe() adapters.Descriptor {
 	return adapters.Descriptor{
-		Provider: "opencode",
-		Runtime:  "http-sse",
-		Channels: []runtimeevents.SourceChannel{runtimeevents.ChannelOpenCodePlugin},
+		Provider:  "opencode",
+		Protocol:  adapters.ProtocolOpenCodeNative,
+		Transport: adapters.TransportHTTPSSE,
+		Interrupt: adapters.InterruptTurn,
+		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelOpenCodePlugin},
 	}
 }
 

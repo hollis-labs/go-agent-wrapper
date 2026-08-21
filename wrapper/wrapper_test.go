@@ -16,7 +16,11 @@ type stubAdapter struct{}
 
 func (stubAdapter) Name() string { return "stub" }
 func (stubAdapter) Describe() adapters.Descriptor {
-	return adapters.Descriptor{Provider: "stub", Runtime: "stub"}
+	// Protocol/Transport are irrelevant here — stubAdapter doesn't
+	// implement adapters.RuntimeAdapter, so [Wrapper.Run] returns
+	// ErrAdapterNotRuntime before ever reading Describe()'s dispatch
+	// fields.
+	return adapters.Descriptor{Provider: "stub"}
 }
 func (stubAdapter) Resolve(adapters.ResolveContext) (adapters.Spec, error) {
 	return adapters.Spec{Binary: "/bin/true"}, nil

@@ -23,8 +23,14 @@ func TestDescribe(t *testing.T) {
 	if desc.Provider != "codex" {
 		t.Errorf("Provider = %q, want codex", desc.Provider)
 	}
-	if desc.Runtime != "jsonrpc-stdio" {
-		t.Errorf("Runtime = %q, want jsonrpc-stdio", desc.Runtime)
+	if desc.Protocol != adapters.ProtocolCodexAppServer {
+		t.Errorf("Protocol = %q, want %q", desc.Protocol, adapters.ProtocolCodexAppServer)
+	}
+	if desc.Transport != adapters.TransportStdio {
+		t.Errorf("Transport = %q, want %q", desc.Transport, adapters.TransportStdio)
+	}
+	if desc.Interrupt != adapters.InterruptProcess {
+		t.Errorf("Interrupt = %q, want %q", desc.Interrupt, adapters.InterruptProcess)
 	}
 	wantChannels := []runtimeevents.SourceChannel{runtimeevents.ChannelJSONRPC}
 	if !reflect.DeepEqual(desc.Channels, wantChannels) {

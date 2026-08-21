@@ -23,8 +23,14 @@ func TestDescribe(t *testing.T) {
 	if desc.Provider != "opencode" {
 		t.Errorf("Provider = %q, want opencode", desc.Provider)
 	}
-	if desc.Runtime != "http-sse" {
-		t.Errorf("Runtime = %q, want http-sse", desc.Runtime)
+	if desc.Protocol != adapters.ProtocolOpenCodeNative {
+		t.Errorf("Protocol = %q, want %q", desc.Protocol, adapters.ProtocolOpenCodeNative)
+	}
+	if desc.Transport != adapters.TransportHTTPSSE {
+		t.Errorf("Transport = %q, want %q", desc.Transport, adapters.TransportHTTPSSE)
+	}
+	if desc.Interrupt != adapters.InterruptTurn {
+		t.Errorf("Interrupt = %q, want %q", desc.Interrupt, adapters.InterruptTurn)
 	}
 	wantChannels := []runtimeevents.SourceChannel{runtimeevents.ChannelOpenCodePlugin}
 	if !reflect.DeepEqual(desc.Channels, wantChannels) {

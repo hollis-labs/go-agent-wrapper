@@ -176,8 +176,8 @@ func (w *Wrapper) SessionID() string { return w.sessionID }
 // Run drives the full session lifecycle:
 //
 //  1. Type-asserts Config.Adapter to [adapters.RuntimeAdapter].
-//  2. Maps [adapters.Descriptor.Runtime] to agentkit
-//     [agentsessions.Capabilities].
+//  2. Maps [adapters.Descriptor.Protocol] + [adapters.Descriptor.Transport]
+//     to agentkit [agentsessions.Capabilities].
 //  3. Constructs an [agentsessions.Runtime] via NewFromAdapter,
 //     calls Prepare, and Start.
 //  4. Fans [llmtypes.StreamEvent]s through [translateStreamEvent]
@@ -204,21 +204,21 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	}
 
 	desc := w.cfg.Adapter.Describe()
-	caps, err := runtimeCaps(desc.Runtime)
+	caps, err := runtimeCaps(desc.Protocol, desc.Transport)
 	if err != nil {
 		return err
 	}
 
 	w.cfg.Activity.Bind(w.cfg.App, w.sessionID, runtimeevents.Process{
 		Provider: desc.Provider,
-		Runtime:  desc.Runtime,
+		Runtime:  legacyRuntimeToken(desc.Protocol, desc.Transport),
 	})
 	source := runtimeevents.Source{
-		Channel:    runtimeSourceChannel(desc.Runtime),
+		Channel:    runtimeSourceChannel(desc.Protocol, desc.Transport),
 		Confidence: runtimeevents.ConfidenceExact,
 	}
 	rawSource := runtimeevents.Source{
-		Channel:    rawSourceChannel(desc.Runtime),
+		Channel:    rawSourceChannel(desc.Protocol, desc.Transport),
 		Confidence: runtimeevents.ConfidenceExact,
 	}
 	w.sessMu.Lock()

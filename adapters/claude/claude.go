@@ -47,16 +47,22 @@ func New(opts ...Option) *Adapter {
 // Name implements [adapters.Adapter].
 func (*Adapter) Name() string { return "claude" }
 
-// Describe implements [adapters.Adapter]. It advertises streaming-stdio
-// as the runtime and the Claude stream-JSON channel as the event
-// source. Hooks may add the [runtimeevents.ChannelHook] channel at
-// runtime depending on the planted hook configuration; that's recorded
-// at hook-plant time, not here.
+// Describe implements [adapters.Adapter]. It advertises Claude's
+// native stream-JSON protocol over stdio and the Claude stream-JSON
+// channel as the event source. Interrupt is [adapters.InterruptProcess]
+// — Claude's streaming-stdio session (agentkit's
+// streamingStdioSession) closes stdin and escalates to SIGTERM/SIGKILL
+// on Stop(); no wire-level cancel frame is sent. Hooks may add the
+// [runtimeevents.ChannelHook] channel at runtime depending on the
+// planted hook configuration; that's recorded at hook-plant time, not
+// here.
 func (*Adapter) Describe() adapters.Descriptor {
 	return adapters.Descriptor{
-		Provider: "claude",
-		Runtime:  "streaming-stdio",
-		Channels: []runtimeevents.SourceChannel{runtimeevents.ChannelClaudeStreamJSON},
+		Provider:  "claude",
+		Protocol:  adapters.ProtocolClaudeStreamJSON,
+		Transport: adapters.TransportStdio,
+		Interrupt: adapters.InterruptProcess,
+		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelClaudeStreamJSON},
 	}
 }
 
