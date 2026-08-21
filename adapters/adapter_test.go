@@ -11,9 +11,11 @@ type fakeAdapter struct{}
 func (fakeAdapter) Name() string { return "fake" }
 func (fakeAdapter) Describe() Descriptor {
 	return Descriptor{
-		Provider: "fake",
-		Runtime:  "pty",
-		Channels: []runtimeevents.SourceChannel{runtimeevents.ChannelPTY},
+		Provider:  "fake",
+		Protocol:  ProtocolPTYRaw,
+		Transport: TransportPTY,
+		Interrupt: InterruptProcess,
+		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelPTY},
 	}
 }
 func (fakeAdapter) Resolve(rc ResolveContext) (Spec, error) {
@@ -26,7 +28,7 @@ func TestAdapterContract(t *testing.T) {
 		t.Errorf("Name = %q, want fake", a.Name())
 	}
 	desc := a.Describe()
-	if desc.Provider != "fake" || desc.Runtime != "pty" {
+	if desc.Provider != "fake" || desc.Protocol != ProtocolPTYRaw || desc.Transport != TransportPTY {
 		t.Errorf("Describe = %+v", desc)
 	}
 	spec, err := a.Resolve(ResolveContext{Cwd: "/tmp/x"})

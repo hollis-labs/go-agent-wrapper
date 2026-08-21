@@ -5,36 +5,43 @@ import (
 	"testing"
 
 	"github.com/hollis-labs/agentkit/agentsessions"
+	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
 func TestRuntimeCapsMapping(t *testing.T) {
 	cases := []struct {
-		runtime string
-		want    agentsessions.Capabilities
+		name      string
+		protocol  adapters.Protocol
+		transport adapters.Transport
+		want      agentsessions.Capabilities
 	}{
-		{RuntimePTY, agentsessions.Capabilities{PTY: true, Resize: true, BinaryRequired: true}},
-		{RuntimeStreamingStdio, agentsessions.Capabilities{StreamingStdio: true, BinaryRequired: true}},
-		{RuntimeJSONRPCStdio, agentsessions.Capabilities{JsonRpcStdio: true, BinaryRequired: true}},
-		{RuntimeHTTPSSE, agentsessions.Capabilities{ServeHTTP: true, BinaryRequired: true}},
-		{RuntimeAdapter, agentsessions.Capabilities{BinaryRequired: true}},
-		{"", agentsessions.Capabilities{BinaryRequired: true}}, // empty == adapter
+		{"pty", adapters.ProtocolPTYRaw, adapters.TransportPTY,
+			agentsessions.Capabilities{PTY: true, Resize: true, BinaryRequired: true}},
+		{"claude stream-json/stdio", adapters.ProtocolClaudeStreamJSON, adapters.TransportStdio,
+			agentsessions.Capabilities{StreamingStdio: true, BinaryRequired: true}},
+		{"codex app-server/stdio", adapters.ProtocolCodexAppServer, adapters.TransportStdio,
+			agentsessions.Capabilities{JsonRpcStdio: true, BinaryRequired: true}},
+		{"opencode native/http-sse", adapters.ProtocolOpenCodeNative, adapters.TransportHTTPSSE,
+			agentsessions.Capabilities{ServeHTTP: true, BinaryRequired: true}},
+		{"unset (adapter fallback)", "", "",
+			agentsessions.Capabilities{BinaryRequired: true}}, // empty == adapter
 	}
 	for _, c := range cases {
-		t.Run(c.runtime, func(t *testing.T) {
-			got, err := runtimeCaps(c.runtime)
+		t.Run(c.name, func(t *testing.T) {
+			got, err := runtimeCaps(c.protocol, c.transport)
 			if err != nil {
-				t.Fatalf("runtimeCaps(%q): %v", c.runtime, err)
+				t.Fatalf("runtimeCaps(%q, %q): %v", c.protocol, c.transport, err)
 			}
 			if got != c.want {
-				t.Errorf("runtimeCaps(%q) = %+v\n  want %+v", c.runtime, got, c.want)
+				t.Errorf("runtimeCaps(%q, %q) = %+v\n  want %+v", c.protocol, c.transport, got, c.want)
 			}
 		})
 	}
 }
 
 func TestRuntimeCapsUnknownRuntime(t *testing.T) {
-	_, err := runtimeCaps("future-runtime-we-dont-know")
+	_, err := runtimeCaps(adapters.Protocol("future-protocol"), adapters.Transport("future-transport"))
 	if !errors.Is(err, ErrUnknownRuntime) {
 		t.Fatalf("err = %v, want errors.Is(err, ErrUnknownRuntime)", err)
 	}
@@ -43,12 +50,20 @@ func TestRuntimeCapsUnknownRuntime(t *testing.T) {
 func TestRuntimeCapsLifecycleFlagsMutuallyExclusive(t *testing.T) {
 	// Sanity: agentsessions itself rejects multiple lifecycle flags.
 	// The wrapper's mapping must produce caps that pass that check.
-	for _, rt := range []string{
-		RuntimePTY, RuntimeStreamingStdio, RuntimeJSONRPCStdio, RuntimeHTTPSSE, RuntimeAdapter, "",
-	} {
-		caps, err := runtimeCaps(rt)
+	combos := []struct {
+		protocol  adapters.Protocol
+		transport adapters.Transport
+	}{
+		{adapters.ProtocolPTYRaw, adapters.TransportPTY},
+		{adapters.ProtocolClaudeStreamJSON, adapters.TransportStdio},
+		{adapters.ProtocolCodexAppServer, adapters.TransportStdio},
+		{adapters.ProtocolOpenCodeNative, adapters.TransportHTTPSSE},
+		{"", ""},
+	}
+	for _, c := range combos {
+		caps, err := runtimeCaps(c.protocol, c.transport)
 		if err != nil {
-			t.Fatalf("runtimeCaps(%q): %v", rt, err)
+			t.Fatalf("runtimeCaps(%q, %q): %v", c.protocol, c.transport, err)
 		}
 		n := 0
 		if caps.PTY {
@@ -64,27 +79,75 @@ func TestRuntimeCapsLifecycleFlagsMutuallyExclusive(t *testing.T) {
 			n++
 		}
 		if n > 1 {
-			t.Errorf("runtime %q produced caps with %d lifecycle flags; want ≤ 1", rt, n)
+			t.Errorf("protocol=%q transport=%q produced caps with %d lifecycle flags; want ≤ 1",
+				c.protocol, c.transport, n)
 		}
 	}
 }
 
 func TestRuntimeSourceChannel(t *testing.T) {
 	cases := []struct {
-		runtime string
-		want    runtimeevents.SourceChannel
+		name      string
+		protocol  adapters.Protocol
+		transport adapters.Transport
+		want      runtimeevents.SourceChannel
 	}{
-		{RuntimePTY, runtimeevents.ChannelPTY},
-		{RuntimeJSONRPCStdio, runtimeevents.ChannelJSONRPC},
-		{RuntimeStreamingStdio, runtimeevents.ChannelStdio},
-		{RuntimeAdapter, runtimeevents.ChannelStdio},
-		{"", runtimeevents.ChannelStdio},
-		{"unknown-future", runtimeevents.ChannelStdio}, // safe default
+		{"pty", adapters.ProtocolPTYRaw, adapters.TransportPTY, runtimeevents.ChannelPTY},
+		{"codex jsonrpc", adapters.ProtocolCodexAppServer, adapters.TransportStdio, runtimeevents.ChannelJSONRPC},
+		{"claude streaming-stdio", adapters.ProtocolClaudeStreamJSON, adapters.TransportStdio, runtimeevents.ChannelStdio},
+		{"opencode http-sse (no dedicated case, falls to default)", adapters.ProtocolOpenCodeNative, adapters.TransportHTTPSSE, runtimeevents.ChannelStdio},
+		{"unset (adapter fallback)", "", "", runtimeevents.ChannelStdio},
+		{"unknown future combo", adapters.Protocol("unknown-future"), adapters.Transport("unknown-future"), runtimeevents.ChannelStdio}, // safe default
 	}
 	for _, c := range cases {
-		t.Run(c.runtime, func(t *testing.T) {
-			if got := runtimeSourceChannel(c.runtime); got != c.want {
-				t.Errorf("runtimeSourceChannel(%q) = %q, want %q", c.runtime, got, c.want)
+		t.Run(c.name, func(t *testing.T) {
+			if got := runtimeSourceChannel(c.protocol, c.transport); got != c.want {
+				t.Errorf("runtimeSourceChannel(%q, %q) = %q, want %q", c.protocol, c.transport, got, c.want)
+			}
+		})
+	}
+}
+
+func TestRawSourceChannel(t *testing.T) {
+	cases := []struct {
+		name      string
+		protocol  adapters.Protocol
+		transport adapters.Transport
+		want      runtimeevents.SourceChannel
+	}{
+		{"pty", adapters.ProtocolPTYRaw, adapters.TransportPTY, runtimeevents.ChannelPTY},
+		{"claude streaming-stdio", adapters.ProtocolClaudeStreamJSON, adapters.TransportStdio, runtimeevents.ChannelStdio},
+		{"codex jsonrpc-stdio", adapters.ProtocolCodexAppServer, adapters.TransportStdio, runtimeevents.ChannelStdio},
+		{"opencode http-sse", adapters.ProtocolOpenCodeNative, adapters.TransportHTTPSSE, runtimeevents.ChannelStdio},
+		{"unset (adapter fallback)", "", "", runtimeevents.ChannelStdio},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := rawSourceChannel(c.protocol, c.transport); got != c.want {
+				t.Errorf("rawSourceChannel(%q, %q) = %q, want %q", c.protocol, c.transport, got, c.want)
+			}
+		})
+	}
+}
+
+func TestLegacyRuntimeToken(t *testing.T) {
+	cases := []struct {
+		name      string
+		protocol  adapters.Protocol
+		transport adapters.Transport
+		want      string
+	}{
+		{"pty", adapters.ProtocolPTYRaw, adapters.TransportPTY, RuntimePTY},
+		{"claude streaming-stdio", adapters.ProtocolClaudeStreamJSON, adapters.TransportStdio, RuntimeStreamingStdio},
+		{"codex jsonrpc-stdio", adapters.ProtocolCodexAppServer, adapters.TransportStdio, RuntimeJSONRPCStdio},
+		{"opencode http-sse", adapters.ProtocolOpenCodeNative, adapters.TransportHTTPSSE, RuntimeHTTPSSE},
+		{"unset (adapter fallback)", "", "", RuntimeAdapter},
+		{"unrecognized combo", adapters.Protocol("future"), adapters.Transport("future"), ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := legacyRuntimeToken(c.protocol, c.transport); got != c.want {
+				t.Errorf("legacyRuntimeToken(%q, %q) = %q, want %q", c.protocol, c.transport, got, c.want)
 			}
 		})
 	}

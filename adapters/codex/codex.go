@@ -47,13 +47,19 @@ func New(opts ...Option) *Adapter {
 // Name implements [adapters.Adapter].
 func (*Adapter) Name() string { return "codex" }
 
-// Describe implements [adapters.Adapter]. It advertises jsonrpc-stdio
-// as the runtime and the JSON-RPC channel as the event source.
+// Describe implements [adapters.Adapter]. It advertises Codex's native
+// app-server JSON-RPC protocol over stdio and the JSON-RPC channel as
+// the event source. Interrupt is [adapters.InterruptProcess] — Codex's
+// jsonrpc-stdio session (agentkit's jsonRpcStdioSession) closes stdin
+// and escalates to SIGTERM/SIGKILL on Stop(); no JSON-RPC
+// turn/interrupt call is sent before killing the process.
 func (*Adapter) Describe() adapters.Descriptor {
 	return adapters.Descriptor{
-		Provider: "codex",
-		Runtime:  "jsonrpc-stdio",
-		Channels: []runtimeevents.SourceChannel{runtimeevents.ChannelJSONRPC},
+		Provider:  "codex",
+		Protocol:  adapters.ProtocolCodexAppServer,
+		Transport: adapters.TransportStdio,
+		Interrupt: adapters.InterruptProcess,
+		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelJSONRPC},
 	}
 }
 

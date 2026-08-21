@@ -23,8 +23,14 @@ func TestDescribe(t *testing.T) {
 	if desc.Provider != "claude" {
 		t.Errorf("Provider = %q, want claude", desc.Provider)
 	}
-	if desc.Runtime != "streaming-stdio" {
-		t.Errorf("Runtime = %q, want streaming-stdio", desc.Runtime)
+	if desc.Protocol != adapters.ProtocolClaudeStreamJSON {
+		t.Errorf("Protocol = %q, want %q", desc.Protocol, adapters.ProtocolClaudeStreamJSON)
+	}
+	if desc.Transport != adapters.TransportStdio {
+		t.Errorf("Transport = %q, want %q", desc.Transport, adapters.TransportStdio)
+	}
+	if desc.Interrupt != adapters.InterruptProcess {
+		t.Errorf("Interrupt = %q, want %q", desc.Interrupt, adapters.InterruptProcess)
 	}
 	wantChannels := []runtimeevents.SourceChannel{runtimeevents.ChannelClaudeStreamJSON}
 	if !reflect.DeepEqual(desc.Channels, wantChannels) {

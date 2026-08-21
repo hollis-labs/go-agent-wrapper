@@ -84,8 +84,12 @@ func (a *fakeRuntimeAdapter) Name() string { return a.cli.name }
 func (a *fakeRuntimeAdapter) Describe() adapters.Descriptor {
 	return adapters.Descriptor{
 		Provider: a.cli.name,
-		Runtime:  RuntimeAdapter, // subprocess-per-turn — script runs to completion
-		Channels: []runtimeevents.SourceChannel{runtimeevents.ChannelStdio},
+		// Protocol/Transport intentionally left unset — subprocess-
+		// per-turn fallback shape (no agentkit lifecycle flag), the
+		// legacy RuntimeAdapter token's equivalent under the
+		// Protocol/Transport split. The script runs to completion.
+		Interrupt: adapters.InterruptProcess,
+		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelStdio},
 	}
 }
 
