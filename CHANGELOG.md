@@ -4,6 +4,94 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.0 — 2026-08-21
+
+**New `adapters/piacp` package** (`TASKS/agent-host-acp/15`, Nanite's own
+tracker): the first bridge-mediated ACP adapter and Pi's (`earendil-works/pi`)
+first appearance as a supported agent anywhere in go-agent-wrapper — no prior
+native Pi adapter exists in this repo. Per task 12's operator-approved
+decision (Nanite repo, `TASKS/ESCALATIONS.md`, 2026-08-21 "Task 12 resolved"),
+the pinned bridge is `svkozak/pi-acp` (npm package, `npx -y pi-acp`, no
+separate install required) — the ACP registry's canonical Pi bridge.
+
+### Added
+
+- **`piacp.Client`** — a real, self-contained `acp.Client` implementation.
+  Spawns and owns `npx -y pi-acp` (configurable via `WithClientBinary`/the
+  `PIACP_CLI_PATH` env var, in which case the default `-y pi-acp` npx
+  arguments are omitted rather than nonsensically prepended to an
+  already-resolved binary) directly via os/exec; real request/response
+  correlation (an id-keyed pending map), real `session/update` notification
+  dispatch. Wire behavior — newline-delimited JSON-RPC 2.0;
+  `initialize`/`session/new`/`session/load`/`session/prompt`/
+  `session/cancel`/`session/update` shapes — was verified directly against a
+  real `pi-acp` 0.0.33 bridge driving a real `pi` 0.84.2 process, not assumed
+  from documentation. One real, load-bearing shape difference from
+  opencodeacp's `session/load` found by testing: pi-acp's `session/load`
+  result carries no `sessionId` field (unlike `session/new`'s) — the caller
+  must keep using the id it requested resume with; confirmed via a genuine
+  cross-process resume (kill the original `pi-acp` process, resume from a
+  fresh one).
+- **Verified live `InterruptCapability`: `adapters.InterruptTurn`.**
+  `session/cancel` was tested against a definitely-still-running `bash` tool
+  subprocess (a real `sleep`-based counting loop, confirmed in-flight via
+  several real terminal-output ticks over multiple wall-clock seconds before
+  cancellation, deliberately not relying on model-generation speed for the
+  timing claim): the in-flight tool call transitioned to `status: "failed"`
+  and the `session/prompt` response arrived with `stopReason: "cancelled"`
+  within single-digit milliseconds — a genuine mid-turn abort, not
+  acknowledge-and-let-finish. A follow-up prompt on the same session
+  completed normally afterward, confirming the session itself survives
+  cancellation (turn-scoped, matching ACP's own semantics for the
+  misleadingly-named `session/cancel` method).
+- **`session/update` → `runtimeevents` mapping**: `agent_message_chunk` →
+  `agent.delta` (verified live); `agent_thought_chunk` → `agent.delta`
+  (mapped defensively but unverified — pi-acp's own README documents "no
+  separate thought stream" as a current limitation, so this is dead code
+  today); `tool_call`/`tool_call_update` → `agent.tool_use`/
+  `agent.tool_result`, including pi-acp-specific real incremental
+  `terminal_output`/`terminal_exit` metadata for `execute`-kind (bash) tool
+  calls, surfaced in the event payload rather than dropped.
+  `session_info_update`/`available_commands_update`/`user_message_chunk`
+  (the last observed only as a `session/load` resume-replay artifact) are
+  deliberately left unmapped (no current runtimeevents analog). No
+  `fs/*`/`terminal/*`/`session/request_permission` server-initiated request
+  was ever observed — per pi-acp's own README this is a documented,
+  permanent design limitation ("pi reads/writes and executes locally"), not
+  an untested unknown; any such request is still declined defensively rather
+  than left to hang.
+- **`piacp.Adapter`** — `adapters.Adapter` + `adapters.RuntimeAdapter`
+  (`Name() == "pi-acp"`, `Descriptor.Provider == "pi"`). `CLIAdapter()`
+  returns a `provider.CLIAdapter` shim mirroring opencodeacp's own precedent
+  exactly: real Detect/BuildArgs (so a `wrapper.Wrapper.Run()` caller spawns
+  the one real bridge process, not a duplicate) and a pass-through ParseLine
+  — the same confirmed seam-gap finding tasks 08/09/10 already documented
+  (go-providers' `CLIAdapter` interface has no hook for a bidirectionally-real
+  JSON-RPC session once agentkit owns the spawned process's stdin). Real,
+  live-verified ACP driving in this package goes through `Client` directly.
+- **Explicit Node.js/npm/npx runtime requirement documented** in the package
+  doc comment, per the operator's own framing at task 12's decision: a real,
+  deliberate, and reversible choice — `acp.Client` already isolates every
+  caller from the concrete implementation, so replacing this package with a
+  pure-Go Pi bridge later (if one matures) is a new implementation, not a
+  rearchitecture. Same requirement already applies to this repo's Claude/
+  Codex bridge-mediated ACP adapters (tasks 13/14).
+
+### Verified live (not mocked), against a real local backend
+
+No cloud provider (`anthropic`/`openai`/`google`) had usable credentials on
+the machine this package was implemented and verified against — `pi auth
+check` returned real `credentials_not_configured` for all three. Rather than
+skip live verification, `pi` was wired to a real, locally-running Ollama
+model (`llama3.1:8b`) via its own documented Custom Providers mechanism
+(`~/.pi/agent/models.json`) — a real LLM backend, not a mock, just a free
+local one instead of a paid cloud one; the ACP wire behavior this package
+depends on is a property of pi-acp/pi's own implementation, independent of
+model choice. `TestLiveClientCompletesOneRealTurn` and
+`TestLiveClientCancelAbortsMidGeneration` (both skip, not fail, when
+`npx`/`pi` aren't on PATH or Launch fails for an environment reason) passed
+for real, including under `-race`.
+
 ## v0.7.0 — 2026-08-21
 
 **New `adapters/copilotacp` package** (`TASKS/agent-host-acp/10`, Nanite's
