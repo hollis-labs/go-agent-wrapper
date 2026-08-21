@@ -4,6 +4,73 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.0 — 2026-08-21
+
+**New `adapters/opencodeacp` package** (`TASKS/agent-host-acp/09`, Nanite's
+own tracker): the first native ACP adapter — OpenCode, driven via its
+own documented `opencode acp` subprocess mode. Additive alongside the
+existing `adapters/opencode` (native HTTP/SSE protocol, untouched) —
+both stay independently selectable.
+
+### Added
+
+- **`opencodeacp.Client`** — a real, self-contained `acp.Client`
+  implementation. Spawns and owns `opencode acp` directly via os/exec
+  (real request/response correlation, real notification dispatch — no
+  bridge library, no dependency on go-agent-wrapper's own agentkit/
+  jsonrpc-stdio machinery). Wire behavior (newline-delimited JSON-RPC
+  2.0; `initialize`/`session/new`/`session/load`/`session/prompt`/
+  `session/cancel`/`session/update` shapes, including the
+  `update.sessionUpdate` discriminator field name a scraped spec
+  summary got wrong) was verified directly against a real opencode
+  1.15.6 binary, not assumed from documentation — see the package doc
+  for the full empirical findings.
+- **Verified live `InterruptCapability`: `adapters.InterruptTurn`.**
+  `session/cancel` was tested mid-generation against a real long-form
+  prompt: the turn's terminal response arrived ~35ms after Cancel, with
+  generation only a few chunks in — a genuine abort, not
+  acknowledge-and-let-finish. Matches the native (non-ACP) OpenCode
+  adapter's own already-verified `Stop()` capability tier.
+- **`session/update` → `runtimeevents` mapping**, per
+  docs/engineering/architecture/17-acp.md's mapping: `agent_message_chunk`/
+  `agent_thought_chunk` → `agent.delta`; `tool_call`/`tool_call_update` →
+  `agent.tool_use`/`agent.tool_result`; the server-initiated
+  `session/request_permission` request → `agent.permission_requested`/
+  `resolved` (answered with a well-formed ACP "cancelled" outcome — no
+  interactive approval mechanism is wired into this Client; that is
+  Nanite's own policy layer, upstream of this package).
+  `available_commands_update`/`usage_update`/`plan`-style informational
+  variants are deliberately left unmapped.
+- **`opencodeacp.Adapter`** — `adapters.Adapter` + `adapters.RuntimeAdapter`
+  (`Name() == "opencode-acp"`, distinct from the native adapter's
+  `"opencode"`; `Descriptor.Provider == "opencode"`, same upstream
+  identity). `CLIAdapter()` returns a `provider.CLIAdapter` bridge that
+  deliberately mirrors `adapters/codex`'s own app-server shape (real
+  Detect/BuildArgs, pass-through ParseLine) rather than trying to drive
+  a real session through it — see the package doc's "Client ownership
+  of the subprocess" section for the underlying seam-gap finding this
+  is built around (go-providers' CLIAdapter interface has no hook for a
+  bidirectionally-real, response-correlated session once agentkit spawns
+  the process, and no shipped adapter in this repo — including the
+  existing Codex app-server one — has that wired through
+  `wrapper.Wrapper.Run()` today).
+
+### Verified live (not mocked)
+
+Both against a real, authenticated `opencode acp` (1.15.6) subprocess,
+via this package's own `TestLiveClientCompletesOneRealTurn` and
+`TestLiveClientCancelAbortsMidGeneration` (skip, not fail, when
+`opencode` isn't on PATH or Launch fails for an environment reason):
+one full real turn (`session/prompt` → streamed `agent.delta` → real
+`turn.completed`) and one real mid-generation cancel (turn.completed
+arriving in tens of milliseconds, not after natural completion).
+
+### Notes
+
+- No new dependency: `adapters/opencodeacp` imports only `acp`,
+  `adapters` (this module), `go-providers/provider`, `go-llm-types`, and
+  `go-runtime-events` — all already required. `go.mod` is unchanged.
+
 ## v0.5.0 — 2026-08-21
 
 **New `acp` package** (`TASKS/agent-host-acp/08`, Nanite's own tracker):
