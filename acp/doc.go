@@ -1,7 +1,7 @@
 // Package acp defines the ACP (Agent Client Protocol,
 // agentclientprotocol.com) client abstraction: the "intent" tier a
-// Hollis host process (go-agent-wrapper's wrapper.Wrapper, via the
-// adapters.Adapter/RuntimeAdapter seam) drives an underlying
+// Hollis host process (go-agent-wrapper's wrapper.Wrapper, via an
+// adapters.Adapter implementing ClientAdapter) drives an underlying
 // ACP-speaking agent through, independent of which concrete
 // implementation sits underneath it.
 //
@@ -13,10 +13,15 @@
 // docs/engineering/architecture/17-acp.md in the sibling Nanite repo
 // (hollis-labs/apps/nanite) for the full architecture.
 //
-// Two kinds of concrete Client implementation sit below this package's
-// Client interface, built by separate tasks — this package defines only
-// the interface and its wiring into adapters.Descriptor, not any
-// concrete connection logic:
+// Manager owns the complete lifecycle: duplicate-safe registration,
+// initialize/authenticate, create-or-resume, session configuration, prompting,
+// turn cancellation, close, liveness snapshots, normalized terminal outcomes,
+// and automatic unregister/cleanup. Wrapper delegates ACP adapters to this
+// path directly for both stdio and TCP; it does not rely on agentkit's generic
+// capture-only JSON-RPC runtime.
+//
+// Two kinds of concrete Client implementation sit below this package's Client
+// interface:
 //
 //   - Native ACP agents (OpenCode via `opencode acp`, Copilot CLI via
 //     `--acp`) — a thin, direct ACP wire connection to the real

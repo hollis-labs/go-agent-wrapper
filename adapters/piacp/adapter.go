@@ -128,22 +128,17 @@ var ErrPTYUnsupported = errors.New("piacp: adapter does not support PTY allocati
 // JsonRpcStdio, per go-agent-wrapper's runtime_dispatch.go) without
 // ErrUnknownRuntime.
 //
-// This bridge deliberately mirrors opencodeacp's own [cliAdapter] shape
-// exactly (itself mirroring adapters/codex's pre-existing
-// provider.NewCodexAdapterAppServer() precedent): real Detect/BuildArgs
-// (so the ONE real bridge process agentkit spawns is the genuine
-// article, not a duplicate) and a pass-through ParseLine returning (nil,
-// nil) — see the package doc's "Client ownership of the bridge
-// subprocess" section for why. Real, live-verified ACP driving for this
-// task goes through [Client] directly (used standalone, not via this
-// bridge) — [cliAdapter] exists for interface completeness and dispatch-
-// table compatibility, matching this repo's other jsonrpc-stdio
-// adapters.
+// This compatibility shape retains real Detect/BuildArgs and a pass-through
+// ParseLine. Wrapper.Run selects [Adapter.ACPClient] for ProtocolACP, so its
+// end-to-end protocol lifecycle does not run through this read-only seam.
 func (a *Adapter) CLIAdapter() provider.CLIAdapter {
 	binary := a.binary
 	extraArgs := append([]string(nil), a.extraArgs...)
 	return &cliAdapter{binary: binary, extraArgs: extraArgs}
 }
+
+// ACPClient implements [acp.ClientAdapter].
+func (a *Adapter) ACPClient() acp.Client { return a.newClient() }
 
 // cliAdapter implements go-providers' provider.CLIAdapter for the
 // `npx -y pi-acp` (or overridden) exec shape. See [Adapter.CLIAdapter]'s
@@ -201,5 +196,6 @@ func (a *cliAdapter) ParseLine([]byte) ([]llmtypes.StreamEvent, error) {
 var (
 	_ adapters.Adapter        = (*Adapter)(nil)
 	_ adapters.RuntimeAdapter = (*Adapter)(nil)
+	_ acp.ClientAdapter       = (*Adapter)(nil)
 	_ provider.CLIAdapter     = (*cliAdapter)(nil)
 )

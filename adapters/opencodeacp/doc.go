@@ -54,29 +54,14 @@
 // (adapters/opencode's `/global/dispose` + `/session/{id}/abort`) —
 // both wire shapes reach the same underlying OpenCode abort mechanism.
 //
-// # Client ownership of the subprocess (a documented seam gap, not an
-// oversight)
+// # Wrapper-owned lifecycle
 //
 // [Client] spawns and owns its `opencode acp` subprocess directly via
 // os/exec — real request/response correlation (an id-keyed pending map)
-// and real notification dispatch, entirely self-contained. This is
-// deliberate, not incidental: [acp.LaunchParams] carries Cwd/Env (spawn
-// ingredients, not "attach to an existing connection" parameters), and
-// go-providers' provider.CLIAdapter interface (Detect/BuildArgs/
-// ParseLine) — the only seam [Adapter.CLIAdapter] can return through —
-// has no hook that hands a caller access to the process's real stdin
-// once agentkit spawns it, and no hook to make an outbound,
-// response-correlated call. [cliAdapter] (this package's
-// [adapters.RuntimeAdapter] glue) therefore follows the SAME shape
-// go-agent-wrapper's own shipped Codex app-server adapter
-// (adapters/codex, provider.NewCodexAdapterAppServer) already uses for
-// this exact situation: real Detect/BuildArgs (so a Wrapper.Run() caller
-// spawns the one real process, not a duplicate), ParseLine as a pure
-// pass-through returning (nil, nil) — "JSON-RPC framing, request
-// correlation, and event mapping live in the consumer runtime" per that
-// adapter's own doc comment, not yet wired through wrapper.Wrapper for
-// EITHER provider. Real, live-verified ACP driving in this task goes
-// through [Client] directly, not through wrapper.Wrapper.Run() — see
-// this package's Work Log entry (TASKS/agent-host-acp/09, Nanite repo)
-// for the full finding and its scope rationale.
+// and real notification dispatch, entirely self-contained. [Adapter] exposes
+// a fresh client through [acp.ClientAdapter], and wrapper.Wrapper owns its full
+// initialize/auth/config, create-or-resume, prompt/cancel, liveness, and
+// cleanup lifecycle through [acp.Manager]. The provider.CLIAdapter remains
+// compatibility/introspection glue; Wrapper selects ClientAdapter for
+// ProtocolACP.
 package opencodeacp

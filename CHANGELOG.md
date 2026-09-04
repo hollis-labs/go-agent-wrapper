@@ -6,7 +6,28 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+- **Wrapper-owned ACP session lifecycle.** `acp.Manager` and its managed
+  `Session` now own registration, initialize/authenticate, create-or-resume,
+  deterministic mode/config application, prompts, turn-scoped cancellation,
+  close, liveness snapshots, provider session-id readback, automatic
+  unregister, and exactly-once client cleanup. `Wrapper.Run` uses this path for
+  every shipped ACP adapter (Claude, Codex, Copilot, OpenCode, and Pi), including
+  Copilot's TCP transport; hosts no longer need a parallel direct `acp.Client`
+  or liveness registry.
+- Added typed ACP terminal outcomes for unexpected disconnect, child-process
+  exit, malformed streams, and canceled operations, plus bounded redacted
+  stderr/protocol diagnostics through `Config.OnACPDiagnostic`.
+- Added `Wrapper.CancelTurn`, `ProviderSessionID`, `ACPSnapshot`, and
+  `ACPManager`, with `Config` controls for ACP authentication, session mode,
+  and session configuration.
+
 ### Changed
+
+- Serialized each `activity.Bridge` sequence assignment with its sink write so
+  concurrent lifecycle, heartbeat, and stream producers cannot deliver event
+  sequence N+1 before N.
 
 - **Breaking: the post-hoc policy callback is now explicitly observational.**
   The v0.8.1 API exposed action-shaped names even though `Wrapper.Run`
@@ -57,6 +78,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Tests
 
+- Added real subprocess ACP fixtures covering fresh/resumed handshake,
+  authentication/configuration, provider session IDs, prompt/cancel/re-prompt,
+  disconnect, malformed stream, child exit, and exactly-once cleanup across all
+  five shipped adapters, plus Copilot TCP coverage and lifecycle race/stress
+  coverage.
 - Added a native subprocess characterization proving a block recommendation is
   produced only after the child has already created a side-effect marker.
 - Added ACP protocol coverage proving Claude's default cancelled response

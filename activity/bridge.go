@@ -2,6 +2,7 @@ package activity
 
 import (
 	"context"
+	"sync"
 
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
@@ -16,7 +17,8 @@ import (
 // forwards Emit calls. Apps that need finer control can fetch the
 // underlying Emitter via [Bridge.Emitter].
 type Bridge struct {
-	em *runtimeevents.Emitter
+	em     *runtimeevents.Emitter
+	emitMu sync.Mutex
 }
 
 // NewBridge returns a Bridge that writes events to sink. A nil sink is
@@ -58,5 +60,11 @@ func (b *Bridge) Emit(
 	payload any,
 	opts ...runtimeevents.EmitOption,
 ) error {
+	// Emitter's sequencer is concurrency-safe, but assigning a sequence and
+	// invoking the sink are separate operations. Serialize the complete write
+	// so concurrent lifecycle, stream and heartbeat producers cannot deliver
+	// sequence N+1 before N.
+	b.emitMu.Lock()
+	defer b.emitMu.Unlock()
 	return b.em.Emit(ctx, kind, source, payload, opts...)
 }

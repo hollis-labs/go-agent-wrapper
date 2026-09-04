@@ -149,25 +149,14 @@
 // provider extensibility with an honest per-adapter capabilities map, not
 // chasing interrupt capability for its own sake.
 //
-// # Client ownership of the subprocess (the same documented seam gap
-// [adapters/opencodeacp] and [adapters/copilotacp] already found, not a
-// new one)
+// # Wrapper-owned lifecycle
 //
 // [Client] spawns and owns its bridge subprocess directly via os/exec —
 // real request/response correlation (an id-keyed pending map) and real
 // notification dispatch, entirely self-contained, mirroring
-// [adapters/opencodeacp.Client]'s own structure exactly. This is
-// deliberate, not incidental, for the same reason task 09 already
-// documented: go-providers' provider.CLIAdapter interface
-// (Detect/BuildArgs/ParseLine) — the only seam [Adapter.CLIAdapter] can
-// return through — has no hook that hands a caller access to the
-// process's real stdin once agentkit spawns it, and no hook to make an
-// outbound, response-correlated call. [cliAdapter] (this package's
-// [adapters.RuntimeAdapter] glue) follows the SAME shape
-// [adapters/opencodeacp]'s and [adapters/codex]'s own shipped adapters
-// already use for this exact situation: real Detect/BuildArgs (so a
-// Wrapper.Run() caller spawns the one real process, not a duplicate),
-// ParseLine as a pure pass-through returning (nil, nil). Real,
-// live-verified ACP driving in this task goes through [Client] directly,
-// not through wrapper.Wrapper.Run().
+// [adapters/opencodeacp.Client]'s own structure. [Adapter] exposes a fresh
+// client through [acp.ClientAdapter], and wrapper.Wrapper owns that client's
+// full handshake, prompt/cancel, liveness, and cleanup through [acp.Manager].
+// [Adapter.CLIAdapter] remains compatibility/introspection glue only; Wrapper
+// deliberately selects ClientAdapter first for ProtocolACP.
 package claudeacp

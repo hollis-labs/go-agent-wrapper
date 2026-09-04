@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -113,9 +114,12 @@ type Client struct {
 	clientName    string
 	clientVersion string
 	stderr        io.Writer
+	diagnosticMu  sync.Mutex
+	diagnostic    func(acp.Diagnostic)
 
 	mu            sync.Mutex
 	started       bool
+	closed        bool
 	launched      bool
 	cmd           *exec.Cmd
 	conn          net.Conn
@@ -123,6 +127,7 @@ type Client struct {
 	writer        io.Writer
 	sessionID     string
 	systemPrompt  string
+	sessionClose  bool
 	turnInFlight  bool
 	currentTurnID string
 
@@ -150,6 +155,9 @@ type Client struct {
 	eventsOnce   sync.Once
 	closeOnce    sync.Once
 	readerDone   chan struct{}
+	waitDone     chan struct{}
+	waitErr      error
+	closeErr     error
 }
 
 // NewClient returns a [Client] for the given transport. Configure via
@@ -192,6 +200,7 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 		return ErrAlreadyLaunched
 	}
 	c.launched = true
+	c.diagnostic = params.OnDiagnostic
 	c.mu.Unlock()
 
 	var reader io.Reader
@@ -210,8 +219,16 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 
 	c.mu.Lock()
 	c.started = true
+	cmd := c.cmd
+	if cmd != nil {
+		c.waitDone = make(chan struct{})
+	}
 	c.mu.Unlock()
 	go c.readLoop(reader)
+	if cmd != nil {
+		c.pushEvent(runtimeevents.Event{Kind: runtimeevents.KindProcessStarted, Payload: marshalPayload(map[string]any{"pid": cmd.Process.Pid})})
+		go c.waitProcess()
+	}
 
 	initParams := initializeParams{
 		ProtocolVersion: acpProtocolVersion,
@@ -221,25 +238,46 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 		},
 		ClientInfo: clientInfo{Name: c.clientName, Version: c.clientVersion},
 	}
-	if _, err := c.call(ctx, "initialize", initParams); err != nil {
+	initializeResult, err := c.call(ctx, "initialize", initParams)
+	if err != nil {
 		_ = c.Close(ctx)
 		return fmt.Errorf("copilotacp: initialize: %w", err)
 	}
-
-	newParams := sessionNewParams{Cwd: params.Cwd, MCPServers: []any{}}
-	result, err := c.call(ctx, "session/new", newParams)
-	if err != nil {
+	if err := c.authenticate(ctx, initializeResult, params.AuthMethodID); err != nil {
 		_ = c.Close(ctx)
-		return fmt.Errorf("copilotacp: session/new: %w", err)
+		return fmt.Errorf("copilotacp: authenticate: %w", err)
 	}
-	var sr sessionNewResult
-	if err := json.Unmarshal(result, &sr); err != nil || sr.SessionID == "" {
-		_ = c.Close(ctx)
-		return fmt.Errorf("copilotacp: session/new: response missing sessionId")
+	c.mu.Lock()
+	c.sessionClose = acp.InitializeSupportsSessionClose(initializeResult)
+	c.mu.Unlock()
+
+	sessionID := ""
+	if params.SessionIDPreset != "" {
+		if _, loadErr := c.call(ctx, "session/load", map[string]any{
+			"sessionId":  params.SessionIDPreset,
+			"cwd":        params.Cwd,
+			"mcpServers": []any{},
+		}); loadErr == nil {
+			sessionID = params.SessionIDPreset
+		}
+	}
+	if sessionID == "" {
+		newParams := sessionNewParams{Cwd: params.Cwd, MCPServers: []any{}}
+		result, newErr := c.call(ctx, "session/new", newParams)
+		if newErr != nil {
+			_ = c.Close(ctx)
+			return fmt.Errorf("copilotacp: session/new: %w", newErr)
+		}
+		var sr sessionNewResult
+		if decodeErr := json.Unmarshal(result, &sr); decodeErr != nil || sr.SessionID == "" {
+			_ = c.Close(ctx)
+			return fmt.Errorf("copilotacp: session/new: response missing sessionId")
+		}
+		sessionID = sr.SessionID
 	}
 
 	c.mu.Lock()
-	c.sessionID = sr.SessionID
+	c.sessionID = sessionID
 	// LaunchParams.SystemPrompt: real ACP's initialize/session/new
 	// params (confirmed live) carry no client-supplied system-prompt
 	// field. Rather than silently dropping it (which [acp.LaunchParams]'
@@ -249,8 +287,68 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	// given no dedicated handshake field exists.
 	c.systemPrompt = params.SystemPrompt
 	c.mu.Unlock()
+	if err := c.configureSession(ctx, params); err != nil {
+		_ = c.Close(ctx)
+		return fmt.Errorf("copilotacp: configure session: %w", err)
+	}
 
 	c.pushEvent(runtimeevents.Event{Kind: runtimeevents.KindSessionReady})
+	return nil
+}
+
+func (c *Client) authenticate(ctx context.Context, initializeResult json.RawMessage, methodID string) error {
+	if methodID == "" {
+		return nil
+	}
+	var response struct {
+		AuthMethods []struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"authMethods"`
+	}
+	if err := json.Unmarshal(initializeResult, &response); err != nil {
+		return fmt.Errorf("decode initialize authMethods: %w", err)
+	}
+	for _, method := range response.AuthMethods {
+		if method.ID != methodID {
+			continue
+		}
+		if method.Type == "terminal" {
+			return fmt.Errorf("authentication method %q requires an interactive terminal", methodID)
+		}
+		_, err := c.call(ctx, "authenticate", map[string]any{"methodId": methodID})
+		return err
+	}
+	return fmt.Errorf("authentication method %q was not advertised", methodID)
+}
+
+func (c *Client) configureSession(ctx context.Context, params acp.LaunchParams) error {
+	sessionID := c.ProviderSessionID()
+	if params.SessionModeID != "" {
+		if _, err := c.call(ctx, "session/set_mode", map[string]any{"sessionId": sessionID, "modeId": params.SessionModeID}); err != nil {
+			return err
+		}
+	}
+	keys := make([]string, 0, len(params.SessionConfig))
+	for key := range params.SessionConfig {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := params.SessionConfig[key]
+		switch value.(type) {
+		case string, bool:
+		default:
+			return fmt.Errorf("option %q has unsupported value type %T (want string or bool)", key, value)
+		}
+		request := map[string]any{"sessionId": sessionID, "configId": key, "value": value}
+		if _, ok := value.(bool); ok {
+			request["type"] = "boolean"
+		}
+		if _, err := c.call(ctx, "session/set_config_option", request); err != nil {
+			return fmt.Errorf("option %q: %w", key, err)
+		}
+	}
 	return nil
 }
 
@@ -271,6 +369,14 @@ func (c *Client) startStdio(params acp.LaunchParams) (io.Reader, error) {
 	if c.stderr != nil {
 		cmd.Stderr = c.stderr
 	}
+	var stderrPipe io.ReadCloser
+	if c.stderr == nil && c.diagnostic != nil {
+		var pipeErr error
+		stderrPipe, pipeErr = cmd.StderrPipe()
+		if pipeErr != nil {
+			return nil, fmt.Errorf("copilotacp: stderr pipe: %w", pipeErr)
+		}
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -282,6 +388,9 @@ func (c *Client) startStdio(params acp.LaunchParams) (io.Reader, error) {
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("copilotacp: start %s --acp: %w", binary, err)
+	}
+	if stderrPipe != nil {
+		go c.drainStderr(stderrPipe)
 	}
 
 	c.mu.Lock()
@@ -326,8 +435,19 @@ func (c *Client) startTCP(ctx context.Context, params acp.LaunchParams) (io.Read
 		if c.stderr != nil {
 			cmd.Stderr = c.stderr
 		}
+		var stderrPipe io.ReadCloser
+		if c.stderr == nil && c.diagnostic != nil {
+			var pipeErr error
+			stderrPipe, pipeErr = cmd.StderrPipe()
+			if pipeErr != nil {
+				return nil, fmt.Errorf("copilotacp: stderr pipe: %w", pipeErr)
+			}
+		}
 		if err := cmd.Start(); err != nil {
 			return nil, fmt.Errorf("copilotacp: start %s --acp --port %d: %w", binary, port, err)
+		}
+		if stderrPipe != nil {
+			go c.drainStderr(stderrPipe)
 		}
 	}
 
@@ -336,6 +456,7 @@ func (c *Client) startTCP(ctx context.Context, params acp.LaunchParams) (io.Read
 	if err != nil {
 		if cmd != nil && cmd.Process != nil {
 			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 		}
 		return nil, fmt.Errorf("copilotacp: connect to %s: %w", addr, err)
 	}
@@ -595,6 +716,13 @@ func (c *Client) Cancel(ctx context.Context) error {
 // Events implements [acp.Client].
 func (c *Client) Events() <-chan runtimeevents.Event { return c.events }
 
+// ProviderSessionID returns the id established by session/new or session/load.
+func (c *Client) ProviderSessionID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sessionID
+}
+
 // InterruptCapability implements [acp.Client]. Returns
 // [adapters.InterruptTurn] — verified directly (see package doc): a
 // real in-flight generation was cut off within ~3 seconds of Cancel
@@ -611,11 +739,23 @@ func (c *Client) InterruptCapability() adapters.InterruptCapability {
 func (c *Client) Close(ctx context.Context) error {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
+		c.closed = true
 		stdin := c.stdin
 		conn := c.conn
 		cmd := c.cmd
 		started := c.started
+		waitDone := c.waitDone
+		sessionID := c.sessionID
+		sessionClose := c.sessionClose
 		c.mu.Unlock()
+		if sessionClose && sessionID != "" {
+			closeCtx, cancel := context.WithTimeout(ctx, time.Second)
+			_, closeErr := c.call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
+			cancel()
+			c.mu.Lock()
+			c.closeErr = closeErr
+			c.mu.Unlock()
+		}
 
 		if stdin != nil {
 			_ = stdin.Close()
@@ -625,19 +765,14 @@ func (c *Client) Close(ctx context.Context) error {
 		}
 
 		if cmd != nil && cmd.Process != nil {
-			done := make(chan struct{})
-			go func() {
-				_ = cmd.Wait()
-				close(done)
-			}()
 			select {
-			case <-done:
+			case <-waitDone:
 			case <-time.After(3 * time.Second):
 				_ = cmd.Process.Kill()
-				<-done
+				<-waitDone
 			case <-ctx.Done():
 				_ = cmd.Process.Kill()
-				<-done
+				<-waitDone
 			}
 		}
 
@@ -649,7 +784,27 @@ func (c *Client) Close(ctx context.Context) error {
 		}
 		c.closeEvents()
 	})
-	return nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeErr
+}
+
+func (c *Client) waitProcess() {
+	c.mu.Lock()
+	cmd := c.cmd
+	waitDone := c.waitDone
+	c.mu.Unlock()
+	err := cmd.Wait()
+	c.mu.Lock()
+	c.waitErr = err
+	c.mu.Unlock()
+	payload := map[string]any{"exit_code": cmd.ProcessState.ExitCode()}
+	if err != nil {
+		payload["error"] = err.Error()
+	}
+	c.pushEvent(runtimeevents.Event{Kind: runtimeevents.KindProcessExited, Payload: marshalPayload(payload)})
+	close(waitDone)
+	c.closeEvents()
 }
 
 // closeEvents closes the events channel exactly once. It first waits
@@ -705,12 +860,16 @@ func (c *Client) readLoop(r io.Reader) {
 		copy(cp, line)
 		c.handleLine(cp)
 	}
+	if err := scanner.Err(); err != nil {
+		c.reportReadError("reading ACP protocol stream", err)
+	}
 	c.onReaderClosed()
 }
 
 func (c *Client) handleLine(line []byte) {
 	var f wireFrame
 	if err := json.Unmarshal(line, &f); err != nil {
+		c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticMalformedJSON, "invalid JSON-RPC frame", string(line)))
 		return
 	}
 	switch {
@@ -785,7 +944,54 @@ func (c *Client) onReaderClosed() {
 	for _, ch := range pending {
 		close(ch)
 	}
+	c.mu.Lock()
+	hasProcess := c.cmd != nil
+	waitDone := c.waitDone
+	c.mu.Unlock()
+	if hasProcess && waitDone != nil {
+		select {
+		case <-waitDone:
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 	c.closeEvents()
+}
+
+func (c *Client) drainStderr(r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticStderr, "ACP child stderr", scanner.Text()))
+	}
+	if err := scanner.Err(); err != nil {
+		c.reportReadError("reading ACP child stderr", err)
+	}
+}
+
+func (c *Client) reportDiagnostic(d acp.Diagnostic) {
+	c.diagnosticMu.Lock()
+	defer c.diagnosticMu.Unlock()
+	c.mu.Lock()
+	fn := c.diagnostic
+	c.mu.Unlock()
+	if fn != nil {
+		fn(d)
+	}
+}
+
+func (c *Client) reportReadError(message string, err error) {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if !closed {
+		c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticProtocol, message, err.Error()))
+	}
+}
+
+func marshalPayload(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 var _ acp.Client = (*Client)(nil)

@@ -162,6 +162,7 @@ func TestLegacyRuntimeToken(t *testing.T) {
 		{"codex jsonrpc-stdio", adapters.ProtocolCodexAppServer, adapters.TransportStdio, RuntimeJSONRPCStdio},
 		{"opencode http-sse", adapters.ProtocolOpenCodeNative, adapters.TransportHTTPSSE, RuntimeHTTPSSE},
 		{"acp/stdio", adapters.ProtocolACP, adapters.TransportStdio, RuntimeACPStdio},
+		{"acp/tcp", adapters.ProtocolACP, adapters.TransportTCP, RuntimeACPTCP},
 		{"unset (adapter fallback)", "", "", RuntimeAdapter},
 		{"unrecognized combo", adapters.Protocol("future"), adapters.Transport("future"), ""},
 	}

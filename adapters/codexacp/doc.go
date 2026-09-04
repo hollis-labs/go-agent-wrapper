@@ -132,21 +132,14 @@
 // config-based provider extensibility with an honest per-adapter
 // capabilities map, not immediate interrupt gain.
 //
-// # Client ownership of the subprocess (a documented seam gap, not an
-// oversight — same finding tasks 09/10 already made for their own native
-// ACP adapters)
+// # Wrapper-owned lifecycle
 //
 // [Client] spawns and owns its `npx ... @agentclientprotocol/codex-acp`
 // subprocess directly via os/exec, exactly mirroring
 // [adapters/opencodeacp.Client]'s own request/response correlation and
-// notification dispatch. go-providers' provider.CLIAdapter interface
-// (Detect/BuildArgs/ParseLine) has no seam for a bidirectionally-real,
-// response-correlated JSON-RPC session once a caller spawns the process
-// through it — [cliAdapter] (this package's [adapters.RuntimeAdapter]
-// glue) follows the SAME pass-through shape [adapters/codex] and
-// [adapters/opencodeacp] already use for this exact situation: real
-// Detect/BuildArgs so the one real subprocess a Wrapper.Run() caller
-// spawns is the genuine article, ParseLine as a deliberate pass-through
-// returning (nil, nil). Real, live-verified ACP driving for this package
-// goes through [Client] directly, not through wrapper.Wrapper.Run().
+// notification dispatch. [Adapter] exposes a fresh client through
+// [acp.ClientAdapter], and wrapper.Wrapper owns its initialize/auth/config,
+// create-or-resume, prompt/cancel, liveness, and cleanup through [acp.Manager].
+// The provider.CLIAdapter implementation remains compatibility/introspection
+// glue; Wrapper selects ClientAdapter for ProtocolACP.
 package codexacp

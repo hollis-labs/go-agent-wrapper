@@ -33,8 +33,33 @@ func (w *Wrapper) observeToolUsePolicy(
 	if w.cfg.PolicyObserver == nil || ev.ToolUse == nil {
 		return
 	}
+	w.observeSerializedToolUsePolicy(ctx, source, serializeToolUse(ev.ToolUse), toolUseEventID, turnID)
+}
 
-	original := serializeToolUse(ev.ToolUse)
+// observeACPToolUsePolicy preserves the same post-hoc observation boundary for
+// ACP-native runtime events. The protocol payload is kept verbatim as the
+// observation: no permission response, delay, rewrite, or execution gate is
+// introduced here.
+func (w *Wrapper) observeACPToolUsePolicy(
+	ctx context.Context,
+	source runtimeevents.Source,
+	payload json.RawMessage,
+	toolUseEventID string,
+	turnID string,
+) {
+	if w.cfg.PolicyObserver == nil {
+		return
+	}
+	w.observeSerializedToolUsePolicy(ctx, source, string(payload), toolUseEventID, turnID)
+}
+
+func (w *Wrapper) observeSerializedToolUsePolicy(
+	ctx context.Context,
+	source runtimeevents.Source,
+	original string,
+	toolUseEventID string,
+	turnID string,
+) {
 	finding, err := w.cfg.PolicyObserver.Observe(ctx, policy.Observation{
 		App:        w.cfg.App,
 		SessionID:  w.sessionID,

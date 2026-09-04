@@ -15,6 +15,7 @@ import (
 	pevents "github.com/hollis-labs/go-providers/provider/events"
 	sandboxprofile "github.com/hollis-labs/go-sandbox/sandbox"
 
+	"github.com/hollis-labs/go-agent-wrapper/acp"
 	"github.com/hollis-labs/go-agent-wrapper/activity"
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	"github.com/hollis-labs/go-agent-wrapper/filters"
@@ -35,18 +36,17 @@ import (
 // sandbox profile", "no policy observer", "no filter pipeline". The wrapper
 // degrades cleanly into a pure passthrough when no subsystems are configured.
 //
-// Adapter must implement [adapters.RuntimeAdapter] (not just
-// [adapters.Adapter]) — [Wrapper.Run] needs the underlying
-// [provider.CLIAdapter] to drive agentkit/agentsessions. The wrapper
-// returns [ErrAdapterNotRuntime] from Run when the assertion fails.
+// Non-ACP Adapter values must implement [adapters.RuntimeAdapter]. ACP
+// adapters must implement [acp.ClientAdapter], allowing Wrapper to own their
+// protocol session through [acp.Manager].
 type Config struct {
 	// App identifies the calling application ("nanite", "torque",
 	// "tachyon", ...). Propagated into every emitted Event.
 	App string
 
 	// Adapter is the provider integration (Claude, Codex, OpenCode, ...).
-	// Required. Must implement [adapters.RuntimeAdapter] for [Wrapper.Run]
-	// to drive it through agentkit/agentsessions.
+	// Required. Must implement [adapters.RuntimeAdapter] for native runtimes or
+	// [acp.ClientAdapter] when Describe reports [adapters.ProtocolACP].
 	Adapter adapters.Adapter
 
 	// Activity is the runtime-event emitter the wrapper uses to surface
@@ -133,6 +133,29 @@ type Config struct {
 	// don't understand resume ignore it silently.
 	SessionIDPreset string
 
+	// SystemPrompt is prepended to the first prompt of an ACP session. It is
+	// currently ignored by non-ACP runtime paths.
+	SystemPrompt string
+
+	// ACPManager, when set, is the authoritative registry for ACP sessions
+	// launched by this Wrapper. Sharing one Manager across Wrappers gives a
+	// host lookup, liveness, cancel, close and shutdown without a duplicate
+	// host-side registry. A nil value creates a manager owned by this Wrapper.
+	ACPManager *acp.Manager
+
+	// ACPAuthMethodID selects an agent-managed authentication method returned
+	// by initialize. Empty uses the ACP agent's existing authenticated state.
+	ACPAuthMethodID string
+
+	// ACPSessionModeID and ACPSessionConfig are applied after session/new or
+	// session/load and before the first prompt.
+	ACPSessionModeID string
+	ACPSessionConfig map[string]any
+
+	// OnACPDiagnostic receives bounded, redacted protocol diagnostics. Raw
+	// stderr/protocol bytes are never placed on the ordinary event stream.
+	OnACPDiagnostic func(acp.Diagnostic)
+
 	// OnSessionID, when non-nil, is invoked the first time the running
 	// session observes a provider-assigned session id — in addition to,
 	// not instead of, [Wrapper.Run]'s own unconditional
@@ -206,6 +229,8 @@ type Wrapper struct {
 
 	sessMu      sync.RWMutex
 	session     agentsessions.Session
+	acpSession  *acp.Session
+	acpManager  *acp.Manager
 	typedSource runtimeevents.Source // set in Run; used by SendInput/Stop for derived events
 	rawSource   runtimeevents.Source // set in Run; used for stdin.write events
 }
@@ -235,8 +260,9 @@ func (w *Wrapper) SessionID() string { return w.sessionID }
 
 // Run drives the full session lifecycle:
 //
-//  1. Type-asserts Config.Adapter to [adapters.RuntimeAdapter].
-//  2. Maps [adapters.Descriptor.Protocol] + [adapters.Descriptor.Transport]
+//  1. Routes ACP adapters through [acp.Manager]; other adapters through their
+//     [adapters.RuntimeAdapter].
+//  2. For non-ACP adapters, maps [adapters.Descriptor.Protocol] + [adapters.Descriptor.Transport]
 //     to agentkit [agentsessions.Capabilities].
 //  3. Constructs an [agentsessions.Runtime] via NewFromAdapter,
 //     calls Prepare, and Start.
@@ -260,9 +286,15 @@ func (w *Wrapper) SessionID() string { return w.sessionID }
 // serve-http) requires one of the two to be set before it will spawn
 // anything.
 //
-// Returns the Session.Wait error if any. ctx.Err() is preserved when
-// the wrapper stopped because the caller cancelled.
+// ACP sessions normalize unexpected disconnect, malformed stream, child exit,
+// and cancellation outcomes through [acp.LifecycleError]. Returns the
+// underlying wait error if any; ctx.Err() is preserved when cancellation
+// stopped the wrapper.
 func (w *Wrapper) Run(ctx context.Context) error {
+	desc := w.cfg.Adapter.Describe()
+	if desc.Protocol == adapters.ProtocolACP {
+		return w.runACP(ctx, desc)
+	}
 	ra, ok := w.cfg.Adapter.(adapters.RuntimeAdapter)
 	if !ok {
 		return fmt.Errorf("%w: adapter %q", ErrAdapterNotRuntime, w.cfg.Adapter.Name())
@@ -271,7 +303,6 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		return errors.New("wrapper: Config.Workdir is required")
 	}
 
-	desc := w.cfg.Adapter.Describe()
 	caps, err := runtimeCaps(desc.Protocol, desc.Transport)
 	if err != nil {
 		return err
@@ -550,9 +581,10 @@ func (w *Wrapper) Run(ctx context.Context) error {
 func (w *Wrapper) SendInput(ctx context.Context, data []byte) error {
 	w.sessMu.RLock()
 	session := w.session
+	acpSession := w.acpSession
 	rawSource := w.rawSource
 	w.sessMu.RUnlock()
-	if session == nil {
+	if session == nil && acpSession == nil {
 		return ErrSessionNotStarted
 	}
 	// Emit before forwarding so the event sequence reflects intent
@@ -561,6 +593,9 @@ func (w *Wrapper) SendInput(ctx context.Context, data []byte) error {
 		map[string]any{
 			"bytes": string(data),
 		})
+	if acpSession != nil {
+		return acpSession.Prompt(ctx, string(data))
+	}
 	return session.SendInput(ctx, data)
 }
 
@@ -572,12 +607,59 @@ func (w *Wrapper) SendInput(ctx context.Context, data []byte) error {
 func (w *Wrapper) Stop(ctx context.Context) error {
 	w.sessMu.RLock()
 	session := w.session
+	acpSession := w.acpSession
+	source := w.typedSource
+	w.sessMu.RUnlock()
+	if session == nil && acpSession == nil {
+		return nil
+	}
+	if acpSession != nil {
+		return w.requestACPInterrupt(ctx, source, acpSession, "user_stop", true)
+	}
+	return w.requestInterrupt(ctx, source, session, "user_stop")
+}
+
+// CancelTurn requests ACP session/cancel without closing the session. Native
+// adapters do not expose a distinct turn-cancel primitive and return
+// ErrTurnCancelUnsupported.
+func (w *Wrapper) CancelTurn(ctx context.Context) error {
+	w.sessMu.RLock()
+	session := w.acpSession
 	source := w.typedSource
 	w.sessMu.RUnlock()
 	if session == nil {
-		return nil
+		return ErrTurnCancelUnsupported
 	}
-	return w.requestInterrupt(ctx, source, session, "user_stop")
+	return w.requestACPInterrupt(ctx, source, session, "turn_cancel", false)
+}
+
+// ProviderSessionID returns the current provider-assigned ACP session id.
+func (w *Wrapper) ProviderSessionID() string {
+	w.sessMu.RLock()
+	session := w.acpSession
+	w.sessMu.RUnlock()
+	if session == nil {
+		return ""
+	}
+	return session.ProviderSessionID()
+}
+
+// ACPSnapshot returns authoritative managed liveness for an ACP session.
+func (w *Wrapper) ACPSnapshot() (acp.Snapshot, bool) {
+	w.sessMu.RLock()
+	session := w.acpSession
+	w.sessMu.RUnlock()
+	if session == nil {
+		return acp.Snapshot{}, false
+	}
+	return session.Snapshot(), true
+}
+
+// ACPManager returns the manager selected for this Wrapper after Run begins.
+func (w *Wrapper) ACPManager() *acp.Manager {
+	w.sessMu.RLock()
+	defer w.sessMu.RUnlock()
+	return w.acpManager
 }
 
 // requestInterrupt is the shared interrupt path used by both
@@ -747,3 +829,10 @@ var ErrAdapterNotRuntime = errors.New("wrapper: adapter does not implement adapt
 // before [Wrapper.Run] has started a session. Use [errors.Is] to
 // detect.
 var ErrSessionNotStarted = errors.New("wrapper: session not started")
+
+// ErrTurnCancelUnsupported is returned by CancelTurn for a non-ACP runtime.
+var ErrTurnCancelUnsupported = errors.New("wrapper: runtime does not expose turn-scoped cancellation")
+
+// ErrAdapterNotACPClient is returned when an adapter declares ProtocolACP but
+// cannot construct the real ACP client lifecycle.
+var ErrAdapterNotACPClient = errors.New("wrapper: ACP adapter does not implement acp.ClientAdapter")

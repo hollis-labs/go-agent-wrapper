@@ -45,6 +45,7 @@ import (
 type fakeACPClient struct {
 	mu        sync.Mutex
 	launched  bool
+	closed    bool
 	prompts   []string
 	events    chan runtimeevents.Event
 	interrupt adapters.InterruptCapability
@@ -71,6 +72,8 @@ func (f *fakeACPClient) Prompt(_ context.Context, prompt string) error {
 	f.mu.Unlock()
 	f.events <- runtimeevents.Event{Kind: runtimeevents.KindAgentDelta}
 	f.events <- runtimeevents.Event{Kind: runtimeevents.KindTurnCompleted}
+	f.events <- runtimeevents.Event{Kind: runtimeevents.KindProcessExited}
+	_ = f.Close(context.Background())
 	return nil
 }
 
@@ -80,7 +83,16 @@ func (f *fakeACPClient) Events() <-chan runtimeevents.Event { return f.events }
 
 func (f *fakeACPClient) InterruptCapability() adapters.InterruptCapability { return f.interrupt }
 
-func (f *fakeACPClient) Close(context.Context) error { return nil }
+func (f *fakeACPClient) Close(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return nil
+	}
+	f.closed = true
+	close(f.events)
+	return nil
+}
 
 func (f *fakeACPClient) snapshotPrompts() []string {
 	f.mu.Lock()
@@ -194,9 +206,12 @@ func (a *fakeACPRuntimeAdapter) Resolve(rc adapters.ResolveContext) (adapters.Sp
 
 func (a *fakeACPRuntimeAdapter) CLIAdapter() provider.CLIAdapter { return a.cli }
 
+func (a *fakeACPRuntimeAdapter) ACPClient() acp.Client { return a.client }
+
 var (
 	_ adapters.Adapter        = (*fakeACPRuntimeAdapter)(nil)
 	_ adapters.RuntimeAdapter = (*fakeACPRuntimeAdapter)(nil)
+	_ acp.ClientAdapter       = (*fakeACPRuntimeAdapter)(nil)
 )
 
 // TestRunFakeACPAdapter_JsonRpcStdio drives Wrapper.Run against a

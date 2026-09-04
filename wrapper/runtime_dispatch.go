@@ -38,6 +38,10 @@ const (
 	// purely as a stable [runtimeevents.Process.Runtime] string for
 	// ACP-driven adapters, not as backward-compat scaffolding.
 	RuntimeACPStdio = "acp-stdio"
+
+	// RuntimeACPTCP is the stable runtime token for a wrapper-owned ACP
+	// client connected over TCP (currently Copilot CLI's daemon mode).
+	RuntimeACPTCP = "acp-tcp"
 )
 
 // runtimeCaps maps an adapter-declared Protocol+Transport pair to the
@@ -142,6 +146,8 @@ func legacyRuntimeToken(protocol adapters.Protocol, transport adapters.Transport
 		return RuntimeHTTPSSE
 	case protocol == adapters.ProtocolACP && transport == adapters.TransportStdio:
 		return RuntimeACPStdio
+	case protocol == adapters.ProtocolACP && transport == adapters.TransportTCP:
+		return RuntimeACPTCP
 	case protocol == "" && transport == "":
 		return RuntimeAdapter
 	default:

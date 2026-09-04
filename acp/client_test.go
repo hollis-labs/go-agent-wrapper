@@ -170,3 +170,23 @@ func TestDescriptorForTCPTransport(t *testing.T) {
 		t.Errorf("Interrupt = %q, want %q", desc.Interrupt, adapters.InterruptProcess)
 	}
 }
+
+func TestInitializeSupportsSessionClose(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "advertised", raw: `{"agentCapabilities":{"sessionCapabilities":{"close":{}}}}`, want: true},
+		{name: "null", raw: `{"agentCapabilities":{"sessionCapabilities":{"close":null}}}`},
+		{name: "invalid boolean", raw: `{"agentCapabilities":{"sessionCapabilities":{"close":false}}}`},
+		{name: "absent", raw: `{"agentCapabilities":{}}`},
+		{name: "malformed", raw: `{`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := InitializeSupportsSessionClose([]byte(tc.raw)); got != tc.want {
+				t.Fatalf("InitializeSupportsSessionClose = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

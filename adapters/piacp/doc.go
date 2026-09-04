@@ -193,27 +193,14 @@
 // reported here because the Descriptor this package produces must
 // reflect it accurately, not because it was the bar for doing the work.
 //
-// # Client ownership of the bridge subprocess (the same seam gap task 09
-// and task 10 already found and documented, not reinvented here)
+// # Wrapper-owned lifecycle
 //
 // [Client] spawns and owns its `npx -y pi-acp` subprocess directly via
 // os/exec — real request/response correlation, real notification
-// dispatch, entirely self-contained; [acp.LaunchParams] carries Cwd/Env
-// (spawn ingredients), and go-providers' provider.CLIAdapter interface
-// (Detect/BuildArgs/ParseLine) has no hook that hands a caller the
-// spawned child's real stdin, nor a way to make an outbound,
-// response-correlated call from within it. [Adapter.CLIAdapter] follows
-// the exact same shape opencodeacp's own [cliAdapter] already
-// established for this identical situation (itself mirroring
-// adapters/codex's pre-existing app-server precedent): real
-// Detect/BuildArgs (so the ONE real `npx -y pi-acp` process a
-// wrapper.Wrapper.Run() caller would spawn is the genuine article, not a
-// duplicate) and a pass-through ParseLine returning (nil, nil). Real,
-// live-verified ACP driving in this package goes through [Client]
-// directly (used standalone), not through wrapper.Wrapper.Run() — see
-// this package's Work Log entry (TASKS/agent-host-acp/15, Nanite repo)
-// for the finding and its scope rationale, identical to tasks 09/10's
-// own.
+// dispatch, entirely self-contained. [Adapter] exposes a fresh client through
+// [acp.ClientAdapter], and wrapper.Wrapper owns its full initialize/auth/config,
+// create-or-resume, prompt/cancel, liveness, and cleanup through [acp.Manager].
+// [Adapter.CLIAdapter] remains compatibility/introspection glue only.
 //
 // # Known limitations
 //
@@ -226,5 +213,6 @@
 //     always sends an empty `mcpServers` array, matching that reality.
 //   - `agent_thought_chunk` mapping is unverified/dead code today (see
 //     above) — pi-acp does not currently emit it.
-//   - CLIAdapter()'s ParseLine is a deliberate pass-through — see above.
+//   - CLIAdapter()'s ParseLine remains a deliberate pass-through; Wrapper uses
+//     ClientAdapter for real ACP driving.
 package piacp

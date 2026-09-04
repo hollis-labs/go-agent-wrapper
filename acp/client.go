@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
@@ -18,10 +19,12 @@ import (
 // A Client is single-session, mirroring wrapper.Wrapper's own
 // single-use contract: construct one per launched ACP session, call
 // Launch once, then Prompt/Cancel any number of times across the
-// session's lifetime, and Close exactly once when done.
+// session's lifetime. Manager is the normal owner and guarantees that Close
+// reaches the client at most once even when explicit close races EOF or exit.
 type Client interface {
 	// Launch starts (or connects to) the underlying ACP-speaking agent
-	// and performs the ACP `initialize`/`session/new` handshake,
+	// and performs initialize, optional authenticate, session/new or
+	// session/load, and optional session configuration,
 	// returning once the session is ready to accept a Prompt. Launch
 	// does not block for the session's full lifetime — Events (below)
 	// streams activity for as long as the session is alive, and
@@ -80,8 +83,9 @@ type Client interface {
 	// Descriptor.Interrupt field — see DescriptorFor.
 	InterruptCapability() adapters.InterruptCapability
 
-	// Close releases whatever resources Launch acquired — terminating
-	// the underlying process/connection if one is still alive. Close
+	// Close releases whatever resources Launch acquired. Implementations send
+	// session/close first when the agent advertised that optional capability,
+	// then terminate the underlying process/connection if still alive. Close
 	// ends the whole session (the analog of Nanite's Session.Stop);
 	// Cancel (above) ends only the in-flight turn (the analog of
 	// Nanite's Turn.Cancel). Safe to call even if Launch was never
@@ -106,11 +110,8 @@ type LaunchParams struct {
 	// that don't own subprocess spawning ignore this.
 	Env []string
 
-	// SystemPrompt, when non-empty, is threaded into the ACP
-	// `session/new` handshake as the agent's initial system-level
-	// instruction, mirroring the SystemPrompt-via-BuildArgs convention
-	// [provider.CLIAdapter] implementations already use for non-ACP
-	// adapters.
+	// SystemPrompt, when non-empty, is prepended to the first ACP prompt. ACP
+	// v1 has no dedicated client-supplied system-prompt field in session/new.
 	SystemPrompt string
 
 	// SessionIDPreset, when non-empty, is the provider-side session id
@@ -119,6 +120,62 @@ type LaunchParams struct {
 	// existing convention for non-ACP adapters. Implementations that
 	// don't support resume ignore it silently.
 	SessionIDPreset string
+
+	// AuthMethodID, when non-empty, selects one agent-managed authentication
+	// method advertised by initialize and calls ACP `authenticate` before
+	// creating/loading the session. Terminal authentication methods are not
+	// driven implicitly: they require an interactive terminal outside this
+	// stdio/TCP client lifecycle.
+	AuthMethodID string
+
+	// SessionModeID, when non-empty, is applied with `session/set_mode`
+	// after session/new or session/load completes.
+	SessionModeID string
+
+	// SessionConfig applies ACP session configuration options after the
+	// session is created/loaded. Keys are config option ids and values are
+	// either a string value id or a bool toggle. Iteration order is sorted so
+	// wire traces and partial-failure behavior are deterministic.
+	SessionConfig map[string]any
+
+	// OnDiagnostic receives bounded, safely-redacted stderr and protocol
+	// diagnostics. It is opt-in and must return quickly; ordinary activity
+	// continues to flow through Events.
+	OnDiagnostic func(Diagnostic)
+}
+
+// ProviderSessionID returns the provider-assigned id when a concrete client
+// exposes it. It accepts Client rather than requiring another method on the
+// base interface so existing third-party Client implementations remain source
+// compatible; all adapters shipped by this module implement the readback.
+func ProviderSessionID(client Client) string {
+	if identity, ok := client.(interface{ ProviderSessionID() string }); ok {
+		return identity.ProviderSessionID()
+	}
+	return ""
+}
+
+// InitializeSupportsSessionClose reports whether an initialize result
+// advertises agentCapabilities.sessionCapabilities.close. Clients use it to
+// send session/close before tearing down the transport without breaking older
+// ACP agents that do not implement the optional method.
+func InitializeSupportsSessionClose(result json.RawMessage) bool {
+	var response struct {
+		AgentCapabilities struct {
+			SessionCapabilities struct {
+				Close json.RawMessage `json:"close"`
+			} `json:"sessionCapabilities"`
+		} `json:"agentCapabilities"`
+	}
+	if json.Unmarshal(result, &response) != nil {
+		return false
+	}
+	closeCapability := response.AgentCapabilities.SessionCapabilities.Close
+	if len(closeCapability) == 0 {
+		return false
+	}
+	var capability map[string]any
+	return json.Unmarshal(closeCapability, &capability) == nil && capability != nil
 }
 
 // DescriptorFor builds the [adapters.Descriptor] an ACP-backed

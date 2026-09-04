@@ -113,7 +113,7 @@ func drainRealTurn(t *testing.T, c *Client, timeout time.Duration) ([]runtimeeve
 	}
 }
 
-// assertRealTurnEvents checks the shape of a real completed turn: ready
+// assertRealTurnEvents checks the shape of a real completed turn: process.started -> ready
 // -> turn.started -> at least one agent.delta whose content contains
 // wantSubstring -> turn.completed, all turn-scoped events sharing one
 // TurnID.
@@ -123,8 +123,11 @@ func assertRealTurnEvents(t *testing.T, evs []runtimeevents.Event, wantSubstring
 	if len(evs) == 0 {
 		t.Fatal("no events observed")
 	}
-	if evs[0].Kind != runtimeevents.KindSessionReady {
-		t.Errorf("evs[0].Kind = %q, want session.ready", evs[0].Kind)
+	if evs[0].Kind != runtimeevents.KindProcessStarted {
+		t.Errorf("evs[0].Kind = %q, want process.started", evs[0].Kind)
+	}
+	if len(evs) < 2 || evs[1].Kind != runtimeevents.KindSessionReady {
+		t.Errorf("event after process.started = %v, want session.ready", evs)
 	}
 
 	var sawTurnStarted, sawDelta, sawCompleted bool

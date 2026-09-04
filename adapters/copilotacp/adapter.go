@@ -45,9 +45,8 @@ func WithAdapterExtraArgs(args ...string) AdapterOption {
 // Adapter is the wrapper [adapters.Adapter]/[adapters.RuntimeAdapter]
 // for GitHub Copilot CLI's native `--acp` mode. Construct via [New];
 // pass to [github.com/hollis-labs/go-agent-wrapper/wrapper.Config.Adapter],
-// or drive its underlying [Client] directly via [Adapter.Client] — see
-// the package doc for which composition this task's real end-to-end
-// tests exercise and why.
+// or drive its underlying [Client] directly via [Adapter.Client]. Wrapper owns
+// the protocol lifecycle through [Adapter.ACPClient] for both transports.
 type Adapter struct {
 	client *Client
 
@@ -89,14 +88,8 @@ func (a *Adapter) Describe() adapters.Descriptor {
 }
 
 // Resolve implements [adapters.Adapter]. Builds the exec [adapters.Spec]
-// for one `copilot --acp` invocation. Informational for the composition
-// [Client] drives directly (which spawns/dials itself inside
-// [Client.Launch]) — kept accurate regardless so a caller inspecting
-// Resolve's output, or driving this Adapter through
-// [github.com/hollis-labs/go-agent-wrapper/wrapper.Wrapper.Run]'s
-// stdio-only dispatch path, sees the real invocation shape. See the
-// package doc's "Wrapper.Run composition" note for what that path does
-// and does not do automatically.
+// for one `copilot --acp` invocation. It remains useful for inspection even
+// though Wrapper.Run obtains a fresh protocol client through ACPClient.
 func (a *Adapter) Resolve(rc adapters.ResolveContext) (adapters.Spec, error) {
 	if rc.PTY {
 		return adapters.Spec{}, ErrPTYUnsupported
@@ -121,25 +114,27 @@ func (a *Adapter) Resolve(rc adapters.ResolveContext) (adapters.Spec, error) {
 }
 
 // Client returns the [acp.Client] this Adapter wraps, letting a caller
-// drive Launch/Prompt/Cancel/Events directly — the composition this
-// task's real end-to-end tests use, and the one that actually performs
-// the ACP handshake/turn exchange for real. See the package doc.
+// drive Launch/Prompt/Cancel/Events directly. Wrapper callers normally do not
+// need it; Wrapper.Run obtains a fresh client through ACPClient.
 func (a *Adapter) Client() acp.Client { return a.client }
 
+// ACPClient implements [acp.ClientAdapter]. It returns a fresh client so one
+// Adapter value can safely launch successive wrapper sessions.
+func (a *Adapter) ACPClient() acp.Client {
+	clientOpts := []Option{WithExtraArgs(a.extraArgs...)}
+	if a.binary != "" {
+		clientOpts = append(clientOpts, WithBinary(a.binary))
+	}
+	if a.transport == adapters.TransportTCP {
+		clientOpts = append(clientOpts, WithPort(a.port))
+	}
+	return NewClient(a.transport, clientOpts...)
+}
+
 // CLIAdapter implements [adapters.RuntimeAdapter] by returning a
-// [provider.CLIAdapter] shim so this Adapter can, structurally, be
-// dispatched through
-// [github.com/hollis-labs/go-agent-wrapper/wrapper.Wrapper.Run]'s
-// [adapters.ProtocolACP] + [adapters.TransportStdio] runtime_dispatch.go
-// entry (task 08), the same composition shape
-// wrapper/wrapper_acp_test.go's fake test proved. See the package doc's
-// "Wrapper.Run composition" note for the honest limitation this
-// implies: BuildArgs/ParseLine cannot drive [Client]'s own
-// Launch/Prompt automatically in this composition (no writer is
-// available before spawn), so ParseLine does real `session/update`
-// translation for whatever a caller writes via
-// [github.com/hollis-labs/go-agent-wrapper/wrapper.Wrapper.SendInput],
-// but the handshake itself is not performed automatically here.
+// [provider.CLIAdapter] compatibility shim. Wrapper.Run selects ACPClient for
+// ProtocolACP; BuildArgs/ParseLine remain available to legacy callers and
+// ParseLine continues to share the real session/update translator.
 func (a *Adapter) CLIAdapter() provider.CLIAdapter {
 	return &cliAdapterGlue{adapter: a}
 }
@@ -147,4 +142,5 @@ func (a *Adapter) CLIAdapter() provider.CLIAdapter {
 var (
 	_ adapters.Adapter        = (*Adapter)(nil)
 	_ adapters.RuntimeAdapter = (*Adapter)(nil)
+	_ acp.ClientAdapter       = (*Adapter)(nil)
 )

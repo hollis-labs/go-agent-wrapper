@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,12 +43,14 @@ type Client struct {
 	binary    string
 	extraArgs []string
 
-	mu        sync.Mutex
-	launched  bool
-	closed    bool
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	sessionID string
+	mu           sync.Mutex
+	launched     bool
+	closed       bool
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	sessionID    string
+	systemPrompt string
+	sessionClose bool
 
 	writeMu sync.Mutex // serializes writes to stdin across goroutines
 
@@ -64,8 +67,10 @@ type Client struct {
 	events       chan runtimeevents.Event
 	eventsClosed bool
 
-	waitDone chan struct{}
-	waitErr  error
+	waitDone     chan struct{}
+	waitErr      error
+	diagnosticMu sync.Mutex
+	diagnostic   func(acp.Diagnostic)
 }
 
 // ClientOption mutates a [Client] during [NewClient]. Distinct from
@@ -211,6 +216,7 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	c.cmd = cmd
 	c.stdin = stdin
 	c.waitDone = make(chan struct{})
+	c.diagnostic = params.OnDiagnostic
 	c.mu.Unlock()
 
 	if pid := cmd.Process.Pid; pid != 0 {
@@ -224,16 +230,24 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	go c.readLoop(stdout)
 	go c.waitProcess()
 
-	if _, err := c.call(ctx, "initialize", map[string]any{
+	initializeResult, err := c.call(ctx, "initialize", map[string]any{
 		"protocolVersion": acpProtocolVersion,
 		"clientCapabilities": map[string]any{
 			"fs":       map[string]any{"readTextFile": false, "writeTextFile": false},
 			"terminal": false,
 		},
-	}); err != nil {
+	})
+	if err != nil {
 		_ = c.Close(context.Background())
 		return fmt.Errorf("piacp: initialize: %w", err)
 	}
+	if err := c.authenticate(ctx, initializeResult, params.AuthMethodID); err != nil {
+		_ = c.Close(context.Background())
+		return fmt.Errorf("piacp: authenticate: %w", err)
+	}
+	c.mu.Lock()
+	c.sessionClose = acp.InitializeSupportsSessionClose(initializeResult)
+	c.mu.Unlock()
 
 	if params.SessionIDPreset != "" {
 		if err := c.loadSession(ctx, params); err == nil {
@@ -258,8 +272,71 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 		_ = c.Close(context.Background())
 		return fmt.Errorf("piacp: session/new: %w", err)
 	}
+	if err := c.configureSession(ctx, params); err != nil {
+		_ = c.Close(context.Background())
+		return fmt.Errorf("piacp: configure session: %w", err)
+	}
+	c.mu.Lock()
+	c.systemPrompt = params.SystemPrompt
+	c.mu.Unlock()
 
 	c.emit(runtimeevents.Event{Kind: runtimeevents.KindSessionReady})
+	return nil
+}
+
+func (c *Client) authenticate(ctx context.Context, initializeResult json.RawMessage, methodID string) error {
+	if methodID == "" {
+		return nil
+	}
+	var response struct {
+		AuthMethods []struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"authMethods"`
+	}
+	if err := json.Unmarshal(initializeResult, &response); err != nil {
+		return fmt.Errorf("decode initialize authMethods: %w", err)
+	}
+	for _, method := range response.AuthMethods {
+		if method.ID != methodID {
+			continue
+		}
+		if method.Type == "terminal" {
+			return fmt.Errorf("authentication method %q requires an interactive terminal", methodID)
+		}
+		_, err := c.call(ctx, "authenticate", map[string]any{"methodId": methodID})
+		return err
+	}
+	return fmt.Errorf("authentication method %q was not advertised", methodID)
+}
+
+func (c *Client) configureSession(ctx context.Context, params acp.LaunchParams) error {
+	sessionID := c.ProviderSessionID()
+	if params.SessionModeID != "" {
+		if _, err := c.call(ctx, "session/set_mode", map[string]any{"sessionId": sessionID, "modeId": params.SessionModeID}); err != nil {
+			return err
+		}
+	}
+	keys := make([]string, 0, len(params.SessionConfig))
+	for key := range params.SessionConfig {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := params.SessionConfig[key]
+		switch value.(type) {
+		case string, bool:
+		default:
+			return fmt.Errorf("option %q has unsupported value type %T (want string or bool)", key, value)
+		}
+		request := map[string]any{"sessionId": sessionID, "configId": key, "value": value}
+		if _, ok := value.(bool); ok {
+			request["type"] = "boolean"
+		}
+		if _, err := c.call(ctx, "session/set_config_option", request); err != nil {
+			return fmt.Errorf("option %q: %w", key, err)
+		}
+	}
 	return nil
 }
 
@@ -309,6 +386,8 @@ func (c *Client) loadSession(ctx context.Context, params acp.LaunchParams) error
 func (c *Client) Prompt(ctx context.Context, prompt string) error {
 	c.mu.Lock()
 	sessionID := c.sessionID
+	systemPrompt := c.systemPrompt
+	c.systemPrompt = ""
 	c.mu.Unlock()
 	if sessionID == "" {
 		return errors.New("piacp: Prompt called before Launch established a session")
@@ -321,10 +400,14 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 
 	c.emit(runtimeevents.Event{Kind: runtimeevents.KindTurnStarted, TurnID: turnID})
 
+	text := prompt
+	if systemPrompt != "" {
+		text = systemPrompt + "\n\n" + prompt
+	}
 	params := map[string]any{
 		"sessionId": sessionID,
 		"prompt": []map[string]any{
-			{"type": "text", "text": prompt},
+			{"type": "text", "text": text},
 		},
 	}
 
@@ -423,6 +506,12 @@ func (c *Client) InterruptCapability() adapters.InterruptCapability {
 // Events implements [acp.Client].
 func (c *Client) Events() <-chan runtimeevents.Event { return c.events }
 
+func (c *Client) ProviderSessionID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.sessionID
+}
+
 // Close implements [acp.Client]. Terminates the bridge subprocess
 // (closing stdin first to give it a chance to exit on EOF, then killing
 // it after a grace period) and closes the Events channel exactly once.
@@ -438,25 +527,33 @@ func (c *Client) Close(ctx context.Context) error {
 	cmd := c.cmd
 	stdin := c.stdin
 	waitDone := c.waitDone
+	sessionID := c.sessionID
+	sessionClose := c.sessionClose
 	c.mu.Unlock()
+	var closeErr error
+	if sessionClose && sessionID != "" {
+		closeCtx, cancel := context.WithTimeout(ctx, time.Second)
+		_, closeErr = c.call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
+		cancel()
+	}
 
 	c.failPending(errors.New("piacp: client closed"))
 	c.closeEvents()
 
 	if cmd == nil || cmd.Process == nil {
-		return nil
+		return closeErr
 	}
 	if stdin != nil {
 		_ = stdin.Close()
 	}
 	if waitDone == nil {
-		return nil
+		return closeErr
 	}
 
 	grace := 2 * time.Second
 	select {
 	case <-waitDone:
-		return nil
+		return closeErr
 	case <-time.After(grace):
 	case <-ctx.Done():
 	}
@@ -466,7 +563,7 @@ func (c *Client) Close(ctx context.Context) error {
 	case <-waitDone:
 	case <-time.After(3 * time.Second):
 	}
-	return nil
+	return closeErr
 }
 
 func (c *Client) waitProcess() {
@@ -478,11 +575,9 @@ func (c *Client) waitProcess() {
 	c.mu.Lock()
 	c.waitErr = err
 	c.mu.Unlock()
-	close(waitDone)
-
 	c.failPending(errors.New("piacp: process exited before response"))
 
-	payload := map[string]any{}
+	payload := map[string]any{"exit_code": cmd.ProcessState.ExitCode()}
 	if err != nil {
 		payload["error"] = err.Error()
 	}
@@ -490,6 +585,7 @@ func (c *Client) waitProcess() {
 		Kind:    runtimeevents.KindProcessExited,
 		Payload: mustMarshal(payload),
 	})
+	close(waitDone)
 	c.closeEvents()
 }
 
@@ -514,10 +610,12 @@ func (c *Client) drainStderr(r io.Reader) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		// Diagnostic-only. npx/pi-acp's own stderr carries install/log
-		// noise, not protocol frames. Intentionally dropped rather than
-		// misclassified as protocol activity — same convention
-		// opencodeacp/copilotacp already use for their own stderr.
-		_ = scanner.Text()
+		// noise, not protocol frames. Surface it only through the opt-in
+		// redacted diagnostic callback, never as model activity.
+		c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticStderr, "ACP child stderr", scanner.Text()))
+	}
+	if err := scanner.Err(); err != nil {
+		c.reportReadError("reading ACP child stderr", err)
 	}
 }
 
@@ -533,6 +631,7 @@ func (c *Client) readLoop(stdout io.Reader) {
 		raw := scanner.Bytes()
 		var frame rpcFrame
 		if err := json.Unmarshal(raw, &frame); err != nil {
+			c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticMalformedJSON, "invalid JSON-RPC frame", string(raw)))
 			continue
 		}
 		switch {
@@ -543,6 +642,41 @@ func (c *Client) readLoop(stdout io.Reader) {
 		case frame.ID != nil:
 			c.deliverResponse(*frame.ID, frame.Result, frame.Error)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		c.reportReadError("reading ACP protocol stream", err)
+	}
+	c.failPending(errors.New("piacp: protocol stream closed before response"))
+	c.mu.Lock()
+	waitDone := c.waitDone
+	c.mu.Unlock()
+	if waitDone != nil {
+		select {
+		case <-waitDone:
+			return
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	c.closeEvents()
+}
+
+func (c *Client) reportDiagnostic(d acp.Diagnostic) {
+	c.diagnosticMu.Lock()
+	defer c.diagnosticMu.Unlock()
+	c.mu.Lock()
+	fn := c.diagnostic
+	c.mu.Unlock()
+	if fn != nil {
+		fn(d)
+	}
+}
+
+func (c *Client) reportReadError(message string, err error) {
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if !closed {
+		c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticProtocol, message, err.Error()))
 	}
 }
 

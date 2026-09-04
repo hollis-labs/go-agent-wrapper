@@ -2,7 +2,9 @@ package activity
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
@@ -48,5 +50,42 @@ func TestNewBridgeNilSinkIsNoOp(t *testing.T) {
 		nil,
 	); err != nil {
 		t.Fatalf("Emit on nil-sink bridge: %v", err)
+	}
+}
+
+func TestBridgeSerializesSequenceAssignmentAndSinkDelivery(t *testing.T) {
+	firstAtSink := make(chan struct{})
+	var mu sync.Mutex
+	var sequences []uint64
+	sink := runtimeevents.SinkFunc(func(_ context.Context, ev runtimeevents.Event) error {
+		if ev.Sequence == 1 {
+			close(firstAtSink)
+			time.Sleep(25 * time.Millisecond)
+		}
+		mu.Lock()
+		sequences = append(sequences, ev.Sequence)
+		mu.Unlock()
+		return nil
+	})
+
+	b := NewBridge(sink)
+	b.Bind("test", "ses_ordered", runtimeevents.Process{})
+	done := make(chan struct{}, 2)
+	go func() {
+		_ = b.Emit(context.Background(), runtimeevents.KindSessionReady, runtimeevents.Source{}, nil)
+		done <- struct{}{}
+	}()
+	<-firstAtSink
+	go func() {
+		_ = b.Emit(context.Background(), runtimeevents.KindSessionHeartbeat, runtimeevents.Source{}, nil)
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(sequences) != 2 || sequences[0] != 1 || sequences[1] != 2 {
+		t.Fatalf("sink delivery sequences = %v, want [1 2]", sequences)
 	}
 }

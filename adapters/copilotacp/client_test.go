@@ -95,12 +95,13 @@ func TestClientStdio_LaunchPromptEvents(t *testing.T) {
 		t.Fatalf("Prompt: %v", err)
 	}
 
-	evs, ok := drainEvents(c, 4, 10*time.Second)
+	evs, ok := drainEvents(c, 5, 10*time.Second)
 	if !ok {
-		t.Fatalf("did not observe 4 events in time; got %d: %+v", len(evs), evs)
+		t.Fatalf("did not observe 5 events in time; got %d: %+v", len(evs), evs)
 	}
 
 	wantKinds := []runtimeevents.EventKind{
+		runtimeevents.KindProcessStarted,
 		runtimeevents.KindSessionReady,
 		runtimeevents.KindTurnStarted,
 		runtimeevents.KindAgentDelta,
@@ -115,18 +116,18 @@ func TestClientStdio_LaunchPromptEvents(t *testing.T) {
 	// The agent_message_chunk's text and the turn's stop_reason should
 	// both have reached the translated payloads.
 	var deltaPayload map[string]any
-	if err := json.Unmarshal(evs[2].Payload, &deltaPayload); err != nil {
+	if err := json.Unmarshal(evs[3].Payload, &deltaPayload); err != nil {
 		t.Fatalf("unmarshal delta payload: %v", err)
 	}
 	if deltaPayload["content"] != "hello from fake" {
 		t.Errorf("delta content = %v, want %q", deltaPayload["content"], "hello from fake")
 	}
-	if evs[2].TurnID == "" || evs[2].TurnID != evs[1].TurnID || evs[2].TurnID != evs[3].TurnID {
-		t.Errorf("turn-scoped events should share one TurnID: %+v", evs[1:4])
+	if evs[3].TurnID == "" || evs[3].TurnID != evs[2].TurnID || evs[3].TurnID != evs[4].TurnID {
+		t.Errorf("turn-scoped events should share one TurnID: %+v", evs[2:5])
 	}
 
 	var completedPayload map[string]any
-	if err := json.Unmarshal(evs[3].Payload, &completedPayload); err != nil {
+	if err := json.Unmarshal(evs[4].Payload, &completedPayload); err != nil {
 		t.Fatalf("unmarshal turn.completed payload: %v", err)
 	}
 	if completedPayload["stop_reason"] != "end_turn" {

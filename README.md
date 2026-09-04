@@ -43,6 +43,12 @@ End-to-end launch path is wired:
   `go-harness-filters/repair` rules.
 - Native and ACP adapters are available for the providers documented under
   `adapters/`.
+- ACP adapters run through a wrapper-owned `acp.Manager`: `Wrapper.Run`
+  performs initialize, optional agent authentication, create-or-resume,
+  deterministic mode/config application, prompting, turn cancellation, and
+  close for both stdio and TCP. `Wrapper.ACPSnapshot`,
+  `Wrapper.ProviderSessionID`, and a shared `Config.ACPManager` replace
+  downstream liveness/session registries.
 - `classifybridge.Observer` lets a
   `go-harness-filters/classify.Classifier` produce policy findings.
 
@@ -95,12 +101,15 @@ func main() {
 
 | Path | What it owns |
 |---|---|
-| `wrapper/` | Top-level `Config`, `Wrapper`, and `Run` — the launch boundary itself. Dispatches the adapter's declared runtime (pty / streaming-stdio / jsonrpc-stdio / http-sse / adapter-subprocess-per-turn) to the matching `agentkit/agentsessions` Capabilities. Plumbs `llmtypes.StreamEvent` → `runtimeevents.Event` via `activity.Bridge`. |
+| `wrapper/` | Top-level `Config`, `Wrapper`, and `Run` — the launch boundary itself. Dispatches native runtimes to `agentkit/agentsessions` and owns ACP stdio/TCP lifecycles through `acp.Manager`. Plumbs all activity into `runtimeevents.Event` via `activity.Bridge`. |
+| `acp/` | ACP client contract plus authoritative `Manager`/`Session` registration, liveness, prompt/cancel/close, normalized outcomes, provider session-id readback, and redacted diagnostics. |
 | `activity/` | Bridge from wrapper lifecycle to the shared `go-runtime-events` schema. |
 | `adapters/` | Provider-integration contract. Base `Adapter` interface is neutral about go-providers; optional `RuntimeAdapter` extension exposes a `provider.CLIAdapter` for adapters that ride on the agentkit runtime. |
 | `adapters/claude/` | Claude Code streaming-stdio adapter (`claude -p --input-format stream-json --output-format stream-json --verbose`). |
 | `adapters/codex/` | Codex app-server adapter (`codex app-server`) — JSON-RPC 2.0 over stdio. |
 | `adapters/opencode/` | OpenCode serve-http adapter (`opencode serve --port 0 --hostname 127.0.0.1`) — HTTP/SSE. |
+| `adapters/claudeacp/`, `adapters/codexacp/`, `adapters/piacp/` | Bridge-mediated ACP clients driven end to end by `wrapper.Wrapper`. |
+| `adapters/opencodeacp/`, `adapters/copilotacp/` | Native ACP clients; Copilot supports both stdio and TCP. |
 | `classifybridge/` | Adapts `go-harness-filters/classify.Classifier` into `policy.Observer` findings. |
 | `policy/` | Post-hoc observations, advisory findings, and an optional `Store` interface for app-provided rule backing. |
 | `plant/` | Pre-exec planting contract (boot dirs, MCP config, provider settings, hooks/plugins). Called by `Run` before the agentkit runtime is constructed. |
@@ -135,6 +144,24 @@ request, not an observer callback. Direct Claude, Codex, OpenCode, and Pi ACP
 clients currently default it to `cancelled`; Copilot currently returns JSON-RPC
 method-not-handled. A future host responder can enforce at that point only when
 the provider chooses to ask, so it is not a general replacement for host gates.
+
+## ACP lifecycle
+
+Pass any shipped ACP adapter to `wrapper.Config.Adapter`; no direct
+`acp.Client` orchestration is required. Use `Config.SessionIDPreset` to resume,
+`ACPAuthMethodID` for a non-terminal method advertised by `initialize`, and
+`ACPSessionModeID`/`ACPSessionConfig` for post-create configuration. Call
+`Wrapper.CancelTurn` for ACP `session/cancel` (the session remains reusable) and
+`Wrapper.Stop` to close the whole session. A shared `Config.ACPManager` exposes
+lookup, liveness, cancel, close, and shutdown across wrappers.
+
+Unexpected transport EOF, non-zero child-process exit, and malformed protocol
+streams are returned as typed `acp.LifecycleError` outcomes. A clean child exit
+is recorded as `acp.OutcomeChildExit` without manufacturing an error. Canceled
+turns are recorded as `acp.OutcomeCanceled`; cancellation of the whole `Run`
+preserves `ctx.Err()`.
+`Config.OnACPDiagnostic` receives only bounded, redacted stderr/protocol data;
+diagnostics are not mixed into model output.
 
 ## Dependencies
 

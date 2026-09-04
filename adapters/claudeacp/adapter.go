@@ -138,19 +138,16 @@ var ErrPTYUnsupported = errors.New("claudeacp: adapter does not support PTY allo
 // JsonRpcStdio, per go-agent-wrapper's runtime_dispatch.go) without
 // ErrUnknownRuntime.
 //
-// This bridge deliberately mirrors [adapters/opencodeacp]'s and
-// [adapters/codex]'s own provider.CLIAdapter shape exactly: real
-// Detect/BuildArgs (so the ONE real bridge process agentkit spawns is
-// the genuine article, not a duplicate) and a pass-through ParseLine
-// returning (nil, nil) — see the package doc's "Client ownership of the
-// subprocess" section for why. Real, live-verified ACP driving for this
-// task goes through [Client] directly (used standalone, not via this
-// bridge) — [cliAdapter] exists for interface completeness and
-// dispatch-table compatibility, matching the other ACP adapters this
-// repo already ships.
+// This compatibility shape retains real Detect/BuildArgs and a pass-through
+// ParseLine. Wrapper.Run selects [Adapter.ACPClient] for ProtocolACP, so its
+// end-to-end protocol lifecycle does not run through this read-only seam.
 func (a *Adapter) CLIAdapter() provider.CLIAdapter {
 	return &cliAdapter{client: a.newClient()}
 }
+
+// ACPClient implements [acp.ClientAdapter]. Wrapper calls this to obtain the
+// real single-session protocol client instead of the capture-only CLI shim.
+func (a *Adapter) ACPClient() acp.Client { return a.newClient() }
 
 // cliAdapter implements go-providers' provider.CLIAdapter for the
 // claude-agent-acp bridge exec shape. See [Adapter.CLIAdapter]'s doc
@@ -197,5 +194,6 @@ func (a *cliAdapter) ParseLine([]byte) ([]llmtypes.StreamEvent, error) {
 var (
 	_ adapters.Adapter        = (*Adapter)(nil)
 	_ adapters.RuntimeAdapter = (*Adapter)(nil)
+	_ acp.ClientAdapter       = (*Adapter)(nil)
 	_ provider.CLIAdapter     = (*cliAdapter)(nil)
 )
