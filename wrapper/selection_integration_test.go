@@ -3,6 +3,7 @@ package wrapper
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -143,7 +144,7 @@ func TestSelectedClaudeStreamingCancellationReapsProcess(t *testing.T) {
 	pidFile := filepath.Join(root, "pid")
 	binary := filepath.Join(root, "blocking-claude.sh")
 	body := `#!/bin/sh
-printf '%s' "$$" > "$PID_FILE"
+printf '%s\n' "$$" > "$PID_FILE"
 trap 'exit 0' TERM INT
 while :; do /bin/sleep 1; done
 `
@@ -333,7 +334,7 @@ func TestSelectedSubprocessPerTurnCancellationReapsProcess(t *testing.T) {
 			termFile := filepath.Join(root, "terminated")
 			binary := filepath.Join(root, "blocking-provider.sh")
 			body := "#!/bin/sh\n" +
-				`printf '%s' "$$" > "$PID_FILE"` + "\n" +
+				`printf '%s\n' "$$" > "$PID_FILE"` + "\n" +
 				`trap 'printf terminated > "$TERM_FILE"; exit 0' TERM INT` + "\n" +
 				`while :; do /bin/sleep 1; done` + "\n"
 			if err := os.WriteFile(binary, []byte(body), 0o755); err != nil {
@@ -411,23 +412,106 @@ func containsExactString(values []string, want string) bool {
 
 func waitForPIDFile(t *testing.T, path string, timeout time.Duration) int {
 	t.Helper()
+	pid, err := waitForPIDFileValue(path, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pid
+}
+
+func waitForPIDFileValue(path string, timeout time.Duration) (int, error) {
 	deadline := time.Now().Add(timeout)
+	var lastBody []byte
+	var lastParseErr error
+	sawFile := false
 	for time.Now().Before(deadline) {
 		body, err := os.ReadFile(path)
 		if err == nil {
-			pid, convErr := strconv.Atoi(string(body))
-			if convErr != nil {
-				t.Fatalf("parse pid %q: %v", body, convErr)
+			sawFile = true
+			lastBody = append(lastBody[:0], body...)
+			line, complete := strings.CutSuffix(string(body), "\n")
+			switch {
+			case !complete:
+				lastParseErr = errors.New("incomplete write (missing newline terminator)")
+			case strings.ContainsRune(line, '\n'):
+				lastParseErr = errors.New("multiple lines")
+			default:
+				pid, convErr := strconv.Atoi(line)
+				if convErr == nil && pid > 0 {
+					return pid, nil
+				}
+				if convErr != nil {
+					lastParseErr = convErr
+				} else {
+					lastParseErr = fmt.Errorf("non-positive pid %d", pid)
+				}
 			}
-			return pid
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("read pid file: %v", err)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return 0, fmt.Errorf("read pid file %q: %w", path, err)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("timed out waiting for child pid file")
-	return 0
+	if sawFile {
+		return 0, fmt.Errorf("timed out waiting for valid child pid in %q; last contents %q: %w", path, lastBody, lastParseErr)
+	}
+	return 0, fmt.Errorf("timed out waiting for child pid file %q", path)
+}
+
+func TestWaitForPIDFileRetriesTruncateAndPartialWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pid")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	target := strconv.Itoa(os.Getpid())
+	if len(target) < 2 {
+		file.Close()
+		t.Fatalf("test process pid %q is unexpectedly short", target)
+	}
+	partialReady := make(chan struct{})
+	writerDone := make(chan error, 1)
+	go func() {
+		if _, err := file.WriteString(target[:1]); err != nil {
+			_ = file.Close()
+			writerDone <- err
+			return
+		}
+		close(partialReady)
+		time.Sleep(40 * time.Millisecond)
+		if _, err := file.WriteString(target[1:] + "\n"); err != nil {
+			_ = file.Close()
+			writerDone <- err
+			return
+		}
+		writerDone <- file.Close()
+	}()
+	<-partialReady
+	got, err := waitForPIDFileValue(path, time.Second)
+	if err != nil {
+		t.Fatalf("waitForPIDFileValue: %v", err)
+	}
+	if err := <-writerDone; err != nil {
+		t.Fatalf("writer: %v", err)
+	}
+	if got != os.Getpid() {
+		t.Fatalf("pid = %d, want completed pid %d", got, os.Getpid())
+	}
+}
+
+func TestWaitForPIDFileReportsStableMalformedContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pid")
+	if err := os.WriteFile(path, []byte("not-a-pid\n"), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	_, err := waitForPIDFileValue(path, 30*time.Millisecond)
+	if err == nil {
+		t.Fatal("waitForPIDFileValue returned nil for stable malformed content")
+	}
+	for _, want := range []string{"not-a-pid", "invalid syntax"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not contain %q", err, want)
+		}
+	}
 }
 
 func processExists(pid int) bool {

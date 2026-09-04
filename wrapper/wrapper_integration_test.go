@@ -732,7 +732,7 @@ func TestRunSandboxErrorDrainsAcceptedTurnAndReapsProcess(t *testing.T) {
 	pidFile := filepath.Join(dir, "sandbox-turn.pid")
 	script := filepath.Join(dir, "blocking-turn.sh")
 	body := `#!/bin/sh
-printf '%s' "$$" > "$PID_FILE"
+printf '%s\n' "$$" > "$PID_FILE"
 trap 'exit 0' TERM INT
 while :; do /bin/sleep 1; done
 `
