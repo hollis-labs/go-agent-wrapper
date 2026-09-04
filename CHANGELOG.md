@@ -8,6 +8,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Explicit child-process environment contract.** `wrapper.Config.Environment`
+  now accepts a typed `ChildEnvironment` with inherit/merge/replace modes, an
+  inherited-key allowlist, ordered `Set` entries (last duplicate wins), and a
+  final `Unset` list. Native and ACP subprocesses receive the materialized
+  environment directly through their spawn APIs; no shell command or generated
+  `env -i` wrapper is required. The zero value retains ambient inheritance.
+- **First-class native adapter selection.** `adapters.Select` resolves a
+  `Selection` keyed by provider, Runtime kind, and launch mode. It includes
+  Claude streaming-stdio and subprocess-per-turn (with explicit developer-mode
+  constructors), Codex app-server and subprocess-per-turn, and OpenCode
+  serve-http and subprocess-per-turn. Absolute binary overrides and extra args
+  remain direct os/exec path/argv values. Existing per-provider default launch
+  shapes are unchanged.
+
 - **Wrapper-owned ACP session lifecycle.** `acp.Manager` and its managed
   `Session` now own registration, initialize/authenticate, create-or-resume,
   deterministic mode/config application, prompts, turn-scoped cancellation,
@@ -24,6 +38,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and session configuration.
 
 ### Changed
+
+- `Wrapper.Run` now passes the materialized child environment into both
+  `agentsessions.StartOptions.Env` and ACP `LaunchParams.Env`, and honors a
+  non-nil `Adapter.Resolve` `Spec.Env` as the adapter's final replacement.
+- Native wrapper teardown now closes new input admission and drains accepted
+  `SendInput` calls before closing the event fanout, preventing a canceled
+  subprocess-per-turn call from racing a terminal event into a closed channel;
+  the same ordering applies when post-start sandbox setup fails.
+- Codex ACP now resolves its optional `CODEX_PATH` only from the environment
+  supplied to the launch (or its explicit client option), so a sanitized child
+  environment cannot re-import an excluded ambient CLI path.
 
 - Serialized each `activity.Bridge` sequence assignment with its sink write so
   concurrent lifecycle, heartbeat, and stream producers cannot deliver event
@@ -92,6 +117,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   described as best-effort where a provider actually asks.
 
 ### Tests
+
+- Added adversarial environment coverage for inherited allowlists, empty
+  allowlists, unsets, duplicate assignments, spaces, metacharacters, NULs, and
+  ambient-secret exclusion, plus Windows case-insensitive key behavior,
+  including real Claude/Codex/OpenCode child processes.
+- Added provider/runtime/launch-mode selection coverage plus real cancellation,
+  process-reaping, direct argv, and normalized-event tests for Claude streaming
+  and Codex/OpenCode subprocess-per-turn paths.
 
 - Added real subprocess ACP fixtures covering fresh/resumed handshake,
   authentication/configuration, provider session IDs, prompt/cancel/re-prompt,

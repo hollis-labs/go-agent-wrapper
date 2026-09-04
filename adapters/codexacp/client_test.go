@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -305,6 +306,15 @@ func TestClientBuildEnvRespectsExplicitCodexPath(t *testing.T) {
 	}
 }
 
+func TestClientBuildEnvRespectsWindowsCaseInsensitiveCodexPath(t *testing.T) {
+	c := NewClient(WithClientCodexBinary("/must/not/be/appended"))
+	env := c.buildEnvForOS([]string{"Codex_Path=C:/explicit/codex.exe", "FOO=bar"}, "windows")
+	want := []string{"Codex_Path=C:/explicit/codex.exe", "FOO=bar"}
+	if !reflect.DeepEqual(env, want) {
+		t.Fatalf("buildEnvForOS = %#v, want %#v", env, want)
+	}
+}
+
 func TestClientBuildEnvInjectsResolvedCodexPathWhenAbsent(t *testing.T) {
 	c := NewClient(WithClientCodexBinary("/resolved/codex"))
 	env := c.buildEnv([]string{"FOO=bar"})
@@ -316,6 +326,35 @@ func TestClientBuildEnvInjectsResolvedCodexPathWhenAbsent(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("buildEnv did not inject the resolved CODEX_PATH; env=%v", env)
+	}
+}
+
+func TestClientBuildEnvDoesNotReimportExcludedAmbientCodexPath(t *testing.T) {
+	t.Setenv("CODEX_CLI_PATH", "/ambient/secret-codex")
+	c := NewClient()
+	env := c.buildEnv([]string{"PATH=/definitely/no/codex/here", "SAFE=value"})
+	for _, assignment := range env {
+		if assignment == "CODEX_PATH=/ambient/secret-codex" || assignment == "CODEX_CLI_PATH=/ambient/secret-codex" {
+			t.Fatalf("buildEnv leaked excluded ambient path: %v", env)
+		}
+	}
+}
+
+func TestClientBuildEnvResolvesOnlyFromSuppliedEnvironment(t *testing.T) {
+	t.Setenv("CODEX_CLI_PATH", "/ambient/must-not-win")
+	c := NewClient()
+	env := c.buildEnv([]string{"CODEX_CLI_PATH=/allowed/codex", "PATH=/safe"})
+	found := false
+	for _, assignment := range env {
+		if assignment == "CODEX_PATH=/allowed/codex" {
+			found = true
+		}
+		if assignment == "CODEX_PATH=/ambient/must-not-win" {
+			t.Fatalf("buildEnv preferred ambient path: %v", env)
+		}
+	}
+	if !found {
+		t.Fatalf("buildEnv did not resolve from supplied environment: %v", env)
 	}
 }
 

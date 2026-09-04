@@ -53,13 +53,12 @@
 // 0.147.0`). To avoid the bridge silently driving a different, unpinned
 // Codex build than the one [adapters/codex]'s native adapter drives,
 // [Client.Launch] explicitly sets `CODEX_PATH` in the spawned bridge
-// process's environment, resolved the SAME way the native adapter's
-// underlying go-providers resolver does: an explicit [WithCodexBinary]
-// override, else the `CODEX_CLI_PATH` env var, else a real `exec.LookPath
-// ("codex")` — falling back to the bridge's own bundled dependency only
-// when none of those resolve. This is a deliberate design choice, not an
-// oversight: both Codex adapters (native and ACP-bridge) should drive the
-// same real Codex install by default.
+// process's environment: an explicit [WithCodexBinary] override, else the
+// supplied launch environment's `CODEX_CLI_PATH`, else a `codex` executable
+// found in that environment's `PATH`. The default inherited environment
+// therefore drives the same install as the native adapter, while a sanitized
+// environment cannot silently import an excluded host path. The bridge's own
+// bundled dependency is used only when none of those resolve.
 //
 // # Real ACP wire behavior (verified live against codex-acp 1.6.2 + the
 // real system `codex` CLI 0.147.0, using real ChatGPT-authenticated

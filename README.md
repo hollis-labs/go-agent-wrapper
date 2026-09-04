@@ -43,6 +43,14 @@ End-to-end launch path is wired:
   `go-harness-filters/repair` rules.
 - Native and ACP adapters are available for the providers documented under
   `adapters/`.
+- `Config.Environment` materializes an explicit child environment for every
+  native or ACP spawn. Its typed inherit/merge/replace modes, inherited-key
+  allowlist, ordered overrides, and final unset list make secret egress and
+  precedence inspectable without an `env -i` shell wrapper.
+- `adapters.Select` chooses a native adapter from provider, Runtime kind, and
+  launch mode. It covers Claude streaming-stdio (including the explicit
+  developer-mode variant) and Codex/OpenCode subprocess-per-turn while
+  preserving the shipped packages' existing app-server/serve-http defaults.
 - ACP adapters run through a wrapper-owned `acp.Manager`: `Wrapper.Run`
   validates ACP v1 negotiation, performs optional agent authentication,
   capability-gated create-or-resume, deterministic mode/config application,
@@ -99,6 +107,67 @@ func main() {
 }
 ```
 
+## Child environment and native adapter selection
+
+The zero-value `wrapper.Config.Environment` inherits the host process
+environment for compatibility. Security-sensitive hosts should make the choice
+explicit. A strict replacement environment is the usual migration from a
+generated `env -i` script:
+
+```go
+adapter, err := adapters.Select(adapters.Selection{
+    Provider:    adapters.ProviderCodex,
+    RuntimeKind: adapters.RuntimeKindCLI,
+    LaunchMode:  adapters.LaunchSubprocessPerTurn,
+    Binary:      "/absolute/path/to/codex",
+})
+if err != nil {
+    return err
+}
+
+w, err := wrapper.New(wrapper.Config{
+    App:      "my-app",
+    Workdir:  workdir,
+    Adapter:  adapter,
+    Activity: bridge,
+    Environment: wrapper.ChildEnvironment{
+        Mode: wrapper.EnvironmentReplace,
+        Set: []string{
+            "HOME=" + home,
+            "PATH=" + path,
+            "CODEX_HOME=" + plantedConfigDir,
+        },
+    },
+})
+```
+
+`EnvironmentMerge` starts from the ambient process environment;
+`EnvironmentInherit` accepts only narrowing (`Allowlist`/`Unset`), while
+`EnvironmentReplace` starts empty. A nil allowlist means all inherited keys; a
+non-nil empty allowlist means none. `Set` is ordered (the last duplicate wins),
+then `Unset` wins over everything. Invalid names/assignments and NUL bytes fail
+before spawn. Names compare case-insensitively on Windows and case-sensitively
+on other hosts. Values and `Selection.ExtraArgs` are passed as direct environment
+and argv entries, never shell-interpolated. When a strict configuration
+materializes to zero entries, long-lived and ACP launches contain only the
+reserved `GO_AGENT_WRAPPER_EMPTY_ENVIRONMENT=1` marker; this prevents the
+current runtime dependencies' empty-slice fallback from restoring the ambient
+environment. Subprocess-per-turn launches preserve a genuinely empty slice.
+
+`adapters.LaunchDefault` intentionally retains existing behavior: Claude uses
+streaming stdio, Codex uses app-server, and OpenCode uses serve-http. Hosts that
+need the Nanite-compatible native shapes request `LaunchStreamingStdio` for
+Claude and `LaunchSubprocessPerTurn` for Codex/OpenCode. `DeveloperMode` is
+defined only for factory-created Claude adapters. A host with a previously
+configured `provider.CLIAdapter` can pass it in `Selection.CLIAdapter`; that
+adapter remains authoritative for provider-specific settings, while the
+Selection still supplies the wrapper descriptor/lifecycle shape. Known
+go-providers adapter types are rejected when their configured shape contradicts
+the selected launch mode.
+
+ACP protocol selection remains in the provider ACP packages. The same
+`Config.Environment` contract is forwarded to their `acp.LaunchParams`.
+
 ## Subpackages
 
 | Path | What it owns |
@@ -106,7 +175,7 @@ func main() {
 | `wrapper/` | Top-level `Config`, `Wrapper`, and `Run` — the launch boundary itself. Dispatches native runtimes to `agentkit/agentsessions` and owns ACP stdio/TCP lifecycles through `acp.Manager`. Plumbs all activity into `runtimeevents.Event` via `activity.Bridge`. |
 | `acp/` | ACP client contract plus authoritative `Manager`/`Session` registration, liveness, prompt/cancel/close, normalized outcomes, provider session-id readback, and redacted diagnostics. |
 | `activity/` | Bridge from wrapper lifecycle to the shared `go-runtime-events` schema. |
-| `adapters/` | Provider-integration contract. Base `Adapter` interface is neutral about go-providers; optional `RuntimeAdapter` extension exposes a `provider.CLIAdapter` for adapters that ride on the agentkit runtime. |
+| `adapters/` | Provider-integration contract. Base `Adapter` interface is neutral about go-providers; optional `RuntimeAdapter` exposes a `provider.CLIAdapter`; `Select` provides typed native provider/runtime/launch-mode selection. |
 | `adapters/claude/` | Claude Code streaming-stdio adapter (`claude -p --input-format stream-json --output-format stream-json --verbose`). |
 | `adapters/codex/` | Codex app-server adapter (`codex app-server`) — JSON-RPC 2.0 over stdio. |
 | `adapters/opencode/` | OpenCode serve-http adapter (`opencode serve --port 0 --hostname 127.0.0.1`) — HTTP/SSE. |

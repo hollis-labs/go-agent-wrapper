@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -57,7 +59,7 @@ type Client struct {
 	bridgeVersion string // default defaultBridgeVersion; "" (via WithClientBridgePackageSpec) means unpinned "@latest"-equivalent bare package name
 	bridgePkgSpec string // when set (via WithClientBridgePackageSpec), overrides the whole "package[@version]" token
 	extraArgs     []string
-	codexBinary   string // explicit CODEX_PATH override; "" triggers the CODEX_CLI_PATH/PATH resolution below
+	codexBinary   string // explicit CODEX_PATH override; "" resolves only from the launch environment below
 
 	// promptCloseMu linearizes Prompt's admission and request write with
 	// Close's closed transition and session/close request. It must not guard
@@ -138,12 +140,12 @@ func WithClientExtraArgs(args ...string) ClientOption {
 
 // WithClientCodexBinary overrides the real `codex` executable this
 // Client tells the bridge to run (via the bridge's own `CODEX_PATH` env
-// var — see package doc). Empty (the default) resolves via the
-// CODEX_CLI_PATH env var, then a real PATH lookup for "codex" — the same
-// precedence [adapters/codex]'s own underlying resolver uses, so both
-// Codex adapters drive the same real install by default. If resolution
-// finds nothing, CODEX_PATH is left unset and the bridge falls back to
-// its own bundled `@openai/codex` dependency.
+// var — see package doc). Empty (the default) resolves via CODEX_CLI_PATH,
+// then PATH, from the environment supplied at Launch. With the default
+// inherited launch environment this matches [adapters/codex]'s resolver;
+// a sanitized environment cannot silently re-import an excluded host path.
+// If resolution finds nothing, CODEX_PATH is left unset and the bridge falls
+// back to its own bundled `@openai/codex` dependency.
 func WithClientCodexBinary(path string) ClientOption { return func(c *Client) { c.codexBinary = path } }
 
 // NewClient returns a Client configured by opts, ready for [Client.Launch].
@@ -213,40 +215,91 @@ func (c *Client) resolveBridgeCommand() (string, []string) {
 }
 
 // resolveCodexPath applies the [WithClientCodexBinary] override, then the
-// CODEX_CLI_PATH env var, then a real PATH lookup for "codex" — see
+// supplied launch environment's CODEX_CLI_PATH, then its PATH for "codex" — see
 // [WithClientCodexBinary]'s doc comment for why this mirrors
 // [adapters/codex]'s own resolver precedence. Returns "" when none
 // resolve, leaving CODEX_PATH unset for the spawned bridge (which then
 // falls back to its own bundled `@openai/codex` dependency).
-func (c *Client) resolveCodexPath() string {
+func (c *Client) resolveCodexPath(env []string) string {
 	if c.codexBinary != "" {
 		return c.codexBinary
 	}
-	if p := os.Getenv("CODEX_CLI_PATH"); p != "" {
+	if p := environmentValue(env, "CODEX_CLI_PATH"); p != "" {
 		return p
 	}
-	if p, err := exec.LookPath("codex"); err == nil {
-		return p
+	return executableInEnvironmentPath("codex", env)
+}
+
+func environmentValue(env []string, name string) string {
+	var value string
+	for _, assignment := range env {
+		key, candidate, ok := strings.Cut(assignment, "=")
+		if !ok || !environmentNamesEqual(key, name, runtime.GOOS) {
+			continue
+		}
+		value = candidate
+	}
+	return value
+}
+
+func environmentNamesEqual(left, right, goos string) bool {
+	if goos == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func executableInEnvironmentPath(name string, env []string) string {
+	pathValue := environmentValue(env, "PATH")
+	if pathValue == "" {
+		return ""
+	}
+	extensions := []string{""}
+	if runtime.GOOS == "windows" && filepath.Ext(name) == "" {
+		extensions = filepath.SplitList(environmentValue(env, "PATHEXT"))
+		if len(extensions) == 0 {
+			extensions = []string{".com", ".exe", ".bat", ".cmd"}
+		}
+	}
+	for _, directory := range filepath.SplitList(pathValue) {
+		if directory == "" {
+			directory = "."
+		}
+		for _, extension := range extensions {
+			candidate := filepath.Join(directory, name+extension)
+			info, err := os.Stat(candidate)
+			if err != nil || info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0) {
+				continue
+			}
+			absolute, err := filepath.Abs(candidate)
+			if err == nil {
+				return absolute
+			}
+		}
 	}
 	return ""
 }
 
 // buildEnv assembles the environment the bridge subprocess runs with:
-// paramsEnv (or the current process environment, when paramsEnv is
-// empty) plus an explicit CODEX_PATH entry — unless paramsEnv already
-// sets one, in which case the caller's own choice is respected
-// unmodified.
+// paramsEnv (or the current process environment, when paramsEnv is empty) plus
+// an explicit CODEX_PATH entry resolved only from that resulting environment.
+// When it already sets CODEX_PATH, the caller's choice is respected unmodified.
 func (c *Client) buildEnv(paramsEnv []string) []string {
+	return c.buildEnvForOS(paramsEnv, runtime.GOOS)
+}
+
+func (c *Client) buildEnvForOS(paramsEnv []string, goos string) []string {
 	env := append([]string(nil), paramsEnv...)
 	if len(env) == 0 {
 		env = os.Environ()
 	}
 	for _, kv := range env {
-		if strings.HasPrefix(kv, "CODEX_PATH=") {
+		key, _, ok := strings.Cut(kv, "=")
+		if ok && environmentNamesEqual(key, "CODEX_PATH", goos) {
 			return env
 		}
 	}
-	if codexPath := c.resolveCodexPath(); codexPath != "" {
+	if codexPath := c.resolveCodexPath(env); codexPath != "" {
 		env = append(env, "CODEX_PATH="+codexPath)
 	}
 	return env

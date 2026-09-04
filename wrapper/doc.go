@@ -12,6 +12,7 @@
 // standardized execution boundary that owns:
 //
 //   - process launch (executable, args, env, cwd, process group, limits)
+//   - explicit child-environment inheritance, filtering, merge, and replacement
 //   - IO proxying (stdin, stdout, stderr, PTY, terminal resize)
 //   - planting (per-session boot dirs, MCP config, provider settings,
 //     hooks/plugins, recovery prompts) — see [plant]

@@ -10,8 +10,9 @@
 //  3. How do we turn its native output into runtimeevents.Events?
 //     (Per-provider observer code, layered on top of the channel.)
 //
-// Concrete adapters (claude, codex, opencode) ship as sibling files /
-// subpackages and compose with the lower-level
+// [Select] is the first-class native factory when a host already knows its
+// provider, Runtime kind, and launch mode. Concrete adapters (claude, codex,
+// opencode) also ship as sibling subpackages and compose with the lower-level
 // github.com/hollis-labs/go-providers and go-agent-sessions runtimes.
 // This package owns only the contract.
 package adapters

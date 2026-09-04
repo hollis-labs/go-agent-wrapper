@@ -158,9 +158,9 @@ type ResolveContext struct {
 	// Cwd is the working directory the wrapper will run the process in.
 	Cwd string
 
-	// Env is the base environment the wrapper will hand to the process.
-	// Adapter.Resolve may add, override, or remove entries in the
-	// returned Spec.
+	// Env is the already-materialized Config-derived base environment the
+	// wrapper will hand to the process. Adapter.Resolve may return nil to
+	// retain it, or derive and return a complete replacement in Spec.Env.
 	Env []string
 
 	// PTY indicates whether the wrapper plans to allocate a PTY.
@@ -182,8 +182,9 @@ type Spec struct {
 	// Args are the command-line arguments, not including Binary.
 	Args []string
 
-	// Env is the environment to pass to the child. Nil means inherit
-	// ResolveContext.Env unchanged.
+	// Env is the complete environment to pass to the child. Nil means retain
+	// ResolveContext.Env unchanged; a non-nil value is a final replacement,
+	// including when it is empty.
 	Env []string
 
 	// Cwd is the working directory. "" means inherit

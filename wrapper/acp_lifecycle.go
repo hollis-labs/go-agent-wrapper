@@ -13,7 +13,12 @@ import (
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
-func (w *Wrapper) runACP(ctx context.Context, desc adapters.Descriptor) error {
+func (w *Wrapper) runACP(
+	ctx context.Context,
+	desc adapters.Descriptor,
+	baseEnv []string,
+	environmentExplicit bool,
+) error {
 	if w.cfg.Workdir == "" {
 		return errors.New("wrapper: Config.Workdir is required")
 	}
@@ -23,6 +28,21 @@ func (w *Wrapper) runACP(ctx context.Context, desc adapters.Descriptor) error {
 	adapter, ok := w.cfg.Adapter.(acp.ClientAdapter)
 	if !ok {
 		return fmt.Errorf("%w: adapter %q", ErrAdapterNotACPClient, w.cfg.Adapter.Name())
+	}
+	spec, err := w.cfg.Adapter.Resolve(adapters.ResolveContext{
+		BootDir: w.cfg.BootDir,
+		Cwd:     w.cfg.Workdir,
+		Env:     baseEnv,
+	})
+	if err != nil {
+		return fmt.Errorf("wrapper: adapter Resolve: %w", err)
+	}
+	childEnv, adapterEnvironmentExplicit, err := resolvedSpecEnvironment(baseEnv, spec.Env)
+	if err != nil {
+		return fmt.Errorf("wrapper: adapter Resolve environment: %w", err)
+	}
+	if len(childEnv) == 0 && (environmentExplicit || adapterEnvironmentExplicit) {
+		childEnv = []string{nonInheritingEmptyEnvironment}
 	}
 
 	w.cfg.Activity.Bind(w.cfg.App, w.sessionID, runtimeevents.Process{
@@ -47,6 +67,7 @@ func (w *Wrapper) runACP(ctx context.Context, desc adapters.Descriptor) error {
 
 	launch := acp.LaunchParams{
 		Cwd:             w.cfg.Workdir,
+		Env:             childEnv,
 		SystemPrompt:    w.cfg.SystemPrompt,
 		SessionIDPreset: w.cfg.SessionIDPreset,
 		AuthMethodID:    w.cfg.ACPAuthMethodID,
@@ -157,6 +178,8 @@ func (w *Wrapper) runACP(ctx context.Context, desc adapters.Descriptor) error {
 	waitErr := session.Wait(context.Background())
 	close(stopWatcher)
 	<-stopWatcherDone
+	w.closeInputAdmission()
+	w.inputWG.Wait()
 	<-eventsDone
 	if !sawProcessExit.Load() {
 		snapshot := session.Snapshot()

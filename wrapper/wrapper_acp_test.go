@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -45,6 +46,7 @@ import (
 type fakeACPClient struct {
 	mu        sync.Mutex
 	launched  bool
+	launch    acp.LaunchParams
 	closed    bool
 	prompts   []string
 	events    chan runtimeevents.Event
@@ -58,9 +60,10 @@ func newFakeACPClient(interrupt adapters.InterruptCapability) *fakeACPClient {
 	}
 }
 
-func (f *fakeACPClient) Launch(_ context.Context, _ acp.LaunchParams) error {
+func (f *fakeACPClient) Launch(_ context.Context, params acp.LaunchParams) error {
 	f.mu.Lock()
 	f.launched = true
+	f.launch = params
 	f.mu.Unlock()
 	f.events <- runtimeevents.Event{Kind: runtimeevents.KindSessionReady}
 	return nil
@@ -106,6 +109,14 @@ func (f *fakeACPClient) wasLaunched() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.launched
+}
+
+func (f *fakeACPClient) snapshotLaunch() acp.LaunchParams {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	launch := f.launch
+	launch.Env = append([]string(nil), launch.Env...)
+	return launch
 }
 
 var _ acp.Client = (*fakeACPClient)(nil)
@@ -256,6 +267,10 @@ printf '{"echo":"%s"}\n' "$line"
 		Workdir:           dir,
 		AutoFireFirstTurn: true,
 		FirstTurnPayload:  "hello acp",
+		Environment: ChildEnvironment{
+			Mode: EnvironmentReplace,
+			Set:  []string{"SAFE=value with spaces", "DUP=first", "DUP=last"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -277,6 +292,9 @@ printf '{"echo":"%s"}\n' "$line"
 
 	if !client.wasLaunched() {
 		t.Error("acp.Client.Launch was never called — Descriptor/RuntimeAdapter wiring did not reach the Client")
+	}
+	if got, want := client.snapshotLaunch().Env, []string{"DUP=last", "SAFE=value with spaces"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ACP LaunchParams.Env = %#v, want %#v", got, want)
 	}
 	if prompts := client.snapshotPrompts(); len(prompts) != 1 || prompts[0] != "hello acp" {
 		t.Errorf("acp.Client.Prompt calls = %v, want [\"hello acp\"]", prompts)

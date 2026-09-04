@@ -83,6 +83,10 @@ func runtimeCaps(protocol adapters.Protocol, transport adapters.Transport) (agen
 	}
 }
 
+func capsUsesLongLivedProcess(caps agentsessions.Capabilities) bool {
+	return caps.PTY || caps.StreamingStdio || caps.JsonRpcStdio || caps.ServeHTTP
+}
+
 // runtimeSourceChannel returns the canonical
 // [runtimeevents.SourceChannel] for TYPED events (agent.delta,
 // agent.tool_use, turn.*) produced by the given adapter-declared

@@ -60,6 +60,14 @@ type Config struct {
 	// runtime.
 	Workdir string
 
+	// Environment defines exactly how the child process environment is
+	// derived. The zero value preserves the historical behavior (inherit the
+	// wrapper process environment). Use EnvironmentReplace with a composed,
+	// allowlisted Set for strict isolation; use EnvironmentMerge only when
+	// intentionally retaining ambient variables. The materialized environment
+	// is passed to native and ACP subprocesses without shell construction.
+	Environment ChildEnvironment
+
 	// BootDir, when non-empty, overrides the per-session boot directory
 	// the [Planter] writes into. Empty defaults to
 	// <Workdir>/.wrapper-boot/<SessionID>/. Ignored when Planter is
@@ -227,6 +235,10 @@ type Wrapper struct {
 	cfg       Config
 	sessionID string
 
+	inputMu      sync.Mutex
+	inputWG      sync.WaitGroup
+	inputsClosed bool
+
 	sessMu     sync.RWMutex
 	session    agentsessions.Session
 	acpSession *acp.Session
@@ -249,6 +261,12 @@ func New(cfg Config) (*Wrapper, error) {
 	if cfg.Activity == nil {
 		return nil, errors.New("wrapper: Config.Activity is required")
 	}
+	if _, _, err := cfg.Environment.resolve(nil); err != nil {
+		return nil, err
+	}
+	cfg.Environment.Allowlist = cloneStringSlice(cfg.Environment.Allowlist)
+	cfg.Environment.Set = cloneStringSlice(cfg.Environment.Set)
+	cfg.Environment.Unset = cloneStringSlice(cfg.Environment.Unset)
 	sessionID := cfg.SessionID
 	if sessionID == "" {
 		sessionID = runtimeevents.NewSessionID()
@@ -294,9 +312,13 @@ func (w *Wrapper) SessionID() string { return w.sessionID }
 // underlying wait error if any; ctx.Err() is preserved when cancellation
 // stopped the wrapper.
 func (w *Wrapper) Run(ctx context.Context) error {
+	baseEnv, environmentExplicit, err := w.cfg.Environment.resolve(os.Environ())
+	if err != nil {
+		return err
+	}
 	desc := w.cfg.Adapter.Describe()
 	if desc.Protocol == adapters.ProtocolACP {
-		return w.runACP(ctx, desc)
+		return w.runACP(ctx, desc, baseEnv, environmentExplicit)
 	}
 	ra, ok := w.cfg.Adapter.(adapters.RuntimeAdapter)
 	if !ok {
@@ -328,15 +350,25 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	w.rawSource = rawSource
 	w.sessMu.Unlock()
 
-	// Resolve the wrapper-level Spec for symmetry (validates the
-	// adapter's exec-shape contract, surfaces PTY/no-PTY mismatches
-	// early). The agentkit runtime constructs its own argv via
-	// adapter.BuildArgs — Spec is informational on this path.
-	if _, err := w.cfg.Adapter.Resolve(adapters.ResolveContext{
-		Cwd: w.cfg.Workdir,
-		PTY: caps.PTY,
-	}); err != nil {
+	// Resolve the wrapper-level Spec to validate the adapter's exec-shape
+	// contract and surface PTY/no-PTY mismatches early. The agentkit runtime
+	// constructs its own binary and argv via CLIAdapter, while Spec.Env is an
+	// honored final replacement for the Config-derived base environment.
+	spec, err := w.cfg.Adapter.Resolve(adapters.ResolveContext{
+		BootDir: w.cfg.BootDir,
+		Cwd:     w.cfg.Workdir,
+		Env:     baseEnv,
+		PTY:     caps.PTY,
+	})
+	if err != nil {
 		return fmt.Errorf("wrapper: adapter Resolve: %w", err)
+	}
+	childEnv, adapterEnvironmentExplicit, err := resolvedSpecEnvironment(baseEnv, spec.Env)
+	if err != nil {
+		return fmt.Errorf("wrapper: adapter Resolve environment: %w", err)
+	}
+	if len(childEnv) == 0 && (environmentExplicit || adapterEnvironmentExplicit) && capsUsesLongLivedProcess(caps) {
+		childEnv = []string{nonInheritingEmptyEnvironment}
 	}
 
 	if err := w.runPlanter(ctx, source); err != nil {
@@ -447,6 +479,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		Workdir:           w.cfg.Workdir,
 		WorkspaceDir:      workspaceDir,
 		LogPath:           logPath,
+		Env:               childEnv,
 		EventFanout:       fanout,
 		Fanout:            stdoutStream,
 		Stderr:            stderrStream,
@@ -516,13 +549,6 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			map[string]any{"pid": pid})
 	}
 
-	if err := w.runSandbox(ctx, source, session); err != nil {
-		// Stop the session so we don't leave a child running with no
-		// caller waiting on it.
-		_ = session.Stop(context.Background())
-		return err
-	}
-
 	translatorDone := make(chan struct{})
 	go func() {
 		defer close(translatorDone)
@@ -544,6 +570,24 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		}
 	}()
 
+	if err := w.runSandbox(ctx, source, session); err != nil {
+		// Close admission before stopping, then wait for the logical session
+		// and every already-accepted input to unwind before closing fanout.
+		// This is the same ownership ordering as the normal exit path.
+		w.closeInputAdmission()
+		_ = session.Stop(context.Background())
+		exitCode, waitErr := session.Wait()
+		w.inputWG.Wait()
+		close(fanout)
+		<-translatorDone
+		exitPayload := map[string]any{"exit_code": exitCode, "error": err.Error()}
+		if waitErr != nil {
+			exitPayload["wait_error"] = waitErr.Error()
+		}
+		_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindProcessExited, source, exitPayload)
+		return err
+	}
+
 	// Watch ctx for cancellation so a stuck session unblocks. The
 	// watcher emits the interrupt event pair around session.Stop so
 	// downstream consumers can see why the session ended.
@@ -558,6 +602,8 @@ func (w *Wrapper) Run(ctx context.Context) error {
 
 	exitCode, waitErr := session.Wait()
 	close(stopWatcher)
+	w.closeInputAdmission()
+	w.inputWG.Wait()
 	close(fanout)
 	<-translatorDone
 
@@ -582,14 +628,23 @@ func (w *Wrapper) Run(ctx context.Context) error {
 // Returns [ErrSessionNotStarted] if [Wrapper.Run] has not started a
 // session yet.
 func (w *Wrapper) SendInput(ctx context.Context, data []byte) error {
+	w.inputMu.Lock()
+	if w.inputsClosed {
+		w.inputMu.Unlock()
+		return ErrSessionNotStarted
+	}
 	w.sessMu.RLock()
 	session := w.session
 	acpSession := w.acpSession
 	rawSource := w.rawSource
 	w.sessMu.RUnlock()
 	if session == nil && acpSession == nil {
+		w.inputMu.Unlock()
 		return ErrSessionNotStarted
 	}
+	w.inputWG.Add(1)
+	w.inputMu.Unlock()
+	defer w.inputWG.Done()
 	// Emit before forwarding so the event sequence reflects intent
 	// even when SendInput errors (the input was attempted regardless).
 	_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindStdinWrite, rawSource,
@@ -600,6 +655,12 @@ func (w *Wrapper) SendInput(ctx context.Context, data []byte) error {
 		return acpSession.Prompt(ctx, string(data))
 	}
 	return session.SendInput(ctx, data)
+}
+
+func (w *Wrapper) closeInputAdmission() {
+	w.inputMu.Lock()
+	w.inputsClosed = true
+	w.inputMu.Unlock()
 }
 
 // Stop requests termination of the running session and emits the

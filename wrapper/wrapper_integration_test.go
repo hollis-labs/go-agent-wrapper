@@ -220,6 +220,12 @@ type recordingApplier struct {
 	err     error
 }
 
+type gatedErrorApplier struct {
+	entered chan struct{}
+	release chan struct{}
+	err     error
+}
+
 type replacingFilter struct {
 	mu    sync.Mutex
 	kinds []string
@@ -243,6 +249,12 @@ func (a *recordingApplier) Apply(_ context.Context, pid int) (sandbox.Result, er
 	a.calls++
 	a.lastPID = pid
 	return a.result, a.err
+}
+
+func (a *gatedErrorApplier) Apply(_ context.Context, _ int) (sandbox.Result, error) {
+	close(a.entered)
+	<-a.release
+	return sandbox.Result{Profile: "strict", Applied: false}, a.err
 }
 
 // writeFakeScript drops a tiny sh script that emits one line per entry
@@ -709,6 +721,72 @@ func TestRunSandboxErrorStopsSession(t *testing.T) {
 	}
 	if errStr, _ := p["error"].(string); errStr != "seccomp filter rejected" {
 		t.Errorf("sandbox.applied error = %q, want %q", errStr, "seccomp filter rejected")
+	}
+}
+
+func TestRunSandboxErrorDrainsAcceptedTurnAndReapsProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess fixture and liveness probe use POSIX process signals")
+	}
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "sandbox-turn.pid")
+	script := filepath.Join(dir, "blocking-turn.sh")
+	body := `#!/bin/sh
+printf '%s' "$$" > "$PID_FILE"
+trap 'exit 0' TERM INT
+while :; do /bin/sleep 1; done
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	sbErr := errors.New("sandbox rejected after start")
+	applier := &gatedErrorApplier{
+		entered: make(chan struct{}), release: make(chan struct{}), err: sbErr,
+	}
+	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: script}}
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App: "test-sandbox-drain", Adapter: adapter,
+		Activity: activity.NewBridge(sink), Workdir: dir, Sandbox: applier,
+		Environment: ChildEnvironment{Mode: EnvironmentReplace, Set: []string{
+			"PATH=/usr/bin:/bin", "PID_FILE=" + pidFile,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	runDone := make(chan error, 1)
+	go func() { runDone <- w.Run(context.Background()) }()
+	select {
+	case <-applier.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sandbox applier was not entered")
+	}
+	sendDone := make(chan error, 1)
+	go func() { sendDone <- w.SendInput(context.Background(), []byte("block")) }()
+	pid := waitForPIDFile(t, pidFile, 5*time.Second)
+	close(applier.release)
+	select {
+	case err := <-runDone:
+		if !errors.Is(err, sbErr) {
+			t.Fatalf("Run err = %v, want sandbox error", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not wait for sandbox-error cleanup")
+	}
+	select {
+	case err := <-sendDone:
+		if err == nil {
+			t.Fatal("SendInput returned nil after sandbox cancellation")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("accepted SendInput was not drained")
+	}
+	if processExists(pid) {
+		t.Fatalf("turn process %d still exists after Run returned", pid)
+	}
+	if !hasKind(sink.snapshot(), runtimeevents.KindProcessExited) {
+		t.Fatalf("process.exited missing: %v", sink.kinds())
 	}
 }
 
