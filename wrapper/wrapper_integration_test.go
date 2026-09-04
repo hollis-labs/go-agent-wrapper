@@ -188,22 +188,26 @@ func (p *recordingPlanter) Plant(_ context.Context, bootDir string, spec plant.S
 	return plant.Result{PlantedFiles: p.files}, p.err
 }
 
-// recordingPolicy records every Decide call and returns a configurable
-// Decision + optional error.
-type recordingPolicy struct {
-	mu       sync.Mutex
-	calls    int
-	requests []policy.Request
-	decision policy.Decision
-	err      error
+// recordingPolicyObserver records every Observe call and returns a configurable
+// Finding plus an optional error.
+type recordingPolicyObserver struct {
+	mu           sync.Mutex
+	calls        int
+	observations []policy.Observation
+	finding      policy.Finding
+	err          error
+	onObserve    func(policy.Observation)
 }
 
-func (p *recordingPolicy) Decide(_ context.Context, req policy.Request) (policy.Decision, error) {
+func (p *recordingPolicyObserver) Observe(_ context.Context, observation policy.Observation) (policy.Finding, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls++
-	p.requests = append(p.requests, req)
-	return p.decision, p.err
+	p.observations = append(p.observations, observation)
+	if p.onObserve != nil {
+		p.onObserve(observation)
+	}
+	return p.finding, p.err
 }
 
 // recordingApplier records every Apply call and returns a configurable
@@ -857,23 +861,28 @@ func toolUseScriptLine(t *testing.T, name string, input map[string]any) string {
 	return "tool_use:" + string(raw)
 }
 
-// runWrapperUntilToolUsePolicy starts the wrapper, sends one input,
+// runWrapperUntilToolUseObservation starts the wrapper, sends one input,
 // waits for the tool_use + policy event pair (or just tool_use if
 // observeOnly), stops, and returns the recorded events.
-func runWrapperUntilToolUsePolicy(t *testing.T, dir, scriptName string, pol policy.Engine, observeOnly bool) (*Wrapper, []runtimeevents.Event) {
+func runWrapperUntilToolUseObservation(t *testing.T, dir, scriptName string, policyObserver policy.Observer, observeOnly bool) (*Wrapper, []runtimeevents.Event) {
 	t.Helper()
 	script := writeFakeScript(t, dir, []string{
 		toolUseScriptLine(t, scriptName, map[string]any{"path": "/tmp/x"}),
 		"done",
 	})
+	return runWrapperWithPolicyObservationScript(t, dir, script, policyObserver, observeOnly)
+}
+
+func runWrapperWithPolicyObservationScript(t *testing.T, dir, script string, policyObserver policy.Observer, observeOnly bool) (*Wrapper, []runtimeevents.Event) {
+	t.Helper()
 	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: script}}
 	sink := newCapturingSink()
 	w, err := New(Config{
-		App:      "test-policy",
-		Adapter:  adapter,
-		Activity: activity.NewBridge(sink),
-		Workdir:  dir,
-		Policy:   pol,
+		App:            "test-policy",
+		Adapter:        adapter,
+		Activity:       activity.NewBridge(sink),
+		Workdir:        dir,
+		PolicyObserver: policyObserver,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -900,32 +909,93 @@ func runWrapperUntilToolUsePolicy(t *testing.T, dir, scriptName string, pol poli
 	return w, sink.snapshot()
 }
 
-// TestRunPolicyNudgeEmitsCorrelatedEvent verifies a ModeNudge decision
-// fires a policy.nudge event with ParentID correlated to the tool_use
-// it was derived from.
-func TestRunPolicyNudgeEmitsCorrelatedEvent(t *testing.T) {
-	pol := &recordingPolicy{
-		decision: policy.Decision{
-			Mode:    policy.ModeNudge,
-			RuleID:  "hollis.deploy.nanite.cerberus-required",
-			Message: "Use cerberus_resource_deploy instead of go build",
+// TestRunBlockRecommendationIsPostSideEffect proves the native-runtime
+// boundary with an executable child: the child creates a marker before it
+// emits tool_use, and the observer sees that marker before it can return a
+// block recommendation. The legacy policy.block event is therefore reporting,
+// not evidence that the side effect was prevented.
+func TestRunBlockRecommendationIsPostSideEffect(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake script needs sh; not running on Windows")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available on PATH")
+	}
+
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "side-effect.marker")
+	script := filepath.Join(dir, "native-side-effect.sh")
+	toolLine := toolUseScriptLine(t, "Delete", map[string]any{"path": "/tmp/x"})
+	for _, value := range []string{marker, toolLine} {
+		if strings.ContainsRune(value, '\'') {
+			t.Fatalf("test fixture %q contains a single quote", value)
+		}
+	}
+	body := "#!/bin/sh\n" +
+		"printf '%s' 'executed' > '" + marker + "'\n" +
+		"printf '%s\\n' '" + toolLine + "'\n" +
+		"printf '%s\\n' 'done'\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write native side-effect script: %v", err)
+	}
+
+	markerSeenDuringObservation := false
+	observer := &recordingPolicyObserver{
+		finding: policy.Finding{
+			Recommendation: policy.RecommendationBlock,
+			RuleID:         "test.block-is-advisory",
+			Message:        "host should block this operation at a pre-execution gate",
+		},
+		onObserve: func(policy.Observation) {
+			content, err := os.ReadFile(marker)
+			markerSeenDuringObservation = err == nil && string(content) == "executed"
 		},
 	}
-	_, evs := runWrapperUntilToolUsePolicy(t, t.TempDir(), "Bash", pol, false)
+
+	_, events := runWrapperWithPolicyObservationScript(t, dir, script, observer, false)
+	if !markerSeenDuringObservation {
+		t.Fatal("observer ran before the child side-effect marker existed; test no longer proves the post-hoc boundary")
+	}
+	content, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read side-effect marker after block recommendation: %v", err)
+	}
+	if string(content) != "executed" {
+		t.Fatalf("side-effect marker = %q, want executed", content)
+	}
+	toolUseIndex := indexOfKind(events, runtimeevents.KindAgentToolUse)
+	blockIndex := indexOfKind(events, runtimeevents.KindPolicyBlock)
+	if toolUseIndex < 0 || blockIndex < 0 || toolUseIndex >= blockIndex {
+		t.Fatalf("event order does not prove post-hoc observation: tool_use=%d policy.block=%d kinds=%v", toolUseIndex, blockIndex, kindList(events))
+	}
+}
+
+// TestRunPolicyNudgeRecommendationEmitsCorrelatedLegacyEvent verifies a
+// nudge finding emits the stable policy.nudge wire kind with ParentID
+// correlated to the tool_use from which it was derived.
+func TestRunPolicyNudgeRecommendationEmitsCorrelatedLegacyEvent(t *testing.T) {
+	pol := &recordingPolicyObserver{
+		finding: policy.Finding{
+			Recommendation: policy.RecommendationNudge,
+			RuleID:         "hollis.deploy.nanite.cerberus-required",
+			Message:        "Use cerberus_resource_deploy instead of go build",
+		},
+	}
+	_, evs := runWrapperUntilToolUseObservation(t, t.TempDir(), "Bash", pol, false)
 
 	pol.mu.Lock()
 	defer pol.mu.Unlock()
 	if pol.calls != 1 {
-		t.Errorf("policy.Decide calls = %d, want 1", pol.calls)
+		t.Errorf("policy.Observer.Observe calls = %d, want 1", pol.calls)
 	}
-	if pol.requests[0].Kind != "tool_use" {
-		t.Errorf("policy.Request.Kind = %q, want tool_use", pol.requests[0].Kind)
+	if pol.observations[0].Kind != "tool_use" {
+		t.Errorf("policy.Observation.Kind = %q, want tool_use", pol.observations[0].Kind)
 	}
-	if pol.requests[0].App != "test-policy" {
-		t.Errorf("policy.Request.App = %q, want test-policy", pol.requests[0].App)
+	if pol.observations[0].App != "test-policy" {
+		t.Errorf("policy.Observation.App = %q, want test-policy", pol.observations[0].App)
 	}
-	if !strings.Contains(pol.requests[0].Original, `"name":"Bash"`) {
-		t.Errorf("policy.Request.Original should contain serialized tool name; got %q", pol.requests[0].Original)
+	if !strings.Contains(pol.observations[0].Original, `"name":"Bash"`) {
+		t.Errorf("policy.Observation.Original should contain serialized tool name; got %q", pol.observations[0].Original)
 	}
 
 	idxTool := indexOfKind(evs, runtimeevents.KindAgentToolUse)
@@ -959,16 +1029,16 @@ func TestRunPolicyNudgeEmitsCorrelatedEvent(t *testing.T) {
 	}
 }
 
-func TestRunPolicyRewriteEmitsRewriteEvent(t *testing.T) {
-	pol := &recordingPolicy{
-		decision: policy.Decision{
-			Mode:        policy.ModeRewrite,
-			RuleID:      "test.rewrite",
-			Replacement: `{"name":"Read","input":{"path":"/safe/x"}}`,
-			Message:     "rewritten to safe path",
+func TestRunPolicyRewriteRecommendationEmitsLegacyEvent(t *testing.T) {
+	pol := &recordingPolicyObserver{
+		finding: policy.Finding{
+			Recommendation:       policy.RecommendationRewrite,
+			RuleID:               "test.rewrite",
+			SuggestedReplacement: `{"name":"Read","input":{"path":"/safe/x"}}`,
+			Message:              "suggested safe-path rewrite",
 		},
 	}
-	_, evs := runWrapperUntilToolUsePolicy(t, t.TempDir(), "Read", pol, false)
+	_, evs := runWrapperUntilToolUseObservation(t, t.TempDir(), "Read", pol, false)
 
 	idx := indexOfKind(evs, runtimeevents.KindPolicyRewrite)
 	if idx < 0 {
@@ -983,30 +1053,30 @@ func TestRunPolicyRewriteEmitsRewriteEvent(t *testing.T) {
 	}
 }
 
-func TestRunPolicyBlockEmitsBlockEvent(t *testing.T) {
-	pol := &recordingPolicy{
-		decision: policy.Decision{
-			Mode:    policy.ModeBlock,
-			RuleID:  "test.block",
-			Message: "destructive ops disabled in this session",
+func TestRunPolicyBlockRecommendationEmitsLegacyEvent(t *testing.T) {
+	pol := &recordingPolicyObserver{
+		finding: policy.Finding{
+			Recommendation: policy.RecommendationBlock,
+			RuleID:         "test.block",
+			Message:        "host should block destructive operations",
 		},
 	}
-	_, evs := runWrapperUntilToolUsePolicy(t, t.TempDir(), "Delete", pol, false)
+	_, evs := runWrapperUntilToolUseObservation(t, t.TempDir(), "Delete", pol, false)
 
 	if indexOfKind(evs, runtimeevents.KindPolicyBlock) < 0 {
 		t.Fatalf("missing policy.block event; kinds: %v", kindList(evs))
 	}
 }
 
-func TestRunPolicyApprovalEmitsApprovalRequestedEvent(t *testing.T) {
-	pol := &recordingPolicy{
-		decision: policy.Decision{
-			Mode:    policy.ModeApproval,
-			RuleID:  "test.approval",
-			Message: "operator approval required",
+func TestRunPolicyApprovalRecommendationEmitsLegacyEvent(t *testing.T) {
+	pol := &recordingPolicyObserver{
+		finding: policy.Finding{
+			Recommendation: policy.RecommendationRequestApproval,
+			RuleID:         "test.approval",
+			Message:        "operator approval recommended",
 		},
 	}
-	_, evs := runWrapperUntilToolUsePolicy(t, t.TempDir(), "Write", pol, false)
+	_, evs := runWrapperUntilToolUseObservation(t, t.TempDir(), "Write", pol, false)
 
 	idx := indexOfKind(evs, runtimeevents.KindPolicyApprovalRequested)
 	if idx < 0 {
@@ -1021,11 +1091,11 @@ func TestRunPolicyApprovalEmitsApprovalRequestedEvent(t *testing.T) {
 	}
 }
 
-func TestRunPolicyObserveEmitsNoDerivedEvent(t *testing.T) {
-	pol := &recordingPolicy{
-		decision: policy.Decision{Mode: policy.ModeObserve},
+func TestRunNoPolicyRecommendationEmitsNoDerivedEvent(t *testing.T) {
+	pol := &recordingPolicyObserver{
+		finding: policy.Finding{Recommendation: policy.RecommendationNone},
 	}
-	_, evs := runWrapperUntilToolUsePolicy(t, t.TempDir(), "Read", pol, true)
+	_, evs := runWrapperUntilToolUseObservation(t, t.TempDir(), "Read", pol, true)
 
 	for _, kind := range []runtimeevents.EventKind{
 		runtimeevents.KindPolicyNudge,
@@ -1034,27 +1104,27 @@ func TestRunPolicyObserveEmitsNoDerivedEvent(t *testing.T) {
 		runtimeevents.KindPolicyApprovalRequested,
 	} {
 		if indexOfKind(evs, kind) >= 0 {
-			t.Errorf("ModeObserve should emit no derived events, saw %q", kind)
+			t.Errorf("RecommendationNone should emit no derived events, saw %q", kind)
 		}
 	}
 
 	pol.mu.Lock()
 	defer pol.mu.Unlock()
 	if pol.calls != 1 {
-		t.Errorf("policy.Decide calls = %d, want 1 (called once even on observe)", pol.calls)
+		t.Errorf("policy.Observer.Observe calls = %d, want 1 (called once even on observe)", pol.calls)
 	}
 }
 
-func TestRunPolicyDecideErrorIsSwallowed(t *testing.T) {
-	// A Decide error must NOT stop the wrapper's event stream — the
-	// tool_use already fired; we only lose the policy decision.
-	pol := &recordingPolicy{
+func TestRunPolicyObserveErrorIsSwallowed(t *testing.T) {
+	// An Observe error must not stop the wrapper's event stream: the tool_use
+	// already fired, and the derived advisory is optional metadata.
+	pol := &recordingPolicyObserver{
 		err: errors.New("policy lookup timeout"),
 	}
-	_, evs := runWrapperUntilToolUsePolicy(t, t.TempDir(), "Read", pol, true)
+	_, evs := runWrapperUntilToolUseObservation(t, t.TempDir(), "Read", pol, true)
 
 	if indexOfKind(evs, runtimeevents.KindAgentToolUse) < 0 {
-		t.Error("tool_use event missing — Decide error broke the stream")
+		t.Error("tool_use event missing — Observe error broke the stream")
 	}
 	for _, kind := range []runtimeevents.EventKind{
 		runtimeevents.KindPolicyNudge,
@@ -1063,16 +1133,16 @@ func TestRunPolicyDecideErrorIsSwallowed(t *testing.T) {
 		runtimeevents.KindPolicyApprovalRequested,
 	} {
 		if indexOfKind(evs, kind) >= 0 {
-			t.Errorf("Decide error should suppress derived policy events, saw %q", kind)
+			t.Errorf("Observe error should suppress derived policy events, saw %q", kind)
 		}
 	}
 	if indexOfKind(evs, runtimeevents.KindProcessExited) < 0 {
-		t.Error("process.exited missing — Decide error broke the lifecycle")
+		t.Error("process.exited missing — Observe error broke the lifecycle")
 	}
 }
 
 func TestRunPolicyNotInvokedForNonToolUseEvents(t *testing.T) {
-	// Verify Policy.Decide is NOT called for events other than
+	// Verify PolicyObserver.Observe is NOT called for events other than
 	// tool_use (delta, session_id, done, etc.).
 	dir := t.TempDir()
 	script := writeFakeScript(t, dir, []string{
@@ -1080,17 +1150,17 @@ func TestRunPolicyNotInvokedForNonToolUseEvents(t *testing.T) {
 		"delta:hello",
 		"done",
 	})
-	pol := &recordingPolicy{
-		decision: policy.Decision{Mode: policy.ModeNudge, RuleID: "should-not-fire"},
+	pol := &recordingPolicyObserver{
+		finding: policy.Finding{Recommendation: policy.RecommendationNudge, RuleID: "should-not-fire"},
 	}
 	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: script}}
 	sink := newCapturingSink()
 	w, err := New(Config{
-		App:      "test-policy-noop",
-		Adapter:  adapter,
-		Activity: activity.NewBridge(sink),
-		Workdir:  dir,
-		Policy:   pol,
+		App:            "test-policy-noop",
+		Adapter:        adapter,
+		Activity:       activity.NewBridge(sink),
+		Workdir:        dir,
+		PolicyObserver: pol,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -1108,7 +1178,7 @@ func TestRunPolicyNotInvokedForNonToolUseEvents(t *testing.T) {
 	pol.mu.Lock()
 	defer pol.mu.Unlock()
 	if pol.calls != 0 {
-		t.Errorf("policy.Decide called %d times for a tool_use-free turn; want 0", pol.calls)
+		t.Errorf("policy.Observer.Observe called %d times for a tool_use-free turn; want 0", pol.calls)
 	}
 }
 
@@ -1532,10 +1602,10 @@ func TestRunSessionLifecycleEventsHaveNoTurnID(t *testing.T) {
 // TestRunPolicyEventInheritsTurnID verifies that derived policy
 // events fire under the same TurnID as the tool_use they correlate to.
 func TestRunPolicyEventInheritsTurnID(t *testing.T) {
-	pol := &recordingPolicy{
-		decision: policy.Decision{Mode: policy.ModeNudge, RuleID: "test.rule"},
+	pol := &recordingPolicyObserver{
+		finding: policy.Finding{Recommendation: policy.RecommendationNudge, RuleID: "test.rule"},
 	}
-	w, evs := runWrapperUntilToolUsePolicy(t, t.TempDir(), "Bash", pol, false)
+	w, evs := runWrapperUntilToolUseObservation(t, t.TempDir(), "Bash", pol, false)
 	_ = w
 
 	idxTool := indexOfKind(evs, runtimeevents.KindAgentToolUse)
@@ -1553,7 +1623,7 @@ func TestRunPolicyEventInheritsTurnID(t *testing.T) {
 }
 
 // TestRunEndToEndClassifyBridgeWithNaniteRule wires the
-// classifybridge.Engine with the worked NaniteDeployRule from the
+// classifybridge.Observer with the worked NaniteDeployRule from the
 // architecture doc and proves the full classify → bridge → policy
 // → runtime-event chain works end-to-end.
 func TestRunEndToEndClassifyBridgeWithNaniteRule(t *testing.T) {
@@ -1568,14 +1638,14 @@ func TestRunEndToEndClassifyBridgeWithNaniteRule(t *testing.T) {
 	sink := newCapturingSink()
 
 	rules := classify.NewRuleSet(classify.NaniteDeployRule)
-	engine := &classifybridge.Engine{Classifier: rules}
+	observer := &classifybridge.Observer{Classifier: rules}
 
 	w, err := New(Config{
-		App:      "test-bridge-e2e",
-		Adapter:  adapter,
-		Activity: activity.NewBridge(sink),
-		Workdir:  dir,
-		Policy:   engine,
+		App:            "test-bridge-e2e",
+		Adapter:        adapter,
+		Activity:       activity.NewBridge(sink),
+		Workdir:        dir,
+		PolicyObserver: observer,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

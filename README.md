@@ -13,7 +13,7 @@ This is the "sibling agent in parallel" path identified by the
 `agentkit-wrapper-alignment-review-2026-05-26.md` rollout (step 9):
 filters / plant / sandbox composition + Tachyon `cmd/agent-wrap`.
 
-## Status (v0.1.0, 2026-05-26)
+## Status
 
 End-to-end launch path is wired:
 
@@ -28,24 +28,26 @@ End-to-end launch path is wired:
   (with monotonic per-session TurnIDs), `stdin.write`,
   `stdout.raw`/`stdout.line`, `stderr.raw`/`stderr.line`,
   `interrupt.requested`/`interrupt.acknowledged`.
-- `agent.delta`, `agent.tool_use`, `agent.tool_result`,
-  `agent.subagent_spawn`, and JSON-RPC permission request/resolution
-  events flow through the translator;
-  if `Config.Policy` is set, tool_use events trigger a
-  `policy.Engine.Decide` call and emit a correlated
-  `policy.nudge`/`rewrite`/`block`/`approval_requested` event
-  (observation half — no rewrite-back to the child yet).
+- `agent.delta`, `agent.tool_use`, `agent.tool_result`, and
+  `agent.subagent_spawn` flow through the translator, as do JSON-RPC
+  permission request/resolution events where the adapter emits them. If
+  `Config.PolicyObserver` is set,
+  each translated tool-use event is handed to `policy.Observer.Observe`
+  after `agent.tool_use` is emitted. A mapped recommendation emits a correlated
+  `policy.nudge`/`rewrite`/`block`/`approval_requested` compatibility event;
+  it never changes or prevents child execution.
 - `plant.started`/`plant.completed`, `sandbox.applied`, and pre-spawn
   `SandboxProfile` plumbing are wired when configured.
 - `Config.Filters` can process agent text, tool envelopes/results, and
   command output; `filters.RepairPipeline` adapts concrete
   `go-harness-filters/repair` rules.
-- Three concrete adapters: Claude (streaming-stdio), Codex
-  (jsonrpc-stdio), OpenCode (http-sse).
-- `classifybridge.Engine` lets a `go-harness-filters/classify.Classifier`
-  drive policy decisions directly.
+- Native and ACP adapters are available for the providers documented under
+  `adapters/`.
+- `classifybridge.Observer` lets a
+  `go-harness-filters/classify.Classifier` produce policy findings.
 
-Test count: 88 across 11 packages, all `-race` clean.
+The repository test suite is kept `-race` clean; see Development for the
+commands used by CI.
 
 See [ROADMAP.md](./ROADMAP.md) for what's deferred and the next-session
 priorities.
@@ -99,11 +101,40 @@ func main() {
 | `adapters/claude/` | Claude Code streaming-stdio adapter (`claude -p --input-format stream-json --output-format stream-json --verbose`). |
 | `adapters/codex/` | Codex app-server adapter (`codex app-server`) — JSON-RPC 2.0 over stdio. |
 | `adapters/opencode/` | OpenCode serve-http adapter (`opencode serve --port 0 --hostname 127.0.0.1`) — HTTP/SSE. |
-| `classifybridge/` | Adapts `go-harness-filters/classify.Classifier` into `policy.Engine` so rule-driven classification can drive wrapper policy decisions. |
-| `policy/` | Observe / nudge / rewrite / block / approval engine + `Store` interface for app-provided rule backing. |
+| `classifybridge/` | Adapts `go-harness-filters/classify.Classifier` into `policy.Observer` findings. |
+| `policy/` | Post-hoc observations, advisory findings, and an optional `Store` interface for app-provided rule backing. |
 | `plant/` | Pre-exec planting contract (boot dirs, MCP config, provider settings, hooks/plugins). Called by `Run` before the agentkit runtime is constructed. |
 | `sandbox/` | Sandbox profile application contract — composes `go-sandbox`. Called by `Run` after `Start` against the session's PID. |
 | `filters/` | Integration point for the `go-harness-filters` pipeline. |
+
+## Policy observation is not enforcement
+
+`Config.PolicyObserver` receives an already-emitted tool-use observation and
+returns a `policy.Finding`. Its `Recommendation` is advisory, including
+`RecommendationBlock`, `RecommendationRewrite`, and
+`RecommendationRequestApproval`. Hosts must enforce grants and permissions at
+their own pre-execution call sites. In Nanite, the authoritative boundaries are
+the tool-grant check, the skill capability gate, and cancellable plugin
+pre-hooks; none may be removed or weakened because a wrapper observer exists.
+
+The stable `go-runtime-events` names and payload values remain unchanged:
+
+| Go recommendation | Existing wire kind | Effect in this wrapper |
+|---|---|---|
+| `RecommendationNudge` | `policy.nudge` | Emit a correlated advisory event |
+| `RecommendationRewrite` | `policy.rewrite` | Emit suggested replacement data; do not substitute it |
+| `RecommendationBlock` | `policy.block` | Emit a block recommendation; do not stop execution |
+| `RecommendationRequestApproval` | `policy.approval_requested` | Emit an approval recommendation; do not pause execution |
+
+The wire labels are retained to avoid a coordinated breaking release of
+`go-runtime-events` and its other consumers. The wrapper's Go API carries the
+accurate semantics.
+
+ACP `session/request_permission` is separate: it is a blocking protocol
+request, not an observer callback. Direct Claude, Codex, OpenCode, and Pi ACP
+clients currently default it to `cancelled`; Copilot currently returns JSON-RPC
+method-not-handled. A future host responder can enforce at that point only when
+the provider chooses to ask, so it is not a general replacement for host gates.
 
 ## Dependencies
 

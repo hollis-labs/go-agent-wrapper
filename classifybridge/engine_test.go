@@ -10,68 +10,68 @@ import (
 	"github.com/hollis-labs/go-harness-filters/classify"
 )
 
-func TestEngineSatisfiesPolicyEngineInterface(t *testing.T) {
-	var _ policy.Engine = (*Engine)(nil)
+func TestObserverSatisfiesPolicyObserverInterface(t *testing.T) {
+	var _ policy.Observer = (*Observer)(nil)
 }
 
-func TestEngineNilClassifierObservesAll(t *testing.T) {
-	e := &Engine{}
-	d, err := e.Decide(context.Background(), policy.Request{Original: "anything"})
+func TestObserverNilClassifierReportsNoRecommendation(t *testing.T) {
+	observer := &Observer{}
+	finding, err := observer.Observe(context.Background(), policy.Observation{Original: "anything"})
 	if err != nil {
-		t.Fatalf("Decide: %v", err)
+		t.Fatalf("Observe: %v", err)
 	}
-	if d.Mode != policy.ModeObserve {
-		t.Errorf("Mode = %q, want observe", d.Mode)
+	if finding.Recommendation != policy.RecommendationNone {
+		t.Errorf("Recommendation = %q, want none", finding.Recommendation)
 	}
 }
 
-func TestEngineNoMatchReturnsObserve(t *testing.T) {
+func TestObserverNoMatchReturnsNoRecommendation(t *testing.T) {
 	rules := classify.NewRuleSet(classify.Rule{
 		ID:         "test.only-ls",
 		Intent:     "x",
 		ExactMatch: "ls",
 		Confidence: classify.ConfidenceExact,
 	})
-	e := &Engine{Classifier: rules}
-	d, err := e.Decide(context.Background(), policy.Request{Original: "pwd"})
+	observer := &Observer{Classifier: rules}
+	finding, err := observer.Observe(context.Background(), policy.Observation{Original: "pwd"})
 	if err != nil {
-		t.Fatalf("Decide: %v", err)
+		t.Fatalf("Observe: %v", err)
 	}
-	if d.Mode != policy.ModeObserve {
-		t.Errorf("Mode = %q, want observe", d.Mode)
+	if finding.Recommendation != policy.RecommendationNone {
+		t.Errorf("Recommendation = %q, want none", finding.Recommendation)
 	}
-	if d.RuleID != "" {
-		t.Errorf("observe decision should have no RuleID; got %q", d.RuleID)
+	if finding.RuleID != "" {
+		t.Errorf("empty finding should have no RuleID; got %q", finding.RuleID)
 	}
 }
 
-func TestEngineReversibleFalseProducesNudge(t *testing.T) {
+func TestObserverNonReversibleProducesNudgeRecommendation(t *testing.T) {
 	// NaniteDeployRule is the canonical Reversible=false rule —
 	// rewriting from local build to production deploy would change
 	// semantics silently.
 	rules := classify.NewRuleSet(classify.NaniteDeployRule)
-	e := &Engine{Classifier: rules}
-	d, err := e.Decide(context.Background(), policy.Request{
+	observer := &Observer{Classifier: rules}
+	finding, err := observer.Observe(context.Background(), policy.Observation{
 		Original: "go build -o nanite ./cmd/nanite",
 	})
 	if err != nil {
-		t.Fatalf("Decide: %v", err)
+		t.Fatalf("Observe: %v", err)
 	}
-	if d.Mode != policy.ModeNudge {
-		t.Errorf("Mode = %q, want nudge (Reversible=false → safe default)", d.Mode)
+	if finding.Recommendation != policy.RecommendationNudge {
+		t.Errorf("Recommendation = %q, want nudge", finding.Recommendation)
 	}
-	if d.RuleID != "hollis.deploy.nanite.cerberus-required" {
-		t.Errorf("RuleID = %q, want hollis.deploy.nanite.cerberus-required", d.RuleID)
+	if finding.RuleID != "hollis.deploy.nanite.cerberus-required" {
+		t.Errorf("RuleID = %q, want hollis.deploy.nanite.cerberus-required", finding.RuleID)
 	}
-	if !strings.Contains(d.Message, "cerberus_resource_deploy nanite-api-service") {
-		t.Errorf("Message missing the cerberus deploy command; got %q", d.Message)
+	if !strings.Contains(finding.Message, "cerberus_resource_deploy nanite-api-service") {
+		t.Errorf("Message missing the cerberus deploy command; got %q", finding.Message)
 	}
-	if d.Replacement != "" {
-		t.Errorf("Replacement should be empty for nudge; got %q", d.Replacement)
+	if finding.SuggestedReplacement != "" {
+		t.Errorf("SuggestedReplacement should be empty for nudge; got %q", finding.SuggestedReplacement)
 	}
 }
 
-func TestEngineReversibleTrueProducesRewrite(t *testing.T) {
+func TestObserverReversibleProducesRewriteRecommendation(t *testing.T) {
 	reversibleRule := classify.Rule{
 		ID:          "test.reversible",
 		Intent:      "format.json",
@@ -80,22 +80,21 @@ func TestEngineReversibleTrueProducesRewrite(t *testing.T) {
 		Recommended: []string{"jq . <path>"},
 		Reversible:  true,
 	}
-	e := &Engine{Classifier: classify.NewRuleSet(reversibleRule)}
-	d, err := e.Decide(context.Background(), policy.Request{Original: "cat config.json"})
+	observer := &Observer{Classifier: classify.NewRuleSet(reversibleRule)}
+	finding, err := observer.Observe(context.Background(), policy.Observation{Original: "cat config.json"})
 	if err != nil {
-		t.Fatalf("Decide: %v", err)
+		t.Fatalf("Observe: %v", err)
 	}
-	if d.Mode != policy.ModeRewrite {
-		t.Errorf("Mode = %q, want rewrite (Reversible=true)", d.Mode)
+	if finding.Recommendation != policy.RecommendationRewrite {
+		t.Errorf("Recommendation = %q, want rewrite", finding.Recommendation)
 	}
-	if d.Replacement != "jq . <path>" {
-		t.Errorf("Replacement = %q", d.Replacement)
+	if finding.SuggestedReplacement != "jq . <path>" {
+		t.Errorf("SuggestedReplacement = %q", finding.SuggestedReplacement)
 	}
 }
 
-func TestEngineNudgeModeOverride(t *testing.T) {
-	// Operator wants to suppress all rewrites — set RewriteMode to
-	// ModeNudge so even reversible rules produce nudges.
+func TestObserverReversibleRecommendationOverride(t *testing.T) {
+	// An observer can report a nudge even for reversible rules.
 	reversibleRule := classify.Rule{
 		ID:          "test.reversible",
 		Intent:      "x",
@@ -104,39 +103,41 @@ func TestEngineNudgeModeOverride(t *testing.T) {
 		Recommended: []string{"jq . <path>"},
 		Reversible:  true,
 	}
-	e := &Engine{
-		Classifier:  classify.NewRuleSet(reversibleRule),
-		RewriteMode: policy.ModeNudge,
+	observer := &Observer{
+		Classifier:               classify.NewRuleSet(reversibleRule),
+		ReversibleRecommendation: policy.RecommendationNudge,
 	}
-	d, _ := e.Decide(context.Background(), policy.Request{Original: "cat config.json"})
-	if d.Mode != policy.ModeNudge {
-		t.Errorf("Mode = %q, want nudge (RewriteMode override)", d.Mode)
+	finding, _ := observer.Observe(context.Background(), policy.Observation{Original: "cat config.json"})
+	if finding.Recommendation != policy.RecommendationNudge {
+		t.Errorf("Recommendation = %q, want nudge", finding.Recommendation)
 	}
-	if d.Replacement != "" {
-		t.Errorf("Replacement should be empty when mode is nudge; got %q", d.Replacement)
+	if finding.SuggestedReplacement != "" {
+		t.Errorf("SuggestedReplacement should be empty for a nudge; got %q", finding.SuggestedReplacement)
 	}
 }
 
-func TestEngineNudgeModeOverrideToBlock(t *testing.T) {
-	// Operator wants to be strict — set NudgeMode to ModeBlock so
-	// even non-reversible recommendations become hard stops.
+func TestObserverNonReversibleRecommendationOverrideToBlock(t *testing.T) {
+	// "Block" remains an advisory label: the observer only reports it.
 	rules := classify.NewRuleSet(classify.NaniteDeployRule)
-	e := &Engine{Classifier: rules, NudgeMode: policy.ModeBlock}
-	d, _ := e.Decide(context.Background(), policy.Request{
+	observer := &Observer{
+		Classifier:                  rules,
+		NonReversibleRecommendation: policy.RecommendationBlock,
+	}
+	finding, _ := observer.Observe(context.Background(), policy.Observation{
 		Original: "go build -o nanite ./cmd/nanite",
 	})
-	if d.Mode != policy.ModeBlock {
-		t.Errorf("Mode = %q, want block (NudgeMode override)", d.Mode)
+	if finding.Recommendation != policy.RecommendationBlock {
+		t.Errorf("Recommendation = %q, want block", finding.Recommendation)
 	}
 }
 
-func TestEnginePassesRequestContextAsMetadata(t *testing.T) {
-	// The bridge passes req.App / SessionID / TurnID / Channel into
+func TestObserverPassesObservationContextAsMetadata(t *testing.T) {
+	// The bridge passes observation.App / SessionID / TurnID / Channel into
 	// Input.Metadata so classifier rules can branch on caller context.
 	// We use a stub classifier that captures what it receives.
 	captured := &capturingClassifier{}
-	e := &Engine{Classifier: captured}
-	_, _ = e.Decide(context.Background(), policy.Request{
+	observer := &Observer{Classifier: captured}
+	_, _ = observer.Observe(context.Background(), policy.Observation{
 		App:       "nanite",
 		SessionID: "ses_xyz",
 		TurnID:    "turn_42",

@@ -17,8 +17,7 @@
 //     hooks/plugins, recovery prompts) — see [plant]
 //   - sandboxing applied before exec — see [sandbox]
 //   - runtime activity event emission — see [activity]
-//   - policy enforcement (observe / nudge / rewrite / block / approval) —
-//     see [policy]
+//   - post-hoc policy observation and advisory event emission — see [policy]
 //   - optional filter-pipeline integration (envelope repair, classifier,
 //     command normalization) — see [filters]
 //   - provider-specific adapters (Claude, Codex, OpenCode, ...) — see

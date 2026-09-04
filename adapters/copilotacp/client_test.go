@@ -327,7 +327,7 @@ func TestClientTCP_CancelSendsRealNotification(t *testing.T) {
 	}
 }
 
-func TestClientTCP_ServerInitiatedRequestDeclined(t *testing.T) {
+func TestClientTCP_PermissionRequestReturnsMethodNotHandled(t *testing.T) {
 	respCh := make(chan string, 1)
 
 	host, port := fakeACPListener(t, func(t *testing.T, conn net.Conn) {
@@ -344,10 +344,11 @@ func TestClientTCP_ServerInitiatedRequestDeclined(t *testing.T) {
 		}
 		_, _ = conn.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fake-req-session"}}` + "\n"))
 
-		// Server-initiated request the client never declared it can
-		// service (fs read) — the client should answer with an error
-		// rather than hang.
-		_, _ = conn.Write([]byte(`{"jsonrpc":"2.0","id":99,"method":"fs/read_text_file","params":{"path":"/tmp/x"}}` + "\n"))
+		// Unlike the other four direct ACP clients, Copilot currently routes
+		// session/request_permission through its generic unsupported-method
+		// path. Lock that actual v0.8.1 behavior down without implementing a
+		// responder in this policy-observation task.
+		_, _ = conn.Write([]byte(`{"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{"sessionId":"fake-req-session","toolCall":{"toolCallId":"call-1"}}}` + "\n"))
 
 		if scanner.Scan() {
 			respCh <- scanner.Text()
@@ -374,6 +375,19 @@ func TestClientTCP_ServerInitiatedRequestDeclined(t *testing.T) {
 		}
 		if f.Error == nil {
 			t.Fatal("expected an error response declining the server-initiated request, got none")
+		}
+		if f.Error.Code != -32601 {
+			t.Fatalf("permission response error code = %d, want -32601 (method not handled)", f.Error.Code)
+		}
+		if events, ok := drainEvents(c, 1, time.Second); !ok || len(events) != 1 || events[0].Kind != runtimeevents.KindSessionReady {
+			t.Fatalf("unexpected event stream while declining permission request: ok=%v events=%+v", ok, events)
+		}
+		select {
+		case event, open := <-c.Events():
+			if open {
+				t.Fatalf("Copilot unsupported-method path unexpectedly emitted a permission event: %+v", event)
+			}
+		default:
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("client never responded to the server-initiated request")

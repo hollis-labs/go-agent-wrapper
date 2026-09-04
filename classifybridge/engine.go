@@ -8,76 +8,77 @@ import (
 	"github.com/hollis-labs/go-harness-filters/classify"
 )
 
-// Engine wraps a [classify.Classifier] and implements
-// [policy.Engine]. Each [Engine.Decide] call runs the wrapped
-// classifier against the request's Original content; a Match
-// produces a Decision, no match falls through to [policy.ModeObserve].
+// Observer wraps a [classify.Classifier] and implements [policy.Observer].
+// Each [Observer.Observe] call runs the wrapped classifier against an
+// observation's Original content; a Match produces a Finding, and no match
+// falls through to [policy.RecommendationNone].
 //
-// Zero value is a no-op engine (no Classifier → always ModeObserve).
-type Engine struct {
+// Zero value is a no-op observer (no Classifier means no recommendation).
+type Observer struct {
 	// Classifier is the source of [classify.Match] verdicts. Required
-	// for the engine to do anything beyond observe-only.
+	// for the observer to report a recommendation.
 	Classifier classify.Classifier
 
-	// NudgeMode is returned when a [classify.Match] has Reversible ==
-	// false. Zero value is [policy.ModeNudge].
-	NudgeMode policy.Mode
+	// NonReversibleRecommendation is returned when a [classify.Match] has
+	// Reversible == false. Zero value is [policy.RecommendationNudge].
+	NonReversibleRecommendation policy.Recommendation
 
-	// RewriteMode is returned when a [classify.Match] has Reversible
-	// == true. Zero value is [policy.ModeRewrite]. Set to
-	// [policy.ModeNudge] to suppress rewrites globally even for
-	// reversible rules.
-	RewriteMode policy.Mode
+	// ReversibleRecommendation is returned when a [classify.Match] has
+	// Reversible == true. Zero value is [policy.RecommendationRewrite]. Set
+	// it to [policy.RecommendationNudge] to report a nudge instead of a
+	// suggested replacement for reversible rules.
+	ReversibleRecommendation policy.Recommendation
 }
 
-// Decide implements [policy.Engine]. Runs the wrapped classifier
-// against req.Original; on match, translates the resulting
-// [classify.Match] into a [policy.Decision]. On no match, returns
-// ModeObserve with no rule attribution.
+// Observe implements [policy.Observer]. It runs the wrapped classifier
+// against observation.Original; on match, it translates the resulting
+// [classify.Match] into a [policy.Finding]. On no match, it returns
+// RecommendationNone with no rule attribution.
 //
-// req.App, req.SessionID, req.TurnID, and req.Channel are passed
+// observation.App, observation.SessionID, observation.TurnID, and
+// observation.Channel are passed
 // through to the classifier as [classify.Input.Metadata] so rule
 // implementations can branch on caller context if needed.
-func (e *Engine) Decide(_ context.Context, req policy.Request) (policy.Decision, error) {
-	if e.Classifier == nil {
-		return policy.Decision{Mode: policy.ModeObserve}, nil
+func (o *Observer) Observe(_ context.Context, observation policy.Observation) (policy.Finding, error) {
+	if o.Classifier == nil {
+		return policy.Finding{Recommendation: policy.RecommendationNone}, nil
 	}
 
-	result := e.Classifier.Classify(classify.Input{
-		Kind:    req.Kind,
-		Content: []byte(req.Original),
+	result := o.Classifier.Classify(classify.Input{
+		Kind:    observation.Kind,
+		Content: []byte(observation.Original),
 		Metadata: map[string]string{
-			"app":        req.App,
-			"session_id": req.SessionID,
-			"turn_id":    req.TurnID,
-			"channel":    string(req.Channel),
+			"app":        observation.App,
+			"session_id": observation.SessionID,
+			"turn_id":    observation.TurnID,
+			"channel":    string(observation.Channel),
 		},
 	})
 	if result.Match == nil {
-		return policy.Decision{Mode: policy.ModeObserve}, nil
+		return policy.Finding{Recommendation: policy.RecommendationNone}, nil
 	}
 
-	mode := e.modeFor(result.Match.Reversible)
+	recommendation := o.recommendationFor(result.Match.Reversible)
 
-	return policy.Decision{
-		Mode:        mode,
-		RuleID:      result.Match.RuleID,
-		Message:     formatMessage(result.Match),
-		Replacement: formatReplacement(result.Match, mode),
+	return policy.Finding{
+		Recommendation:       recommendation,
+		RuleID:               result.Match.RuleID,
+		Message:              formatMessage(result.Match),
+		SuggestedReplacement: formatSuggestedReplacement(result.Match, recommendation),
 	}, nil
 }
 
-func (e *Engine) modeFor(reversible bool) policy.Mode {
+func (o *Observer) recommendationFor(reversible bool) policy.Recommendation {
 	if reversible {
-		if e.RewriteMode != "" {
-			return e.RewriteMode
+		if o.ReversibleRecommendation != "" {
+			return o.ReversibleRecommendation
 		}
-		return policy.ModeRewrite
+		return policy.RecommendationRewrite
 	}
-	if e.NudgeMode != "" {
-		return e.NudgeMode
+	if o.NonReversibleRecommendation != "" {
+		return o.NonReversibleRecommendation
 	}
-	return policy.ModeNudge
+	return policy.RecommendationNudge
 }
 
 // formatMessage builds the human-readable guidance shown to the
@@ -91,13 +92,12 @@ func formatMessage(m *classify.Match) string {
 	return "Recommended:\n" + strings.Join(m.Recommended, "\n")
 }
 
-// formatReplacement returns the substitution command for
-// [policy.ModeRewrite] mode. The first Recommended command is used
-// as the replacement; multi-command Recommended slices would require
-// a richer disclosure shape, deferred until a real use case demands
-// it. Other modes return empty.
-func formatReplacement(m *classify.Match, mode policy.Mode) string {
-	if mode != policy.ModeRewrite || len(m.Recommended) == 0 {
+// formatSuggestedReplacement returns the first recommended command when the
+// finding recommends a rewrite. It remains inert data; the bridge and wrapper
+// never substitute it into child input. Multi-command Recommended slices would
+// require a richer disclosure shape, deferred until a real use case demands it.
+func formatSuggestedReplacement(m *classify.Match, recommendation policy.Recommendation) string {
+	if recommendation != policy.RecommendationRewrite || len(m.Recommended) == 0 {
 		return ""
 	}
 	return m.Recommended[0]

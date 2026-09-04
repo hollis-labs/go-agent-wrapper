@@ -10,36 +10,32 @@ import (
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
-// applyToolUsePolicy is called from the wrapper's translator goroutine
-// whenever an [llmtypes.EventToolUse] is observed and Config.Policy
-// is configured. It builds a [policy.Request], asks the engine for a
-// [policy.Decision], and emits the matching runtime event with
+// observeToolUsePolicy is called from the wrapper's translator goroutine after
+// an [llmtypes.EventToolUse] has been emitted and Config.PolicyObserver is
+// configured. It builds a [policy.Observation], asks the observer for a
+// [policy.Finding], and emits the matching legacy policy.* runtime event with
 // ParentID correlating back to the originating tool_use event.
 //
-// Errors from [policy.Engine.Decide] are silently dropped — the
-// preceding agent.tool_use event already fired, so observability is
-// preserved; the missing policy event is the only cost. Policy
-// engines should be cheap and synchronous on the hot path (see the
-// policy.Engine docstring).
+// Errors from [policy.Observer.Observe] are silently dropped. The preceding
+// agent.tool_use event already fired, so the missing advisory event is the only
+// cost. Observers should be cheap and synchronous on the hot path.
 //
-// This is the OBSERVATION half of policy: the wrapper does not
-// rewrite or block the child's input/output based on the decision —
-// it only surfaces the policy verdict into the activity stream.
-// Rewrite-back semantics belong in a follow-up that touches the
-// session input path.
-func (w *Wrapper) applyToolUsePolicy(
+// The wrapper cannot rewrite, block, pause, or approve the child operation at
+// this point. A RecommendationBlock or RecommendationRewrite finding is
+// reporting, not enforcement.
+func (w *Wrapper) observeToolUsePolicy(
 	ctx context.Context,
 	source runtimeevents.Source,
 	ev llmtypes.StreamEvent,
 	toolUseEventID string,
 	turnID string,
 ) {
-	if w.cfg.Policy == nil || ev.ToolUse == nil {
+	if w.cfg.PolicyObserver == nil || ev.ToolUse == nil {
 		return
 	}
 
 	original := serializeToolUse(ev.ToolUse)
-	decision, err := w.cfg.Policy.Decide(ctx, policy.Request{
+	finding, err := w.cfg.PolicyObserver.Observe(ctx, policy.Observation{
 		App:        w.cfg.App,
 		SessionID:  w.sessionID,
 		TurnID:     turnID,
@@ -52,21 +48,25 @@ func (w *Wrapper) applyToolUsePolicy(
 		return
 	}
 
-	kind, ok := policyModeToEventKind(decision.Mode)
+	kind, ok := policyRecommendationToLegacyEventKind(finding.Recommendation)
 	if !ok {
-		return // ModeObserve and unmapped modes emit nothing
+		return // RecommendationNone and unmapped values emit nothing
 	}
 
 	payload := map[string]any{
-		"rule_id":  decision.RuleID,
-		"mode":     string(decision.Mode),
+		"rule_id": finding.RuleID,
+		// "mode" is retained for event-payload compatibility. Its value is
+		// now the observer's advisory Recommendation, not an applied action.
+		"mode":     string(finding.Recommendation),
 		"original": original,
 	}
-	if decision.Message != "" {
-		payload["message"] = decision.Message
+	if finding.Message != "" {
+		payload["message"] = finding.Message
 	}
-	if decision.Replacement != "" {
-		payload["replacement"] = decision.Replacement
+	if finding.SuggestedReplacement != "" {
+		// "replacement" is another retained wire key. It is suggested data;
+		// the wrapper never writes it back into the child input.
+		payload["replacement"] = finding.SuggestedReplacement
 	}
 
 	opts := []runtimeevents.EmitOption{
@@ -78,18 +78,19 @@ func (w *Wrapper) applyToolUsePolicy(
 	_ = w.cfg.Activity.Emit(ctx, kind, source, payload, opts...)
 }
 
-// policyModeToEventKind maps a [policy.Mode] to the corresponding
-// [runtimeevents.EventKind]. Returns ok=false for modes that should
-// not emit a derived event (ModeObserve and any unmapped values).
-func policyModeToEventKind(mode policy.Mode) (runtimeevents.EventKind, bool) {
-	switch mode {
-	case policy.ModeNudge:
+// policyRecommendationToLegacyEventKind maps an advisory
+// [policy.Recommendation] onto the stable go-runtime-events policy.* kinds.
+// The event-kind names are preserved for wire compatibility and do not imply
+// that the wrapper performed the named operation.
+func policyRecommendationToLegacyEventKind(recommendation policy.Recommendation) (runtimeevents.EventKind, bool) {
+	switch recommendation {
+	case policy.RecommendationNudge:
 		return runtimeevents.KindPolicyNudge, true
-	case policy.ModeRewrite:
+	case policy.RecommendationRewrite:
 		return runtimeevents.KindPolicyRewrite, true
-	case policy.ModeBlock:
+	case policy.RecommendationBlock:
 		return runtimeevents.KindPolicyBlock, true
-	case policy.ModeApproval:
+	case policy.RecommendationRequestApproval:
 		return runtimeevents.KindPolicyApprovalRequested, true
 	default:
 		return "", false
@@ -97,8 +98,8 @@ func policyModeToEventKind(mode policy.Mode) (runtimeevents.EventKind, bool) {
 }
 
 // serializeToolUse encodes the tool use as compact JSON for policy
-// matching. The result is what the policy engine sees as
-// [policy.Request.Original]; engines that pattern-match against tool
+// matching. The result is what the policy observer sees as
+// [policy.Observation.Original]; observers that pattern-match against tool
 // usage should treat it as a stable JSON shape (id / name / input).
 func serializeToolUse(tu *llmtypes.ToolUseBlock) string {
 	if tu == nil {

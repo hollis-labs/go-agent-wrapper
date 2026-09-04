@@ -37,9 +37,11 @@ The full kind set from
 - `agent.tool_result` from agentkit's provider typed-event callback.
 - `agent.subagent_spawn` from provider typed events (e.g. Claude `Task`).
 - `agent.permission_requested` / `agent.permission_resolved` for
-  server-initiated JSON-RPC requests. The wrapper currently answers with
-  a method-not-handled error so headless sessions fail fast instead of
-  hanging; real approval handling remains part of policy enforcement.
+  server-initiated JSON-RPC requests where the direct client maps them.
+  Claude, Codex, OpenCode, and Pi currently emit both events and answer
+  `session/request_permission` with a cancelled outcome; Copilot answers with
+  method-not-handled and emits neither. A host-supplied ACP permission
+  responder remains separate work.
 - `session.processing` / `session.idle` around observed turn boundaries.
 - `session.heartbeat` from provider typed heartbeats, plus optional
   wrapper-synthesized heartbeats via `Config.HeartbeatInterval`.
@@ -47,16 +49,18 @@ The full kind set from
 Remaining validation: exercise the provider typed-event paths against
 live Claude/Codex/OpenCode binaries, especially JSON-RPC approval shapes.
 
-### Policy enforcement (the rewrite-back half)
+### Policy observation — settled boundary
 
-`Config.Policy` currently runs in OBSERVATION mode only: the verdict
-surfaces as a `policy.*` event but the child's input/output is
-unmodified. Real enforcement (intercepting tool_use before the child
-runs it, substituting per `policy.rewrite`, blocking per `policy.block`,
-pausing for `policy.approval`) is a bigger session-input-path change.
-The architecture doc spells out the disclosure requirements
-("Original command / Executed / Reason"); apply those when wiring
-enforcement.
+`Config.PolicyObserver` is intentionally post-hoc. It turns an already-emitted
+tool-use observation into an advisory `policy.Finding` and a correlated legacy
+`policy.*` event. The wrapper cannot generally intercept native CLI tools before
+their side effects, so this seam will not grow rewrite-back or block semantics.
+Hosts retain their own authoritative pre-execution gates.
+
+ACP `session/request_permission` is the narrower exception: the protocol lets a
+child block waiting for an answer. A future responder may enforce there, but
+only for providers and operation classes that actually issue the request. Keep
+that work separate from `PolicyObserver` and document measured coverage.
 
 ### Filters
 
@@ -109,15 +113,15 @@ calls for byte-exact raw events.
 
 ## Open design questions
 
-1. **Approval flow.** `policy.ModeApproval` now emits
-   `runtimeevents.KindPolicyApprovalRequested`, but a real approval flow
-   still needs an app/operator decision path and a pause/resume or
-   request/response mechanism appropriate to the runtime.
+1. **ACP permission response.** A host-supplied responder for
+   `session/request_permission` needs an app/operator decision path. Default
+   behavior and provider coverage differ today; it must stay best-effort and
+   must not be conflated with `PolicyObserver`.
 2. **`WithID` option misuse.** `runtimeevents.WithID` lets callers
    pre-generate an event ID for `ParentID` correlation. Duplicate IDs
    in the same session would break correlation. Document the contract
    harder, or expose a safer `EmitReturning(ctx, ...) (id, err)` shape.
-3. **Filter policy boundary.** `classifybridge` lives in this module
+3. **Filter policy-observation boundary.** `classifybridge` lives in this module
    and depends on `go-harness-filters/classify`. If filter consumers
    (Nanite/Torque/Tether) want filter-driven policy without the wrapper,
    they'd need this bridge in a neutral location. Extract to a

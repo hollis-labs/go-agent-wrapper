@@ -32,9 +32,8 @@ import (
 // Required fields: App, Adapter, Activity, Workdir.
 //
 // Everything else is optional — zero values mean "no planting", "no
-// sandbox profile", "no policy enforcement", "no filter pipeline". The
-// wrapper degrades cleanly into a pure passthrough when no subsystems
-// are configured.
+// sandbox profile", "no policy observer", "no filter pipeline". The wrapper
+// degrades cleanly into a pure passthrough when no subsystems are configured.
 //
 // Adapter must implement [adapters.RuntimeAdapter] (not just
 // [adapters.Adapter]) — [Wrapper.Run] needs the underlying
@@ -169,22 +168,21 @@ type Config struct {
 	// AutoFireFirstTurn is false.
 	FirstTurnPayload string
 
-	// Policy, when set, is consulted by the wrapper's translator
-	// goroutine for every observed [runtimeevents.KindAgentToolUse]
-	// event. [Wrapper.Run] builds a [policy.Request] from the
-	// tool_use and emits the matching policy.nudge / policy.rewrite /
-	// policy.block runtime event (correlated to the tool_use via
-	// ParentID). ModeObserve emits no derived event.
+	// PolicyObserver, when set, is consulted by the wrapper's translator
+	// goroutine after every observed [runtimeevents.KindAgentToolUse] event.
+	// [Wrapper.Run] builds a [policy.Observation] from the tool use and emits
+	// the matching legacy policy.nudge / policy.rewrite / policy.block /
+	// policy.approval_requested runtime event, correlated via ParentID.
+	// [policy.RecommendationNone] emits no derived event.
 	//
-	// This is the OBSERVATION half of policy: the engine's verdict
-	// surfaces in the activity stream but does NOT rewrite or block
-	// the child's input/output. Rewrite-back semantics belong in a
-	// follow-up that touches the session input path.
+	// Findings are observation metadata only. Even a
+	// [policy.RecommendationBlock] or [policy.RecommendationRewrite] does not
+	// change, delay, or prevent the child operation; the event is emitted
+	// after agent.tool_use. Enforceable host gates must run before execution.
 	//
-	// Engines must be cheap and synchronous on the hot path — calls
-	// happen inline in the translator goroutine. See
-	// [policy.Engine] for the contract.
-	Policy policy.Engine
+	// Observers must be cheap and synchronous on the hot path. See
+	// [policy.Observer] for the contract and host/ACP boundary.
+	PolicyObserver policy.Observer
 
 	// Filters, when set, runs the harness filter pipeline against agent
 	// text, tool output, command output, and envelopes. Nil means no
@@ -355,7 +353,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		_ = w.cfg.Activity.Emit(ctx, kind, source, payload, opts...)
 
 		if kind == runtimeevents.KindAgentToolUse {
-			w.applyToolUsePolicy(ctx, source, ev, eventID, currentTurnID)
+			w.observeToolUsePolicy(ctx, source, ev, eventID, currentTurnID)
 		}
 
 		if kind == runtimeevents.KindTurnCompleted || kind == runtimeevents.KindTurnFailed {

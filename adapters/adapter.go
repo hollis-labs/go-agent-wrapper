@@ -15,7 +15,8 @@ type Adapter interface {
 	// Describe returns the static capability declaration for this
 	// adapter — which provider it integrates, which runtime channel
 	// the wrapper should use, and which observation channels it
-	// supports.
+	// supports. This is descriptive metadata; it does not imply a
+	// pre-execution control capability.
 	Describe() Descriptor
 
 	// Resolve materializes a Spec for one invocation. It receives the
@@ -139,11 +140,10 @@ type Descriptor struct {
 	// [InterruptCapability].
 	Interrupt InterruptCapability
 
-	// Channels lists the runtime-event source channels this adapter
-	// can produce when the wrapper attaches its observer. The wrapper
-	// uses this to decide whether semantic policy modes (rewrite,
-	// block, approval) are available or whether it must fall back to
-	// observe-only.
+	// Channels lists the runtime-event source channels this adapter can
+	// produce when the wrapper attaches its observer. Channels describe the
+	// provenance and confidence of observations; they do not make advisory
+	// recommendations enforceable.
 	Channels []runtimeevents.SourceChannel
 }
 

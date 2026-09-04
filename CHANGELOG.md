@@ -4,6 +4,65 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **Breaking: the post-hoc policy callback is now explicitly observational.**
+  The v0.8.1 API exposed action-shaped names even though `Wrapper.Run`
+  consulted it only after emitting `agent.tool_use`, too late to prevent or
+  replace the child operation. The replacement API is:
+
+  | v0.8.1 | Unreleased |
+  |---|---|
+  | `wrapper.Config.Policy` | `wrapper.Config.PolicyObserver` |
+  | `policy.Engine.Decide` | `policy.Observer.Observe` |
+  | `policy.Request` | `policy.Observation` |
+  | `policy.Decision` | `policy.Finding` |
+  | `policy.Mode` | `policy.Recommendation` |
+  | `ModeObserve` | `RecommendationNone` |
+  | `ModeNudge` | `RecommendationNudge` |
+  | `ModeRewrite` | `RecommendationRewrite` |
+  | `ModeBlock` | `RecommendationBlock` |
+  | `ModeApproval` | `RecommendationRequestApproval` |
+  | `Decision.Mode` | `Finding.Recommendation` |
+  | `Decision.Replacement` | `Finding.SuggestedReplacement` |
+  | `Rule.Mode` / `Rule.Replacement` | `Rule.Recommendation` / `Rule.SuggestedReplacement` |
+  | `policy.ObserveOnly` | `policy.NoOpObserver` |
+  | `classifybridge.Engine` | `classifybridge.Observer` |
+
+  `classifybridge.Engine.NudgeMode` and `.RewriteMode` become the explicitly
+  advisory `Observer.NonReversibleRecommendation` and
+  `.ReversibleRecommendation` fields. No deprecated aliases are retained: an
+  old `Config.Policy` population must fail at compile time rather than silently
+  preserve the misleading contract.
+
+- **Preserved the `go-runtime-events` policy wire vocabulary.**
+  `RecommendationNudge`, `RecommendationRewrite`, `RecommendationBlock`, and
+  `RecommendationRequestApproval` retain the strings `nudge`, `rewrite`,
+  `block`, and `approval` and continue to emit `policy.nudge`,
+  `policy.rewrite`, `policy.block`, and `policy.approval_requested` with the
+  existing `mode` and `replacement` payload keys. These are compatibility
+  labels for advisory observations; the wrapper does not perform the named
+  actions. Keeping them avoids a coordinated breaking release of
+  `go-runtime-events` and its independent consumers.
+
+- **Documented the authoritative host boundary.** Nanite's tool-grant, skill
+  capability, and plugin pre-hook gates remain responsible for preventing
+  execution. ACP `session/request_permission` remains a separate, narrower
+  protocol control point: Claude, Codex, OpenCode, and Pi default it to a
+  well-formed cancelled outcome, while Copilot currently returns JSON-RPC
+  method-not-handled. Wiring a host response is separate work and can only be
+  described as best-effort where a provider actually asks.
+
+### Tests
+
+- Added a native subprocess characterization proving a block recommendation is
+  produced only after the child has already created a side-effect marker.
+- Added ACP protocol coverage proving Claude's default cancelled response
+  unblocks a child waiting on `session/request_permission`, and locking down
+  Copilot's distinct method-not-handled response without adding a responder.
+
 ## v0.8.0 — 2026-08-21
 
 **New `adapters/piacp` package** (`TASKS/agent-host-acp/15`, Nanite's own

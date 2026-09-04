@@ -1,13 +1,11 @@
 // Package classifybridge adapts a
-// github.com/hollis-labs/go-harness-filters classify.Classifier
-// (typically a RuleSet) into a
-// github.com/hollis-labs/go-agent-wrapper policy.Engine.
+// github.com/hollis-labs/go-harness-filters classify.Classifier (typically a
+// RuleSet) into a github.com/hollis-labs/go-agent-wrapper policy.Observer.
 //
 // The two libraries deliberately keep their schemas separate —
-// classify owns "what is this content?" and policy owns "what should
-// the wrapper do about it?". This bridge translates between them so
-// rule-driven classification can drive wrapper policy enforcement
-// without either side depending on the other.
+// classify owns "what is this content?" and policy owns "what advisory
+// recommendation accompanies this observation?". This bridge translates
+// between them. It does not modify or stop the observed operation.
 //
 // Wiring:
 //
@@ -18,22 +16,19 @@
 //	)
 //
 //	rules := classify.NewRuleSet(classify.NaniteDeployRule)
-//	engine := &classifybridge.Engine{Classifier: rules}
+//	observer := &classifybridge.Observer{Classifier: rules}
 //
 //	w, _ := wrapper.New(wrapper.Config{
 //	    // ...
-//	    Policy: engine,
+//	    PolicyObserver: observer,
 //	})
 //
 // Translation defaults:
 //
-//   - classify.Match.Reversible == false → policy.ModeNudge
-//     (rewrites would change observable system state without operator
-//     approval; default-safe is to surface the recommendation and let
-//     the agent keep owning the choice).
-//   - classify.Match.Reversible == true → policy.ModeRewrite
-//     (the recommended alternative is semantically equivalent and safe
-//     to substitute automatically).
+//   - classify.Match.Reversible == false → policy.RecommendationNudge.
+//   - classify.Match.Reversible == true → policy.RecommendationRewrite, with
+//     the first recommended command surfaced as inert suggested-replacement
+//     data.
 //
-// Both defaults are overridable on the [Engine] struct.
+// Both defaults are overridable on the [Observer] struct.
 package classifybridge

@@ -80,6 +80,43 @@ done
 	return script
 }
 
+// fakePermissionACPScript makes session/prompt block on a
+// session/request_permission response before it returns the prompt result. The
+// first command-line argument is a marker file where the script records the
+// exact client response for the test to inspect.
+func fakePermissionACPScript(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-claude-agent-acp-permission.sh")
+	body := `#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[]}}\n' "$id"
+      ;;
+    *'"method":"session/new"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"ses_permission"}}\n' "$id"
+      ;;
+    *'"method":"session/prompt"'*)
+      printf '{"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{"sessionId":"ses_permission","options":[{"optionId":"allow_once","name":"Allow once","kind":"allow_once"}],"toolCall":{"toolCallId":"call_1","rawInput":{"command":"echo hi"}}}}\n'
+      IFS= read -r permission_response
+      printf '%s' "$permission_response" > "$1"
+      case "$permission_response" in
+        *'"outcome":{"outcome":"cancelled"}'*) ;;
+        *) exit 42 ;;
+      esac
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil { //nolint:gosec // G306: test fixture
+		t.Fatalf("write permission fake script: %v", err)
+	}
+	return script
+}
+
 func drainEvents(t *testing.T, c *Client, timeout time.Duration) []runtimeevents.Event {
 	t.Helper()
 	var out []runtimeevents.Event
@@ -203,6 +240,70 @@ func TestClientLaunchPromptEvents_FakeSubprocess(t *testing.T) {
 	}
 	if !sawTerminalResult {
 		t.Error("never saw the terminal tool_call_update (status=completed) translated")
+	}
+}
+
+func TestClientPermissionRequestDefaultsToCancelledAndUnblocksChild(t *testing.T) {
+	skipUnlessSh(t)
+	marker := filepath.Join(t.TempDir(), "permission-response.json")
+	client := NewClient(
+		WithClientDirectBinary(fakePermissionACPScript(t)),
+		WithClientExtraArgs(marker),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := client.Launch(ctx, launchParams(t)); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	defer func() { _ = client.Close(context.Background()) }()
+
+	// The fake child cannot return this prompt until it receives the
+	// permission response and verifies the cancelled outcome.
+	if err := client.Prompt(ctx, "request a tool"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	events := drainEvents(t, client, 5*time.Second)
+
+	response, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read recorded permission response: %v", err)
+	}
+	var frame struct {
+		ID     json.RawMessage `json:"id"`
+		Result struct {
+			Outcome struct {
+				Outcome string `json:"outcome"`
+			} `json:"outcome"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(response, &frame); err != nil {
+		t.Fatalf("decode recorded permission response: %v", err)
+	}
+	if string(frame.ID) != "99" || frame.Result.Outcome.Outcome != "cancelled" {
+		t.Fatalf("permission response id/outcome = %s/%q, want 99/cancelled; frame=%s", frame.ID, frame.Result.Outcome.Outcome, response)
+	}
+
+	var requested, resolved bool
+	for _, event := range events {
+		switch event.Kind {
+		case runtimeevents.KindAgentPermissionRequested:
+			requested = true
+		case runtimeevents.KindAgentPermissionResolved:
+			resolved = true
+			var payload struct {
+				Allowed bool `json:"allowed"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatalf("decode permission-resolved payload: %v", err)
+			}
+			if payload.Allowed {
+				t.Fatal("default permission resolution reported allowed=true, want false")
+			}
+		}
+	}
+	if !requested || !resolved {
+		t.Fatalf("missing permission visibility events: requested=%v resolved=%v events=%+v", requested, resolved, events)
 	}
 }
 

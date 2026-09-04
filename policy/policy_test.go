@@ -5,30 +5,30 @@ import (
 	"testing"
 )
 
-func TestObserveOnlyDecides(t *testing.T) {
-	var e Engine = ObserveOnly{}
-	d, err := e.Decide(context.Background(), Request{Kind: "command", Original: "ls"})
+func TestNoOpObserverReportsNoRecommendation(t *testing.T) {
+	var observer Observer = NoOpObserver{}
+	finding, err := observer.Observe(context.Background(), Observation{Kind: "command", Original: "ls"})
 	if err != nil {
-		t.Fatalf("Decide: %v", err)
+		t.Fatalf("Observe: %v", err)
 	}
-	if d.Mode != ModeObserve {
-		t.Errorf("Mode = %q, want %q", d.Mode, ModeObserve)
+	if finding.Recommendation != RecommendationNone {
+		t.Errorf("Recommendation = %q, want %q", finding.Recommendation, RecommendationNone)
 	}
 }
 
-func TestModesAreStable(t *testing.T) {
+func TestRecommendationWireValuesAreStable(t *testing.T) {
 	// Lock the on-the-wire string values; flipping these would break
 	// stored rule files and audit logs.
-	cases := map[Mode]string{
-		ModeObserve:  "observe",
-		ModeNudge:    "nudge",
-		ModeRewrite:  "rewrite",
-		ModeBlock:    "block",
-		ModeApproval: "approval",
+	cases := map[Recommendation]string{
+		RecommendationNone:            "observe",
+		RecommendationNudge:           "nudge",
+		RecommendationRewrite:         "rewrite",
+		RecommendationBlock:           "block",
+		RecommendationRequestApproval: "approval",
 	}
-	for m, want := range cases {
-		if string(m) != want {
-			t.Errorf("Mode %v = %q, want %q (changing this breaks persisted rules)", m, string(m), want)
+	for recommendation, want := range cases {
+		if string(recommendation) != want {
+			t.Errorf("Recommendation %v = %q, want %q (changing this breaks persisted rules)", recommendation, string(recommendation), want)
 		}
 	}
 }
