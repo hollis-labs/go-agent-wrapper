@@ -42,7 +42,7 @@ type Observation struct {
 	// agent emitted.
 	Original string
 
-	// Channel describes how the wrapper observed this request. Consumers can
+	// Channel describes how the wrapper observed this operation. Consumers can
 	// use it when interpreting the Finding; an inferred text observation is
 	// weaker evidence than a semantic protocol event.
 	Channel runtimeevents.SourceChannel
