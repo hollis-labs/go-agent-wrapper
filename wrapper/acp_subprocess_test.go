@@ -358,6 +358,90 @@ func TestAcceptedPromptEndsExactlyOnceOnExplicitCloseAllAdapters(t *testing.T) {
 	}
 }
 
+func TestConcurrentPromptCloseAdmissionAndWireOrderAllAdapters(t *testing.T) {
+	factories := map[string]func(string) acp.Client{
+		"claude": func(path string) acp.Client { return claudeacp.NewClient(claudeacp.WithClientDirectBinary(path)) },
+		"codex": func(path string) acp.Client {
+			return codexacp.NewClient(codexacp.WithClientBinary(path), codexacp.WithClientBridgePackageSpec("fixture"))
+		},
+		"copilot": func(path string) acp.Client {
+			return copilotacp.NewClient(adapters.TransportStdio, copilotacp.WithBinary(path))
+		},
+		"opencode": func(path string) acp.Client { return opencodeacp.NewClient(opencodeacp.WithClientBinary(path)) },
+		"pi":       func(path string) acp.Client { return piacp.NewClient(piacp.WithClientBinary(path)) },
+	}
+	for name, factory := range factories {
+		name, factory := name, factory
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			for iteration := 0; iteration < 10; iteration++ {
+				dir := t.TempDir()
+				tracePath := filepath.Join(dir, "trace.log")
+				client := factory(writeACPFixture(t, dir, tracePath, "close-callback"))
+				if err := client.Launch(context.Background(), acp.LaunchParams{Cwd: dir}); err != nil {
+					t.Fatalf("iteration %d Launch: %v", iteration, err)
+				}
+
+				start := make(chan struct{})
+				promptErr := make(chan error, 1)
+				closeErr := make(chan error, 1)
+				go func() {
+					<-start
+					promptErr <- client.Prompt(context.Background(), "concurrent prompt")
+				}()
+				go func() {
+					<-start
+					closeErr <- client.Close(context.Background())
+				}()
+				close(start)
+				pErr := <-promptErr
+				if err := <-closeErr; err != nil {
+					t.Fatalf("iteration %d Close: %v", iteration, err)
+				}
+
+				var startedID string
+				terminals := 0
+				for event := range client.Events() {
+					switch event.Kind {
+					case runtimeevents.KindTurnStarted:
+						if startedID != "" {
+							t.Fatalf("iteration %d saw multiple started turns", iteration)
+						}
+						startedID = event.TurnID
+					case runtimeevents.KindTurnCompleted, runtimeevents.KindTurnFailed:
+						if startedID == "" || event.TurnID != startedID {
+							t.Fatalf("iteration %d terminal TurnID = %q, started = %q", iteration, event.TurnID, startedID)
+						}
+						terminals++
+					}
+				}
+
+				trace := readFixtureTrace(t, tracePath)
+				if !strings.Contains(trace, `"id":9001`) {
+					t.Fatalf("iteration %d did not answer the server request issued while Close held the Prompt/Close barrier:\n%s", iteration, trace)
+				}
+				promptAt := strings.Index(trace, `"method":"session/prompt"`)
+				closeAt := strings.Index(trace, `"method":"session/close"`)
+				if pErr == nil {
+					if promptAt < 0 || closeAt < 0 || promptAt >= closeAt {
+						t.Fatalf("iteration %d accepted Prompt wire order = prompt %d, close %d:\n%s", iteration, promptAt, closeAt, trace)
+					}
+					if startedID == "" || terminals != 1 {
+						t.Fatalf("iteration %d accepted Prompt events = started %q, terminals %d; want one each", iteration, startedID, terminals)
+					}
+				} else {
+					if promptAt >= 0 {
+						t.Fatalf("iteration %d rejected Prompt still wrote a request at %d (Close at %d, Prompt error: %v):\n%s", iteration, promptAt, closeAt, pErr, trace)
+					}
+					if startedID != "" || terminals != 0 {
+						t.Fatalf("iteration %d rejected Prompt events = started %q, terminals %d; want none (Prompt error: %v)", iteration, startedID, terminals, pErr)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestAllACPClientsValidateInitializeAndGateResume(t *testing.T) {
 	factories := map[string]func(string) acp.Client{
 		"claude": func(path string) acp.Client { return claudeacp.NewClient(claudeacp.WithClientDirectBinary(path)) },
@@ -643,6 +727,7 @@ release="$trace.release"
 trap 'printf '"'"'fixture-cleanup\n'"'"' >> "$trace"' EXIT
 prompt_count=0
 held_id=
+close_id=
 active_session=
 while IFS= read -r line; do
   printf '%%s\n' "$line" >> "$trace"
@@ -674,9 +759,23 @@ while IFS= read -r line; do
 	  active_session=fresh-456
       printf '{"jsonrpc":"2.0","id":%%s,"result":{"sessionId":"fresh-456"}}\n' "$id"
       ;;
-    *'"method":"session/set_mode"'*|*'"method":"session/set_config_option"'*|*'"method":"session/close"'*)
+	*'"method":"session/set_mode"'*|*'"method":"session/set_config_option"'*)
       printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
       ;;
+	*'"method":"session/close"'*)
+	  if [ "$mode" = close-callback ]; then
+		close_id=$id
+		printf '{"jsonrpc":"2.0","id":9001,"method":"session/request_permission","params":{"sessionId":"%%s","toolCall":{"toolCallId":"close-callback","title":"Close callback"},"options":[]}}\n' "$active_session"
+	  else
+		printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$id"
+	  fi
+	  ;;
+	*'"id":9001'*)
+	  if [ -n "$close_id" ]; then
+		printf '{"jsonrpc":"2.0","id":%%s,"result":{}}\n' "$close_id"
+		close_id=
+	  fi
+	  ;;
     *'"method":"session/prompt"'*)
       prompt_count=$((prompt_count + 1))
       if [ "$mode" = caller-cancel ] && [ "$prompt_count" -eq 1 ]; then

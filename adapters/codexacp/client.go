@@ -59,6 +59,12 @@ type Client struct {
 	extraArgs     []string
 	codexBinary   string // explicit CODEX_PATH override; "" triggers the CODEX_CLI_PATH/PATH resolution below
 
+	// promptCloseMu linearizes Prompt's admission and request write with
+	// Close's closed transition and session/close request. It must not guard
+	// general protocol writes: server-request responses need to remain able to
+	// run while Close waits for its response.
+	promptCloseMu sync.Mutex
+
 	mu           sync.Mutex
 	launched     bool
 	closed       bool
@@ -442,6 +448,9 @@ func (c *Client) loadSession(ctx context.Context, params acp.LaunchParams) error
 // completion (turn.completed / turn.failed, carrying the ACP
 // `stopReason`) surface asynchronously via [Client.Events].
 func (c *Client) Prompt(ctx context.Context, prompt string) error {
+	c.promptCloseMu.Lock()
+	defer c.promptCloseMu.Unlock()
+
 	c.turnMu.Lock()
 	if c.currentTurnID != "" {
 		c.turnMu.Unlock()
@@ -487,8 +496,8 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 	// response is awaited on a background goroutine.
 	_, respCh, err := c.beginCall(ctx, "session/prompt", params)
 	if err != nil {
-		c.turnWG.Done()
 		c.finishTurn(turnID, nil, err)
+		c.turnWG.Done()
 		return err
 	}
 
@@ -588,9 +597,11 @@ func (c *Client) ProviderSessionID() string {
 // call even if Launch was never called or failed, and safe to call more
 // than once.
 func (c *Client) Close(ctx context.Context) error {
+	c.promptCloseMu.Lock()
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
+		c.promptCloseMu.Unlock()
 		return nil
 	}
 	c.closed = true
@@ -608,6 +619,7 @@ func (c *Client) Close(ctx context.Context) error {
 		_, closeErr = c.call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
 		cancel()
 	}
+	c.promptCloseMu.Unlock()
 
 	c.failPending(errors.New("codexacp: client closed"))
 	if lifetimeStop != nil {

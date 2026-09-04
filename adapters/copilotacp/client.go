@@ -117,6 +117,12 @@ type Client struct {
 	diagnosticMu  sync.Mutex
 	diagnostic    func(acp.Diagnostic)
 
+	// promptCloseMu linearizes Prompt's admission and request write with
+	// Close's closed transition and session/close request. It must not guard
+	// general protocol writes: server-request responses need to remain able to
+	// run while Close waits for its response.
+	promptCloseMu sync.Mutex
+
 	mu            sync.Mutex
 	started       bool
 	closed        bool
@@ -593,6 +599,9 @@ func (c *Client) notify(method string, params any) error {
 // pushed to [Client.Events] asynchronously once Copilot's response
 // arrives.
 func (c *Client) Prompt(ctx context.Context, prompt string) error {
+	c.promptCloseMu.Lock()
+	defer c.promptCloseMu.Unlock()
+
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -739,6 +748,7 @@ func (c *Client) InterruptCapability() adapters.InterruptCapability {
 // escalates to Kill if it doesn't.
 func (c *Client) Close(ctx context.Context) error {
 	c.closeOnce.Do(func() {
+		c.promptCloseMu.Lock()
 		c.mu.Lock()
 		c.closed = true
 		stdin := c.stdin
@@ -758,6 +768,7 @@ func (c *Client) Close(ctx context.Context) error {
 			c.closeErr = closeErr
 			c.mu.Unlock()
 		}
+		c.promptCloseMu.Unlock()
 
 		if stdin != nil {
 			_ = stdin.Close()
