@@ -59,6 +59,7 @@ type Client struct {
 
 	turnMu        sync.Mutex
 	currentTurnID string
+	turnWG        sync.WaitGroup
 
 	eventsMu     sync.Mutex
 	events       chan runtimeevents.Event
@@ -66,6 +67,10 @@ type Client struct {
 
 	waitDone     chan struct{}
 	waitErr      error
+	termination  *acp.TransportTermination
+	terminated   chan struct{}
+	lifetimeCtx  context.Context
+	lifetimeStop context.CancelFunc
 	diagnosticMu sync.Mutex
 	diagnostic   func(acp.Diagnostic)
 }
@@ -156,8 +161,8 @@ func clientBinaryEnvOverride() string { return os.Getenv("OPENCODE_CLI_PATH") }
 
 // Launch implements [acp.Client]. It spawns `opencode acp` (or the
 // configured override binary), performs the `initialize` + `session/new`
-// (or, when params.SessionIDPreset is set, a best-effort `session/load`
-// falling back to `session/new` on any error) handshake, and returns once
+// (or, when params.SessionIDPreset is set and the capability is advertised,
+// a fail-closed `session/load`) handshake, and returns once
 // the session is ready to accept a Prompt.
 func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	c.mu.Lock()
@@ -202,6 +207,9 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	c.cmd = cmd
 	c.stdin = stdin
 	c.waitDone = make(chan struct{})
+	c.terminated = make(chan struct{})
+	c.termination = acp.NewTransportTermination(true)
+	c.lifetimeCtx, c.lifetimeStop = context.WithCancel(context.Background())
 	c.diagnostic = params.OnDiagnostic
 	c.mu.Unlock()
 
@@ -215,6 +223,7 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	go c.drainStderr(stderr)
 	go c.readLoop(stdout)
 	go c.waitProcess()
+	go c.coordinateTermination()
 
 	initializeResult, err := c.call(ctx, "initialize", map[string]any{
 		"protocolVersion": acpProtocolVersion,
@@ -227,32 +236,27 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 		_ = c.Close(context.Background())
 		return fmt.Errorf("opencodeacp: initialize: %w", err)
 	}
-	if err := c.authenticate(ctx, initializeResult, params.AuthMethodID); err != nil {
+	initialize, err := acp.ParseInitializeResult(initializeResult, acpProtocolVersion)
+	if err != nil {
+		_ = c.Close(context.Background())
+		return fmt.Errorf("opencodeacp: initialize negotiation: %w", err)
+	}
+	if err := c.authenticate(ctx, initialize, params.AuthMethodID); err != nil {
 		_ = c.Close(context.Background())
 		return fmt.Errorf("opencodeacp: authenticate: %w", err)
 	}
 	c.mu.Lock()
-	c.sessionClose = acp.InitializeSupportsSessionClose(initializeResult)
+	c.sessionClose = initialize.SessionClose
 	c.mu.Unlock()
 
-	if params.SessionIDPreset != "" {
-		if sid, err := c.loadSession(ctx, params); err == nil {
-			c.mu.Lock()
-			c.sessionID = sid
-			c.mu.Unlock()
-		} else {
-			// Best-effort resume only — session/load's exact param shape
-			// beyond {sessionId, cwd, mcpServers} is not exhaustively
-			// verified against every opencode version, so any failure
-			// here (unknown session, incompatible shape, ...) falls back
-			// to a fresh session rather than failing Launch outright.
-			// LaunchParams's own doc permits implementations to "ignore
-			// [resume] silently" when unsupported.
-			if err := c.newSession(ctx, params); err != nil {
-				_ = c.Close(context.Background())
-				return fmt.Errorf("opencodeacp: session/new (after session/load fallback): %w", err)
-			}
+	if params.SessionIDPreset != "" && initialize.LoadSession {
+		if err := c.loadSession(ctx, params); err != nil {
+			_ = c.Close(context.Background())
+			return fmt.Errorf("opencodeacp: session/load: %w", err)
 		}
+		c.mu.Lock()
+		c.sessionID = params.SessionIDPreset
+		c.mu.Unlock()
 	} else if err := c.newSession(ctx, params); err != nil {
 		_ = c.Close(context.Background())
 		return fmt.Errorf("opencodeacp: session/new: %w", err)
@@ -269,20 +273,11 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	return nil
 }
 
-func (c *Client) authenticate(ctx context.Context, initializeResult json.RawMessage, methodID string) error {
+func (c *Client) authenticate(ctx context.Context, initialize acp.InitializeResult, methodID string) error {
 	if methodID == "" {
 		return nil
 	}
-	var response struct {
-		AuthMethods []struct {
-			ID   string `json:"id"`
-			Type string `json:"type"`
-		} `json:"authMethods"`
-	}
-	if err := json.Unmarshal(initializeResult, &response); err != nil {
-		return fmt.Errorf("decode initialize authMethods: %w", err)
-	}
-	for _, method := range response.AuthMethods {
+	for _, method := range initialize.AuthMethods {
 		if method.ID != methodID {
 			continue
 		}
@@ -348,25 +343,13 @@ func (c *Client) newSession(ctx context.Context, params acp.LaunchParams) error 
 	return nil
 }
 
-func (c *Client) loadSession(ctx context.Context, params acp.LaunchParams) (string, error) {
-	result, err := c.call(ctx, "session/load", map[string]any{
+func (c *Client) loadSession(ctx context.Context, params acp.LaunchParams) error {
+	_, err := c.call(ctx, "session/load", map[string]any{
 		"sessionId":  params.SessionIDPreset,
 		"cwd":        params.Cwd,
 		"mcpServers": []any{},
 	})
-	if err != nil {
-		return "", err
-	}
-	var decoded struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.Unmarshal(result, &decoded); err != nil {
-		return "", fmt.Errorf("decode session/load result: %w", err)
-	}
-	if decoded.SessionID == "" {
-		return "", errors.New("session/load returned an empty sessionId")
-	}
-	return decoded.SessionID, nil
+	return err
 }
 
 // Prompt implements [acp.Client]. It sends `session/prompt` and returns
@@ -375,18 +358,32 @@ func (c *Client) loadSession(ctx context.Context, params acp.LaunchParams) (stri
 // completion (turn.completed / turn.failed, carrying the ACP
 // `stopReason`) surface asynchronously via [Client.Events].
 func (c *Client) Prompt(ctx context.Context, prompt string) error {
+	c.turnMu.Lock()
+	if c.currentTurnID != "" {
+		c.turnMu.Unlock()
+		return errors.New("opencodeacp: a turn is already in flight")
+	}
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		c.turnMu.Unlock()
+		return errors.New("opencodeacp: client is closed")
+	}
 	sessionID := c.sessionID
-	systemPrompt := c.systemPrompt
-	c.systemPrompt = ""
-	c.mu.Unlock()
 	if sessionID == "" {
+		c.mu.Unlock()
+		c.turnMu.Unlock()
 		return errors.New("opencodeacp: Prompt called before Launch established a session")
 	}
-
+	systemPrompt := c.systemPrompt
+	c.systemPrompt = ""
+	lifetimeCtx := c.lifetimeCtx
 	turnID := runtimeevents.NewTurnID()
-	c.turnMu.Lock()
 	c.currentTurnID = turnID
+	// Admit the async turn while holding the same lifecycle mutex Close uses,
+	// so closeEvents cannot begin a zero-count Wait before this Add.
+	c.turnWG.Add(1)
+	c.mu.Unlock()
 	c.turnMu.Unlock()
 
 	c.emit(runtimeevents.Event{Kind: runtimeevents.KindTurnStarted, TurnID: turnID})
@@ -409,12 +406,14 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 	// [acp.Client.Prompt]'s documented contract.
 	_, respCh, err := c.beginCall(ctx, "session/prompt", params)
 	if err != nil {
+		c.turnWG.Done()
 		c.finishTurn(turnID, nil, err)
 		return err
 	}
 
 	go func() {
-		result, err := c.awaitCall(ctx, respCh)
+		defer c.turnWG.Done()
+		result, err := c.awaitCall(lifetimeCtx, respCh)
 		c.finishTurn(turnID, result, err)
 	}()
 
@@ -516,6 +515,8 @@ func (c *Client) Close(ctx context.Context) error {
 	cmd := c.cmd
 	stdin := c.stdin
 	waitDone := c.waitDone
+	terminated := c.terminated
+	lifetimeStop := c.lifetimeStop
 	sessionID := c.sessionID
 	sessionClose := c.sessionClose
 	c.mu.Unlock()
@@ -527,9 +528,12 @@ func (c *Client) Close(ctx context.Context) error {
 	}
 
 	c.failPending(errors.New("opencodeacp: client closed"))
-	c.closeEvents()
+	if lifetimeStop != nil {
+		lifetimeStop()
+	}
 
 	if cmd == nil || cmd.Process == nil {
+		c.closeEvents()
 		return closeErr
 	}
 	if stdin != nil {
@@ -542,6 +546,9 @@ func (c *Client) Close(ctx context.Context) error {
 	grace := 2 * time.Second
 	select {
 	case <-waitDone:
+		if terminated != nil {
+			<-terminated
+		}
 		return closeErr
 	case <-time.After(grace):
 	case <-ctx.Done():
@@ -551,6 +558,12 @@ func (c *Client) Close(ctx context.Context) error {
 	select {
 	case <-waitDone:
 	case <-time.After(3 * time.Second):
+	}
+	if terminated != nil {
+		select {
+		case <-terminated:
+		case <-ctx.Done():
+		}
 	}
 	return closeErr
 }
@@ -563,19 +576,38 @@ func (c *Client) waitProcess() {
 	err := cmd.Wait()
 	c.mu.Lock()
 	c.waitErr = err
+	termination := c.termination
 	c.mu.Unlock()
-	c.failPending(errors.New("opencodeacp: process exited before response"))
-
-	payload := map[string]any{"exit_code": cmd.ProcessState.ExitCode()}
-	if err != nil {
-		payload["error"] = err.Error()
-	}
-	c.emit(runtimeevents.Event{
-		Kind:    runtimeevents.KindProcessExited,
-		Payload: mustMarshal(payload),
-	})
+	termination.ReportProcess(acp.TransportProcessResult{ExitCode: cmd.ProcessState.ExitCode(), Err: err})
 	close(waitDone)
+}
+
+func (c *Client) coordinateTermination() {
+	c.mu.Lock()
+	termination := c.termination
+	cmd := c.cmd
+	stdin := c.stdin
+	terminated := c.terminated
+	c.mu.Unlock()
+	result := termination.Coordinate(func() {
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+	}, func() error {
+		if cmd != nil && cmd.Process != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	})
+	if result.ShouldEmitProcessExit() {
+		payload := map[string]any{"exit_code": result.Process.ExitCode}
+		if result.Process.Err != nil {
+			payload["error"] = result.Process.Err.Error()
+		}
+		c.emit(runtimeevents.Event{Kind: runtimeevents.KindProcessExited, Payload: mustMarshal(payload)})
+	}
 	c.closeEvents()
+	close(terminated)
 }
 
 // closeEvents closes the Events channel exactly once, guarded by
@@ -585,6 +617,7 @@ func (c *Client) waitProcess() {
 // [Client.Close] (explicit teardown) and [Client.waitProcess] (the
 // subprocess exiting on its own), whichever happens first.
 func (c *Client) closeEvents() {
+	c.turnWG.Wait()
 	c.eventsMu.Lock()
 	defer c.eventsMu.Unlock()
 	if c.eventsClosed {
@@ -617,10 +650,12 @@ func (c *Client) drainStderr(r io.Reader) {
 func (c *Client) readLoop(stdout io.Reader) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 4*1024*1024)
+	malformed := false
 	for scanner.Scan() {
 		raw := scanner.Bytes()
 		var frame rpcFrame
 		if err := json.Unmarshal(raw, &frame); err != nil {
+			malformed = true
 			c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticMalformedJSON, "invalid JSON-RPC frame", string(raw)))
 			continue
 		}
@@ -638,16 +673,9 @@ func (c *Client) readLoop(stdout io.Reader) {
 	}
 	c.failPending(errors.New("opencodeacp: protocol stream closed before response"))
 	c.mu.Lock()
-	waitDone := c.waitDone
+	termination := c.termination
 	c.mu.Unlock()
-	if waitDone != nil {
-		select {
-		case <-waitDone:
-			return
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-	c.closeEvents()
+	termination.ReportRead(acp.TransportReadResult{Malformed: malformed, Err: scanner.Err()})
 }
 
 func (c *Client) reportDiagnostic(d acp.Diagnostic) {

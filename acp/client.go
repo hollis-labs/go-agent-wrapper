@@ -3,10 +3,70 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
+
+// InitializeResult is the validated subset of ACP's initialize response that
+// affects the client lifecycle. Clients must decode this once, before issuing
+// authentication or session requests, so protocol negotiation and optional
+// method gating cannot diverge between adapters.
+type InitializeResult struct {
+	ProtocolVersion int
+	AuthMethods     []AuthMethod
+	LoadSession     bool
+	SessionClose    bool
+}
+
+// AuthMethod is one authentication choice advertised by an ACP agent.
+type AuthMethod struct {
+	ID   string
+	Type string
+}
+
+// ParseInitializeResult validates an initialize result against the only ACP
+// version this module currently speaks and returns its lifecycle capabilities.
+// A missing protocolVersion decodes as zero and is rejected as unsupported.
+func ParseInitializeResult(result json.RawMessage, supportedVersion int) (InitializeResult, error) {
+	if len(result) == 0 {
+		return InitializeResult{}, errors.New("acp: initialize returned an empty result")
+	}
+	var wire struct {
+		ProtocolVersion int `json:"protocolVersion"`
+		AuthMethods     []struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"authMethods"`
+		AgentCapabilities struct {
+			LoadSession         bool `json:"loadSession"`
+			SessionCapabilities struct {
+				Close json.RawMessage `json:"close"`
+			} `json:"sessionCapabilities"`
+		} `json:"agentCapabilities"`
+	}
+	if err := json.Unmarshal(result, &wire); err != nil {
+		return InitializeResult{}, fmt.Errorf("acp: decode initialize result: %w", err)
+	}
+	if wire.ProtocolVersion != supportedVersion {
+		return InitializeResult{}, fmt.Errorf("acp: unsupported protocol version %d (want %d)", wire.ProtocolVersion, supportedVersion)
+	}
+	parsed := InitializeResult{
+		ProtocolVersion: wire.ProtocolVersion,
+		LoadSession:     wire.AgentCapabilities.LoadSession,
+	}
+	for _, method := range wire.AuthMethods {
+		parsed.AuthMethods = append(parsed.AuthMethods, AuthMethod{ID: method.ID, Type: method.Type})
+	}
+	closeCapability := wire.AgentCapabilities.SessionCapabilities.Close
+	if len(closeCapability) > 0 {
+		var capability map[string]any
+		parsed.SessionClose = json.Unmarshal(closeCapability, &capability) == nil && capability != nil
+	}
+	return parsed, nil
+}
 
 // Client is the ACP client abstraction: the stable, single Go interface
 // a Hollis host drives an underlying ACP-speaking agent through,
@@ -118,7 +178,9 @@ type LaunchParams struct {
 	// an implementation should attempt to resume via ACP's
 	// `session/load`, mirroring wrapper.Config.SessionIDPreset's
 	// existing convention for non-ACP adapters. Implementations that
-	// don't support resume ignore it silently.
+	// don't advertise loadSession start a fresh session. Once loadSession
+	// is advertised, a failed load is returned rather than silently losing
+	// continuity through a session/new fallback.
 	SessionIDPreset string
 
 	// AuthMethodID, when non-empty, selects one agent-managed authentication
@@ -160,6 +222,9 @@ func ProviderSessionID(client Client) string {
 // send session/close before tearing down the transport without breaking older
 // ACP agents that do not implement the optional method.
 func InitializeSupportsSessionClose(result json.RawMessage) bool {
+	// Kept as a compatibility helper for external clients that only need this
+	// one bit. Shipped clients use ParseInitializeResult so validation and all
+	// lifecycle capabilities come from one decode.
 	var response struct {
 		AgentCapabilities struct {
 			SessionCapabilities struct {

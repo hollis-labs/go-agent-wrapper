@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -113,6 +114,88 @@ func TestManagerOwnsRegistrationCancelCloseAndCleanupExactlyOnce(t *testing.T) {
 	}
 	if _, ok := m.Lookup("runtime-1"); ok || m.Len() != 0 {
 		t.Fatalf("terminated session remained registered; lookup=%v len=%d", ok, m.Len())
+	}
+}
+
+func TestManagerDoesNotPublishReadyBeforeHostCommit(t *testing.T) {
+	m := NewManager()
+	client := newManagedFakeClient()
+	commitEntered := make(chan *Session, 1)
+	releaseCommit := make(chan struct{})
+	launchResult := make(chan *Session, 1)
+	launchErr := make(chan error, 1)
+	var authorityMu sync.Mutex
+	var authority *Session
+	go func() {
+		session, err := m.Launch(context.Background(), SessionConfig{
+			ID: "commit-barrier", Client: client,
+			Commit: func(session *Session) error {
+				commitEntered <- session
+				<-releaseCommit
+				authorityMu.Lock()
+				authority = session
+				authorityMu.Unlock()
+				return nil
+			},
+		})
+		launchResult <- session
+		launchErr <- err
+	}()
+
+	session := <-commitEntered
+	if snapshot := session.Snapshot(); snapshot.State != StateLaunching || snapshot.Live {
+		t.Fatalf("during host commit snapshot = %+v, want launching and not live", snapshot)
+	}
+	if got := session.ProviderSessionID(); got != "provider-1" {
+		t.Fatalf("provider identity before commit = %q, want provider-1", got)
+	}
+	if m.IsLive("commit-barrier") {
+		t.Fatal("Manager published session live before host authority committed")
+	}
+	deadline := time.After(time.Second)
+	for {
+		session.mu.RLock()
+		pendingReady := session.pendingReady
+		session.mu.RUnlock()
+		if pendingReady {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("Manager did not observe client's early session.ready")
+		default:
+			runtime.Gosched()
+		}
+	}
+	select {
+	case event := <-session.Events():
+		t.Fatalf("Manager published event %q before host authority committed", event.Kind)
+	default:
+	}
+	close(releaseCommit)
+	launched := <-launchResult
+	if err := <-launchErr; err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	authorityMu.Lock()
+	committed := authority
+	authorityMu.Unlock()
+	if committed != launched {
+		t.Fatalf("committed authority = %p, launched session = %p", committed, launched)
+	}
+	if snapshot := launched.Snapshot(); snapshot.State != StateReady || !snapshot.Live {
+		t.Fatalf("after commit snapshot = %+v, want ready and live", snapshot)
+	}
+	select {
+	case event := <-launched.Events():
+		if event.Kind != runtimeevents.KindSessionReady {
+			t.Fatalf("first post-commit event = %q, want session.ready", event.Kind)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session.ready was not published after host commit")
+	}
+	if err := launched.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 

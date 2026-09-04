@@ -157,6 +157,8 @@ type Client struct {
 	readerDone   chan struct{}
 	waitDone     chan struct{}
 	waitErr      error
+	termination  *acp.TransportTermination
+	terminated   chan struct{}
 	closeErr     error
 }
 
@@ -220,6 +222,8 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	c.mu.Lock()
 	c.started = true
 	cmd := c.cmd
+	c.termination = acp.NewTransportTermination(cmd != nil)
+	c.terminated = make(chan struct{})
 	if cmd != nil {
 		c.waitDone = make(chan struct{})
 	}
@@ -229,6 +233,7 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 		c.pushEvent(runtimeevents.Event{Kind: runtimeevents.KindProcessStarted, Payload: marshalPayload(map[string]any{"pid": cmd.Process.Pid})})
 		go c.waitProcess()
 	}
+	go c.coordinateTermination()
 
 	initParams := initializeParams{
 		ProtocolVersion: acpProtocolVersion,
@@ -243,23 +248,30 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 		_ = c.Close(ctx)
 		return fmt.Errorf("copilotacp: initialize: %w", err)
 	}
-	if err := c.authenticate(ctx, initializeResult, params.AuthMethodID); err != nil {
+	initialize, err := acp.ParseInitializeResult(initializeResult, acpProtocolVersion)
+	if err != nil {
+		_ = c.Close(ctx)
+		return fmt.Errorf("copilotacp: initialize negotiation: %w", err)
+	}
+	if err := c.authenticate(ctx, initialize, params.AuthMethodID); err != nil {
 		_ = c.Close(ctx)
 		return fmt.Errorf("copilotacp: authenticate: %w", err)
 	}
 	c.mu.Lock()
-	c.sessionClose = acp.InitializeSupportsSessionClose(initializeResult)
+	c.sessionClose = initialize.SessionClose
 	c.mu.Unlock()
 
 	sessionID := ""
-	if params.SessionIDPreset != "" {
+	if params.SessionIDPreset != "" && initialize.LoadSession {
 		if _, loadErr := c.call(ctx, "session/load", map[string]any{
 			"sessionId":  params.SessionIDPreset,
 			"cwd":        params.Cwd,
 			"mcpServers": []any{},
-		}); loadErr == nil {
-			sessionID = params.SessionIDPreset
+		}); loadErr != nil {
+			_ = c.Close(ctx)
+			return fmt.Errorf("copilotacp: session/load: %w", loadErr)
 		}
+		sessionID = params.SessionIDPreset
 	}
 	if sessionID == "" {
 		newParams := sessionNewParams{Cwd: params.Cwd, MCPServers: []any{}}
@@ -296,20 +308,11 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	return nil
 }
 
-func (c *Client) authenticate(ctx context.Context, initializeResult json.RawMessage, methodID string) error {
+func (c *Client) authenticate(ctx context.Context, initialize acp.InitializeResult, methodID string) error {
 	if methodID == "" {
 		return nil
 	}
-	var response struct {
-		AuthMethods []struct {
-			ID   string `json:"id"`
-			Type string `json:"type"`
-		} `json:"authMethods"`
-	}
-	if err := json.Unmarshal(initializeResult, &response); err != nil {
-		return fmt.Errorf("decode initialize authMethods: %w", err)
-	}
-	for _, method := range response.AuthMethods {
+	for _, method := range initialize.AuthMethods {
 		if method.ID != methodID {
 			continue
 		}
@@ -591,6 +594,10 @@ func (c *Client) notify(method string, params any) error {
 // arrives.
 func (c *Client) Prompt(ctx context.Context, prompt string) error {
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return errors.New("copilotacp: client is closed")
+	}
 	if c.sessionID == "" {
 		c.mu.Unlock()
 		return ErrNotLaunched
@@ -605,6 +612,9 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 	turnID := runtimeevents.NewTurnID()
 	c.turnInFlight = true
 	c.currentTurnID = turnID
+	// Admit the turn under the same lifecycle mutex Close uses so its
+	// closeEvents Wait cannot observe zero before this Add.
+	c.turnWG.Add(1)
 	c.mu.Unlock()
 
 	text := prompt
@@ -621,6 +631,7 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 	raw, err := json.Marshal(params)
 	if err != nil {
 		c.failTurn(turnID, err)
+		c.turnWG.Done()
 		c.endTurn()
 		return err
 	}
@@ -631,19 +642,9 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 	c.pending[id] = ch
 	c.pendMu.Unlock()
 
-	// turnWG.Add must happen strictly before writeFrame, not after: once
-	// the request is on the wire, a fast responder (real or fake) can
-	// have its response processed and reach onReaderClosed's
-	// closeEvents/turnWG.Wait() before this goroutine gets scheduled
-	// again — sync.WaitGroup's own contract requires Add to happen
-	// before a Wait that could observe a zero counter, and ordering Add
-	// before the write (rather than before the `go` statement) is what
-	// actually guarantees that, since the write is what makes a
-	// response — and therefore a Wait — possible at all. Caught live by
-	// `go test -race` against TestClientTCP_LaunchPromptEvents during
-	// implementation.
-	c.turnWG.Add(1)
-
+	// turnWG.Add was performed under c.mu before request preparation. That
+	// orders admission before either a fast response or concurrent Close can
+	// reach closeEvents/turnWG.Wait.
 	idCopy := id
 	if err := c.writeFrame(wireFrame{ID: &idCopy, Method: "session/prompt", Params: raw}); err != nil {
 		c.pendMu.Lock()
@@ -745,6 +746,7 @@ func (c *Client) Close(ctx context.Context) error {
 		cmd := c.cmd
 		started := c.started
 		waitDone := c.waitDone
+		terminated := c.terminated
 		sessionID := c.sessionID
 		sessionClose := c.sessionClose
 		c.mu.Unlock()
@@ -781,8 +783,15 @@ func (c *Client) Close(ctx context.Context) error {
 			case <-c.readerDone:
 			case <-time.After(2 * time.Second):
 			}
+			if terminated != nil {
+				select {
+				case <-terminated:
+				case <-ctx.Done():
+				}
+			}
+		} else {
+			c.closeEvents()
 		}
-		c.closeEvents()
 	})
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -797,14 +806,42 @@ func (c *Client) waitProcess() {
 	err := cmd.Wait()
 	c.mu.Lock()
 	c.waitErr = err
+	termination := c.termination
 	c.mu.Unlock()
-	payload := map[string]any{"exit_code": cmd.ProcessState.ExitCode()}
-	if err != nil {
-		payload["error"] = err.Error()
-	}
-	c.pushEvent(runtimeevents.Event{Kind: runtimeevents.KindProcessExited, Payload: marshalPayload(payload)})
+	termination.ReportProcess(acp.TransportProcessResult{ExitCode: cmd.ProcessState.ExitCode(), Err: err})
 	close(waitDone)
+}
+
+func (c *Client) coordinateTermination() {
+	c.mu.Lock()
+	termination := c.termination
+	cmd := c.cmd
+	stdin := c.stdin
+	conn := c.conn
+	terminated := c.terminated
+	c.mu.Unlock()
+	result := termination.Coordinate(func() {
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		if conn != nil {
+			_ = conn.Close()
+		}
+	}, func() error {
+		if cmd != nil && cmd.Process != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	})
+	if result.ShouldEmitProcessExit() {
+		payload := map[string]any{"exit_code": result.Process.ExitCode}
+		if result.Process.Err != nil {
+			payload["error"] = result.Process.Err.Error()
+		}
+		c.pushEvent(runtimeevents.Event{Kind: runtimeevents.KindProcessExited, Payload: marshalPayload(payload)})
+	}
 	c.closeEvents()
+	close(terminated)
 }
 
 // closeEvents closes the events channel exactly once. It first waits
@@ -851,6 +888,7 @@ func (c *Client) readLoop(r io.Reader) {
 	defer close(c.readerDone)
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	malformed := false
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(bytes.TrimSpace(line)) == 0 {
@@ -858,19 +896,25 @@ func (c *Client) readLoop(r io.Reader) {
 		}
 		cp := make([]byte, len(line))
 		copy(cp, line)
-		c.handleLine(cp)
+		if c.handleLine(cp) {
+			malformed = true
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		c.reportReadError("reading ACP protocol stream", err)
 	}
 	c.onReaderClosed()
+	c.mu.Lock()
+	termination := c.termination
+	c.mu.Unlock()
+	termination.ReportRead(acp.TransportReadResult{Malformed: malformed, Err: scanner.Err()})
 }
 
-func (c *Client) handleLine(line []byte) {
+func (c *Client) handleLine(line []byte) bool {
 	var f wireFrame
 	if err := json.Unmarshal(line, &f); err != nil {
 		c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticMalformedJSON, "invalid JSON-RPC frame", string(line)))
-		return
+		return true
 	}
 	switch {
 	case f.Method != "" && f.ID != nil:
@@ -883,6 +927,7 @@ func (c *Client) handleLine(line []byte) {
 	case f.ID != nil:
 		c.deliverResponse(*f.ID, f)
 	}
+	return false
 }
 
 func (c *Client) deliverResponse(id int64, f wireFrame) {
@@ -932,10 +977,9 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 	c.pushEvent(ev)
 }
 
-// onReaderClosed runs once the underlying transport's read side hits
-// EOF/closes — fails any still-pending Call goroutines so they unblock,
-// then closes the events channel (guarded so a concurrent explicit
-// [Client.Close] doesn't double-close).
+// onReaderClosed fails any still-pending Call goroutines. The shared
+// transport coordinator, not this producer, closes Events after joining the
+// reader and process outcomes.
 func (c *Client) onReaderClosed() {
 	c.pendMu.Lock()
 	pending := c.pending
@@ -944,18 +988,6 @@ func (c *Client) onReaderClosed() {
 	for _, ch := range pending {
 		close(ch)
 	}
-	c.mu.Lock()
-	hasProcess := c.cmd != nil
-	waitDone := c.waitDone
-	c.mu.Unlock()
-	if hasProcess && waitDone != nil {
-		select {
-		case <-waitDone:
-			return
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-	c.closeEvents()
 }
 
 func (c *Client) drainStderr(r io.Reader) {

@@ -44,9 +44,11 @@ End-to-end launch path is wired:
 - Native and ACP adapters are available for the providers documented under
   `adapters/`.
 - ACP adapters run through a wrapper-owned `acp.Manager`: `Wrapper.Run`
-  performs initialize, optional agent authentication, create-or-resume,
-  deterministic mode/config application, prompting, turn cancellation, and
-  close for both stdio and TCP. `Wrapper.ACPSnapshot`,
+  validates ACP v1 negotiation, performs optional agent authentication,
+  capability-gated create-or-resume, deterministic mode/config application,
+  prompting, turn cancellation, and close for both stdio and TCP. A failed
+  advertised resume is returned instead of silently starting a new session.
+  `Wrapper.ACPSnapshot`,
   `Wrapper.ProviderSessionID`, and a shared `Config.ACPManager` replace
   downstream liveness/session registries.
 - `classifybridge.Observer` lets a
@@ -154,6 +156,14 @@ Pass any shipped ACP adapter to `wrapper.Config.Adapter`; no direct
 `Wrapper.CancelTurn` for ACP `session/cancel` (the session remains reusable) and
 `Wrapper.Stop` to close the whole session. A shared `Config.ACPManager` exposes
 lookup, liveness, cancel, close, and shutdown across wrappers.
+
+Manager readiness is published only after the provider session ID and wrapper
+control reference are committed. Once `Prompt` accepts and writes a request,
+the asynchronous turn belongs to the ACP session rather than the caller's
+short-lived context; explicit `CancelTurn`, `Stop`, transport loss, or provider
+completion ends it. After `Run` returns, `ACPSnapshot` no longer exposes the
+dead session and control calls cannot target it; `ProviderSessionID` remains
+available for postmortem correlation.
 
 Unexpected transport EOF, non-zero child-process exit, and malformed protocol
 streams are returned as typed `acp.LifecycleError` outcomes. A clean child exit

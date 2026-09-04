@@ -227,12 +227,15 @@ type Wrapper struct {
 	cfg       Config
 	sessionID string
 
-	sessMu      sync.RWMutex
-	session     agentsessions.Session
-	acpSession  *acp.Session
-	acpManager  *acp.Manager
-	typedSource runtimeevents.Source // set in Run; used by SendInput/Stop for derived events
-	rawSource   runtimeevents.Source // set in Run; used for stdin.write events
+	sessMu     sync.RWMutex
+	session    agentsessions.Session
+	acpSession *acp.Session
+	acpManager *acp.Manager
+	// acpProviderSessionID is retained for postmortem readback after the
+	// live acpSession control reference has been cleared.
+	acpProviderSessionID string
+	typedSource          runtimeevents.Source // set in Run; used by SendInput/Stop for derived events
+	rawSource            runtimeevents.Source // set in Run; used for stdin.write events
 }
 
 // New validates cfg and returns a Wrapper ready for [Wrapper.Run].
@@ -633,13 +636,15 @@ func (w *Wrapper) CancelTurn(ctx context.Context) error {
 	return w.requestACPInterrupt(ctx, source, session, "turn_cancel", false)
 }
 
-// ProviderSessionID returns the current provider-assigned ACP session id.
+// ProviderSessionID returns the current provider-assigned ACP session id, or
+// the most recently completed ACP session id for postmortem correlation.
 func (w *Wrapper) ProviderSessionID() string {
 	w.sessMu.RLock()
 	session := w.acpSession
+	retained := w.acpProviderSessionID
 	w.sessMu.RUnlock()
 	if session == nil {
-		return ""
+		return retained
 	}
 	return session.ProviderSessionID()
 }

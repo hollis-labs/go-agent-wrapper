@@ -188,6 +188,12 @@ type SessionConfig struct {
 	ID     string
 	Client Client
 	Launch LaunchParams
+
+	// Commit installs host-side control authority for the launched Session.
+	// Manager invokes it after Client.Launch and provider-id capture, but
+	// before StateReady can become externally observable. A non-nil error
+	// aborts and tears down the launch.
+	Commit func(*Session) error
 }
 
 // Session owns one Client from successful registration through exactly-once
@@ -208,16 +214,20 @@ type Session struct {
 	closeRequested    bool
 	sawProcessExit    bool
 	sawMalformed      bool
+	launchCommitted   bool
+	pendingReady      bool
 
 	events               chan runtimeevents.Event
 	diagnostics          chan Diagnostic
 	done                 chan struct{}
+	launchDone           chan struct{}
 	diagnosticMu         sync.Mutex
 	diagnosticCallbackMu sync.Mutex
 	diagnosticsClosed    bool
 	diagnosticWG         sync.WaitGroup
 	onDiagnostic         func(Diagnostic)
 	closeOnce            sync.Once
+	launchDoneOnce       sync.Once
 	finishOnce           sync.Once
 	closeErr             error
 }
@@ -241,7 +251,7 @@ func (s *Session) Snapshot() Snapshot {
 	defer s.mu.RUnlock()
 	return Snapshot{
 		ID: s.id, ProviderSessionID: s.providerSessionID, State: s.state,
-		Live:         s.state == StateLaunching || s.state == StateReady || s.state == StateProcessing || s.state == StateClosing,
+		Live:         s.launchCommitted && (s.state == StateReady || s.state == StateProcessing || s.state == StateClosing),
 		LastActivity: s.lastActivity, LastTurnOutcome: s.lastTurnOutcome,
 		TerminalOutcome: s.terminalOutcome, Err: s.err,
 	}
@@ -324,6 +334,18 @@ func (s *Session) Wait(ctx context.Context) error {
 func (s *Session) drain() {
 	for ev := range s.client.Events() {
 		s.observeEvent(ev)
+		if ev.Kind == runtimeevents.KindSessionReady {
+			// The client emits ready from inside Launch. Hold the public event
+			// behind the same barrier as StateReady so Manager lookup cannot
+			// observe readiness before host control authority is committed.
+			<-s.launchDone
+			s.mu.RLock()
+			committed := s.launchCommitted
+			s.mu.RUnlock()
+			if !committed {
+				continue
+			}
+		}
 		select {
 		case s.events <- ev:
 		case <-s.done:
@@ -333,6 +355,10 @@ func (s *Session) drain() {
 			// stall teardown behind a slow host consumer.
 		}
 	}
+	// Client.Launch is allowed to emit session.ready before returning. Do not
+	// let a fast EOF finalize/unregister the session until Manager has either
+	// committed or aborted that launch.
+	<-s.launchDone
 	s.finish()
 }
 
@@ -347,8 +373,10 @@ func (s *Session) observeEvent(ev runtimeevents.Event) {
 	}
 	switch ev.Kind {
 	case runtimeevents.KindSessionReady:
-		if s.state == StateLaunching {
+		if s.state == StateLaunching && s.launchCommitted {
 			s.state = StateReady
+		} else if s.state == StateLaunching {
+			s.pendingReady = true
 		}
 	case runtimeevents.KindTurnCompleted, runtimeevents.KindTurnFailed:
 		if s.state != StateClosing {
@@ -503,7 +531,7 @@ func (m *Manager) Launch(ctx context.Context, cfg SessionConfig) (*Session, erro
 	s := &Session{
 		id: cfg.ID, client: cfg.Client, state: StateLaunching,
 		lastActivity: time.Now().UTC(), events: make(chan runtimeevents.Event, 128),
-		diagnostics: make(chan Diagnostic, 32), done: make(chan struct{}),
+		diagnostics: make(chan Diagnostic, 32), done: make(chan struct{}), launchDone: make(chan struct{}),
 		onDiagnostic: cfg.Launch.OnDiagnostic,
 	}
 	s.onDone = m.unregister
@@ -528,6 +556,7 @@ func (m *Manager) Launch(ctx context.Context, cfg SessionConfig) (*Session, erro
 			s.closeErr = err
 			s.mu.Unlock()
 		})
+		s.launchDoneOnce.Do(func() { close(s.launchDone) })
 		s.finish()
 		return nil, normalizeOperationError("launch", err)
 	}
@@ -535,11 +564,36 @@ func (m *Manager) Launch(ctx context.Context, cfg SessionConfig) (*Session, erro
 	if identity, ok := cfg.Client.(interface{ ProviderSessionID() string }); ok {
 		s.providerSessionID = identity.ProviderSessionID()
 	}
+	s.lastActivity = time.Now().UTC()
+	s.mu.Unlock()
+	if cfg.Commit != nil {
+		if err := cfg.Commit(s); err != nil {
+			s.mu.Lock()
+			s.closeRequested = true
+			s.state = StateClosing
+			s.mu.Unlock()
+			s.closeOnce.Do(func() {
+				closeErr := cfg.Client.Close(context.Background())
+				s.mu.Lock()
+				s.closeErr = closeErr
+				s.mu.Unlock()
+			})
+			s.launchDoneOnce.Do(func() { close(s.launchDone) })
+			s.finish()
+			return nil, fmt.Errorf("acp: commit launch: %w", err)
+		}
+	}
+	s.mu.Lock()
+	s.launchCommitted = true
 	if s.state == StateLaunching {
+		// Client.Launch returning successfully is itself the readiness
+		// contract. pendingReady records whether the wire event arrived
+		// early, but never publishes it before the host commit above.
 		s.state = StateReady
 	}
 	s.lastActivity = time.Now().UTC()
 	s.mu.Unlock()
+	s.launchDoneOnce.Do(func() { close(s.launchDone) })
 	return s, nil
 }
 

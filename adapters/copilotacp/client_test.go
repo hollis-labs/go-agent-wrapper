@@ -264,7 +264,7 @@ func TestClientTCP_CancelSendsRealNotification(t *testing.T) {
 		if !scanner.Scan() { // initialize
 			return
 		}
-		_, _ = conn.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}` + "\n"))
+		_, _ = conn.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}` + "\n"))
 
 		if !scanner.Scan() { // session/new
 			return
@@ -338,7 +338,7 @@ func TestClientTCP_PermissionRequestReturnsMethodNotHandled(t *testing.T) {
 		if !scanner.Scan() { // initialize
 			return
 		}
-		_, _ = conn.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}` + "\n"))
+		_, _ = conn.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}` + "\n"))
 
 		if !scanner.Scan() { // session/new
 			return
@@ -401,7 +401,7 @@ func TestClient_DoubleLaunchRejected(t *testing.T) {
 		if !scanner.Scan() {
 			return
 		}
-		_, _ = conn.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}` + "\n"))
+		_, _ = conn.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}` + "\n"))
 		if !scanner.Scan() {
 			return
 		}

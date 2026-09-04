@@ -46,7 +46,7 @@ while IFS= read -r line; do
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"ses_fake123"}}\n' "$id"
       ;;
     *'"method":"session/load"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"ses_loaded456"}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"modes":{},"configOptions":[]}}\n' "$id"
       ;;
     *'"method":"session/prompt"'*)
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_fake123","update":{"sessionUpdate":"agent_thought_chunk","thought":"thinking..."}}}\n'

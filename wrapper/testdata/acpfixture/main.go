@@ -76,7 +76,10 @@ func serve(r io.Reader, w io.Writer, trace io.Writer) {
 		case "authenticate", "session/set_mode", "session/set_config_option", "session/close":
 			respond(encoder, frame.ID, map[string]any{})
 		case "session/load":
-			respond(encoder, frame.ID, map[string]any{"sessionId": "resume-tcp"})
+			respond(encoder, frame.ID, map[string]any{
+				"modes":         map[string]any{"availableModes": []any{}, "currentModeId": ""},
+				"configOptions": []any{},
+			})
 		case "session/new":
 			respond(encoder, frame.ID, map[string]any{"sessionId": "fresh-tcp"})
 		case "session/prompt":

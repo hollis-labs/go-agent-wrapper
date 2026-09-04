@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 
@@ -24,6 +25,34 @@ type fakeClient struct {
 	closed     bool
 	events     chan runtimeevents.Event
 	interrupt  adapters.InterruptCapability
+}
+
+func TestParseInitializeResultValidatesVersionAndCapabilities(t *testing.T) {
+	parsed, err := ParseInitializeResult(json.RawMessage(`{
+		"protocolVersion":1,
+		"authMethods":[{"id":"token","type":"agent"}],
+		"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"close":{}}}
+	}`), 1)
+	if err != nil {
+		t.Fatalf("ParseInitializeResult: %v", err)
+	}
+	if parsed.ProtocolVersion != 1 || !parsed.LoadSession || !parsed.SessionClose {
+		t.Fatalf("parsed initialize = %+v", parsed)
+	}
+	if len(parsed.AuthMethods) != 1 || parsed.AuthMethods[0] != (AuthMethod{ID: "token", Type: "agent"}) {
+		t.Fatalf("auth methods = %+v", parsed.AuthMethods)
+	}
+
+	for _, raw := range []string{
+		`{}`,
+		`{"protocolVersion":2}`,
+		`{"protocolVersion":"1"}`,
+		`{`,
+	} {
+		if _, err := ParseInitializeResult(json.RawMessage(raw), 1); err == nil {
+			t.Fatalf("ParseInitializeResult(%q) unexpectedly succeeded", raw)
+		}
+	}
 }
 
 func newFakeClient(interrupt adapters.InterruptCapability) *fakeClient {

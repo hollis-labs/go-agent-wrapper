@@ -56,19 +56,25 @@ func (w *Wrapper) runACP(ctx context.Context, desc adapters.Descriptor) error {
 	}
 	session, err := manager.Launch(ctx, acp.SessionConfig{
 		ID: w.sessionID, Client: adapter.ACPClient(), Launch: launch,
+		Commit: func(session *acp.Session) error {
+			providerID := session.ProviderSessionID()
+			w.sessMu.Lock()
+			w.acpSession = session
+			w.acpProviderSessionID = providerID
+			w.sessMu.Unlock()
+			if providerID != "" {
+				w.cfg.Activity.Emitter().SetProviderSessionID(providerID)
+				if w.cfg.OnSessionID != nil {
+					w.cfg.OnSessionID(providerID)
+				}
+			}
+			return nil
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("wrapper: ACP launch: %w", err)
 	}
-	w.sessMu.Lock()
-	w.acpSession = session
-	w.sessMu.Unlock()
-	if providerID := session.ProviderSessionID(); providerID != "" {
-		w.cfg.Activity.Emitter().SetProviderSessionID(providerID)
-		if w.cfg.OnSessionID != nil {
-			w.cfg.OnSessionID(providerID)
-		}
-	}
+	defer w.clearACPSession(session)
 
 	if w.cfg.AutoFireFirstTurn {
 		if err := session.Prompt(ctx, w.cfg.FirstTurnPayload); err != nil {
@@ -138,7 +144,9 @@ func (w *Wrapper) runACP(ctx context.Context, desc adapters.Descriptor) error {
 	}()
 
 	stopWatcher := make(chan struct{})
+	stopWatcherDone := make(chan struct{})
 	go func() {
+		defer close(stopWatcherDone)
 		select {
 		case <-ctx.Done():
 			_ = w.requestACPInterrupt(context.Background(), source, session, "ctx_cancel", true)
@@ -148,6 +156,7 @@ func (w *Wrapper) runACP(ctx context.Context, desc adapters.Descriptor) error {
 
 	waitErr := session.Wait(context.Background())
 	close(stopWatcher)
+	<-stopWatcherDone
 	<-eventsDone
 	if !sawProcessExit.Load() {
 		snapshot := session.Snapshot()
@@ -164,6 +173,17 @@ func (w *Wrapper) runACP(ctx context.Context, desc adapters.Descriptor) error {
 		return ctxErr
 	}
 	return nil
+}
+
+func (w *Wrapper) clearACPSession(expected *acp.Session) {
+	w.sessMu.Lock()
+	if w.acpSession == expected {
+		if providerID := expected.ProviderSessionID(); providerID != "" {
+			w.acpProviderSessionID = providerID
+		}
+		w.acpSession = nil
+	}
+	w.sessMu.Unlock()
 }
 
 func cloneSessionConfig(in map[string]any) map[string]any {

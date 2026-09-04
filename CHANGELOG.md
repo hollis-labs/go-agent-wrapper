@@ -28,6 +28,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Serialized each `activity.Bridge` sequence assignment with its sink write so
   concurrent lifecycle, heartbeat, and stream producers cannot deliver event
   sequence N+1 before N.
+- ACP launch now uses a two-phase host commit: provider identity and wrapper
+  control authority are installed before Manager readiness becomes observable.
+  `Wrapper.Run` clears that live authority at teardown while retaining the
+  provider ID for postmortem correlation.
+- All shipped ACP clients validate the negotiated protocol version before any
+  auth/session request and gate `session/load` on the advertised capability.
+  ACP v1 load responses retain the requested session ID (including the pinned
+  `codex-acp@1.6.2` response, which has no `sessionId`), and an advertised load
+  failure no longer silently falls back to `session/new`.
+- Accepted asynchronous prompts in Claude, Codex, OpenCode, and Pi are now
+  owned by the client/session lifetime instead of the accepting caller's
+  context. Explicit cancel/close and transport teardown remain authoritative.
+- One transport-termination coordinator now joins protocol-reader and child
+  completion before closing events. Recorded malformed input deterministically
+  outranks a consequent child exit.
 
 - **Breaking: the post-hoc policy callback is now explicitly observational.**
   The v0.8.1 API exposed action-shaped names even though `Wrapper.Run`
@@ -83,6 +98,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   disconnect, malformed stream, child exit, and exactly-once cleanup across all
   five shipped adapters, plus Copilot TCP coverage and lifecycle race/stress
   coverage.
+- Added deterministic regressions for pre-commit readiness, ACP version/load
+  capability negotiation, spec-valid Codex resume, accepted prompt ownership,
+  malformed/exit precedence, and truthful post-`Run` control state.
 - Added a native subprocess characterization proving a block recommendation is
   produced only after the child has already created a side-effect marker.
 - Added ACP protocol coverage proving Claude's default cancelled response

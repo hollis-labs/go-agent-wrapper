@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,7 +51,7 @@ while IFS= read -r line; do
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"ses_fake123"}}\n' "$id"
       ;;
     *'"method":"session/load"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"ses_loaded456"}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"modes":{},"configOptions":[]}}\n' "$id"
       ;;
     *'"method":"session/prompt"'*)
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_fake123","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"thinking..."}}}}\n'
@@ -223,6 +224,55 @@ func TestClientInterruptCapabilityIsTurnAndAnswerableWithoutLaunch(t *testing.T)
 	c := NewClient()
 	if got := c.InterruptCapability(); got != adapters.InterruptTurn {
 		t.Errorf("InterruptCapability() = %q, want turn", got)
+	}
+}
+
+func TestClientResumeAcceptsCodexACP162LoadResponseWithoutNewFallback(t *testing.T) {
+	skipUnlessSh(t)
+	dir := t.TempDir()
+	tracePath := filepath.Join(dir, "trace.log")
+	script := filepath.Join(dir, "codex-acp-1.6.2-load.sh")
+	body := `#!/bin/sh
+trace=$3
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$trace"
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true},"authMethods":[]}}\n' "$id"
+      ;;
+    *'"method":"session/load"'*)
+      # Extracted from @agentclientprotocol/codex-acp@1.6.2: load returns
+      # modes/configOptions and no sessionId.
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"modes":{"availableModes":[],"currentModeId":"default"},"configOptions":[]}}\n' "$id"
+      ;;
+    *'"method":"session/new"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"wrong-fallback"}}\n' "$id"
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil { //nolint:gosec // test fixture
+		t.Fatal(err)
+	}
+	c := NewClient(WithClientBinary(script), WithClientBridgePackageSpec("fixture"), WithClientExtraArgs(tracePath))
+	const preset = "thread-resume-162"
+	if err := c.Launch(context.Background(), acp.LaunchParams{Cwd: dir, SessionIDPreset: preset}); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if got := c.ProviderSessionID(); got != preset {
+		t.Fatalf("ProviderSessionID = %q, want %q", got, preset)
+	}
+	if err := c.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	traceBytes, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trace := string(traceBytes)
+	if strings.Count(trace, `"method":"session/load"`) != 1 || strings.Contains(trace, `"method":"session/new"`) {
+		t.Fatalf("codex-acp 1.6.2 resume trace:\n%s", trace)
 	}
 }
 
