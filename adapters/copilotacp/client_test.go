@@ -189,7 +189,11 @@ func TestClosePreemptsBlockedPromptWrite(t *testing.T) {
 
 func TestClosePreemptsBlockedTCPPromptWrite(t *testing.T) {
 	rawClientConn, peerConn := net.Pipe()
-	defer peerConn.Close()
+	defer func() {
+		if err := peerConn.Close(); err != nil {
+			t.Errorf("close TCP test peer: %v", err)
+		}
+	}()
 	clientConn := &enteredConn{Conn: rawClientConn, entered: make(chan struct{}, 1)}
 	client := NewClient(adapters.TransportTCP)
 	client.mu.Lock()
