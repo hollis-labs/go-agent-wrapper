@@ -8,7 +8,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 No changes yet.
 
-## v0.9.0 — 2026-09-04
+## v0.9.0 — 2026-09-05
 
 This is a minor release under the module's pre-1.0 compatibility policy. It
 contains substantial additive ACP lifecycle, environment, adapter-selection,

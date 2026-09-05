@@ -13,7 +13,7 @@ This is the "sibling agent in parallel" path identified by the
 `agentkit-wrapper-alignment-review-2026-05-26.md` rollout (step 9):
 filters / plant / sandbox composition + Tachyon `cmd/agent-wrap`.
 
-## Status (v0.9.0, 2026-09-04)
+## Status (v0.9.0, 2026-09-05)
 
 End-to-end launch path is wired:
 

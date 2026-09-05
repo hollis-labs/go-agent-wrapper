@@ -1,6 +1,6 @@
 # go-agent-wrapper Roadmap
 
-Status as of v0.9.0 (2026-09-04). See
+Status as of v0.9.0 (2026-09-05). See
 [CHANGELOG.md](./CHANGELOG.md) for what landed.
 
 ## Publish blockers
