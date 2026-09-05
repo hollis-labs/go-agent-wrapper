@@ -204,6 +204,15 @@ type LaunchParams struct {
 	// diagnostics. It is opt-in and must return quickly; ordinary activity
 	// continues to flow through Events.
 	OnDiagnostic func(Diagnostic)
+
+	// BestEffortPermissionRequestResponder answers ACP
+	// session/request_permission calls when the agent elects to make one. Nil
+	// preserves the concrete client's established non-blocking decline (the
+	// four bridge/direct stdio clients return ACP cancelled; Copilot retains its
+	// JSON-RPC method-not-handled default). This is not a general execution gate:
+	// many ACP agents execute tools without asking the client, so hosts must
+	// retain their authoritative controls.
+	BestEffortPermissionRequestResponder BestEffortPermissionRequestResponder
 }
 
 // ProviderSessionID returns the provider-assigned id when a concrete client

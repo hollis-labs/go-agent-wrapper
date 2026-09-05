@@ -41,6 +41,12 @@
 // scraped spec summary but rejected as a required field by the real
 // binary) — confirmed by a live round-trip.
 //
+// A configured [acp.BestEffortPermissionRequestResponder] services
+// `session/request_permission`; nil retains the established cancelled outcome.
+// One real shell-tool shape executed internally without sending a permission,
+// fs, or terminal request, so the responder is explicitly not a general host
+// execution gate and coverage beyond that measured shape remains unknown.
+//
 // # Real, verified Interrupt capability
 //
 // `session/cancel` was tested mid-generation against a real, long

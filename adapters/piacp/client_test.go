@@ -2,6 +2,7 @@ package piacp
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,155 @@ func skipUnlessSh(t *testing.T) {
 	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available on PATH")
+	}
+}
+
+func TestCancelSharesPromptAdmissionLock(t *testing.T) {
+	client := NewClient()
+	client.promptCloseMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			client.promptCloseMu.Unlock()
+		}
+	}()
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- client.Cancel(context.Background())
+	}()
+	<-started
+	select {
+	case <-done:
+		t.Fatal("Cancel was not linearized with Prompt admission")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	client.promptCloseMu.Unlock()
+	locked = false
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Cancel did not proceed after Prompt admission lock was released")
+	}
+}
+
+type blockingPermissionWriter struct {
+	entered  chan struct{}
+	release  chan struct{}
+	deadline chan time.Time
+}
+
+func newBlockingPermissionWriter() *blockingPermissionWriter {
+	return &blockingPermissionWriter{
+		entered:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		deadline: make(chan time.Time, 1),
+	}
+}
+
+func (w *blockingPermissionWriter) Write([]byte) (int, error) {
+	select {
+	case w.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-w.release:
+		return 0, context.Canceled
+	case deadline := <-w.deadline:
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		select {
+		case <-w.release:
+			return 0, context.Canceled
+		case <-timer.C:
+			return 0, context.DeadlineExceeded
+		}
+	}
+}
+
+func (w *blockingPermissionWriter) SetWriteDeadline(deadline time.Time) error {
+	if deadline.IsZero() {
+		return nil
+	}
+	select {
+	case w.deadline <- deadline:
+	default:
+	}
+	return nil
+}
+
+func (w *blockingPermissionWriter) Close() error {
+	select {
+	case <-w.release:
+	default:
+		close(w.release)
+	}
+	return nil
+}
+
+func TestCancelAndClosePreemptBackpressuredPermissionResponse(t *testing.T) {
+	client := NewClient()
+	writer := newBlockingPermissionWriter()
+	requests := acp.NewBestEffortPermissionRequests(func(context.Context, acp.PermissionRequest) (acp.PermissionSelection, error) {
+		return acp.SelectPermissionOption("allow"), nil
+	})
+	requests.SetResponseGate(&client.promptCloseMu)
+	requests.SetSessionID("session")
+	requests.BeginTurn()
+	client.mu.Lock()
+	client.stdin = writer
+	client.sessionID = "session"
+	client.sessionClose = true
+	client.permissions = requests
+	client.mu.Unlock()
+	client.turnMu.Lock()
+	client.currentTurnID = "turn"
+	client.turnMu.Unlock()
+
+	respondDone := make(chan struct{})
+	go func() {
+		defer close(respondDone)
+		requests.Respond(json.RawMessage(`{"sessionId":"session","toolCall":{"toolCallId":"call"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}`), func(resolution acp.PermissionResolution) error {
+			client.respondToServerRequest(json.RawMessage("99"), resolution.Result(), nil)
+			return nil
+		})
+	}()
+	select {
+	case <-writer.entered:
+	case <-time.After(time.Second):
+		t.Fatal("permission response did not reach blocked writer")
+	}
+
+	select {
+	case <-respondDone:
+	case <-time.After(time.Second):
+		t.Fatal("permission response write deadline did not release lifecycle gate")
+	}
+
+	cancelDone := make(chan error, 1)
+	go func() { cancelDone <- client.Cancel(context.Background()) }()
+	select {
+	case <-writer.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Cancel notification did not reach blocked writer")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- client.Close(context.Background()) }()
+	select {
+	case <-cancelDone:
+	case <-time.After(time.Second):
+		t.Fatal("Cancel remained blocked behind response I/O")
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("concurrent Close remained blocked behind Cancel I/O")
 	}
 }
 

@@ -211,10 +211,54 @@ The wire labels are retained to avoid a coordinated breaking release of
 accurate semantics.
 
 ACP `session/request_permission` is separate: it is a blocking protocol
-request, not an observer callback. Direct Claude, Codex, OpenCode, and Pi ACP
-clients currently default it to `cancelled`; Copilot currently returns JSON-RPC
-method-not-handled. A future host responder can enforce at that point only when
-the provider chooses to ask, so it is not a general replacement for host gates.
+request, not an observer callback. Set
+`Config.ACPBestEffortPermissionRequestResponder` to receive the validated
+provider request and return either `acp.SelectPermissionOption(optionID)` or a
+zero `acp.PermissionSelection` to cancel. The selected ID must exactly match an
+option the provider offered; errors, panics, mismatched sessions, malformed
+requests, and unoffered IDs fail closed to ACP `cancelled`. Responder callbacks
+run away from the protocol reader and lifecycle locks, and their contexts are
+cancelled by turn cancellation, turn completion, transport loss, or close.
+At most 64 requests may be dispatched asynchronously per client, and at most 64
+responder callbacks may remain active; callbacks that ignore cancellation
+retain a slot until they return. Saturation backpressures the single protocol
+reader with a bounded cancelled response instead of allocating another
+goroutine or raw-input copy. Permission response and cancellation writes have
+bounded deadlines, so transport backpressure cannot pin cancellation or close
+coordination. If a decision cannot be delivered, the client emits a fixed,
+redacted fail-closed resolution and tears down the transport so an agent cannot
+remain blocked waiting for a response that never arrived.
+
+The name “best effort” is load-bearing. This callback is a real pre-execution
+decision point only when the provider sends `session/request_permission`; it
+does not cause providers to ask and is not a replacement for host tool grants,
+sandboxing, or other authoritative gates. The responder receives raw tool input
+and provider extensions because an approval UI needs that context; those values
+may be sensitive and are never echoed into diagnostics. Diagnostics use fixed,
+bounded, redacted text.
+
+Nil preserves each adapter's established safe, non-blocking behavior:
+
+| ACP client | Nil responder | Permission events | Measured provider coverage |
+|---|---|---|---|
+| Claude bridge | ACP `cancelled` | requested + resolved | A real ordinary Bash call executed internally without asking; other operation classes are not exhaustively measured. |
+| Codex bridge | ACP `cancelled` | requested + resolved | A real ordinary shell call executed internally without asking; other classes are not exhaustively measured. |
+| OpenCode native ACP | ACP `cancelled` | requested + resolved | One real shell shape executed internally without asking; not an exhaustive guarantee. |
+| Pi bridge | ACP `cancelled` | requested + resolved | No permission request observed; `pi-acp` documents that Pi executes filesystem and terminal work locally. |
+| Copilot native ACP | JSON-RPC `-32601` | none | Baseline client never serviced permission requests; configured responders are covered over both stdio and TCP. |
+
+All configured clients preserve numeric, string, and schema-present `null`
+JSON-RPC request IDs and reject object, array, or boolean IDs without exposing
+the request in diagnostics. Copilot's own outbound calls remain numeric and
+accept only the corresponding numeric responses.
+
+For the later Nanite integration, Nanite's existing approval vocabulary is
+decision `allow`/`deny` plus scope `once`/`session`. The mechanical ACP mapping
+is to an actually offered option whose kind is respectively `allow_once`,
+`reject_once`, `allow_always`, or `reject_always`; the responder must return
+that option's opaque `optionId`, not synthesize one from the kind. A timeout or
+canceled Nanite wait maps to the zero selection. This module deliberately does
+not import or duplicate Nanite's approval engine.
 
 ## ACP lifecycle
 

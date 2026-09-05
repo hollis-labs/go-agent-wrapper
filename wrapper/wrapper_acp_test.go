@@ -258,15 +258,19 @@ printf '{"echo":"%s"}\n' "$line"
 	client := newFakeACPClient(adapters.InterruptTurn)
 	cli := &fakeACPCLIAdapter{client: client, script: script}
 	adapter := &fakeACPRuntimeAdapter{client: client, cli: cli}
+	responder := func(context.Context, acp.PermissionRequest) (acp.PermissionSelection, error) {
+		return acp.SelectPermissionOption("allow"), nil
+	}
 
 	sink := newCapturingSink()
 	w, err := New(Config{
-		App:               "test-fake-acp",
-		Adapter:           adapter,
-		Activity:          activity.NewBridge(sink),
-		Workdir:           dir,
-		AutoFireFirstTurn: true,
-		FirstTurnPayload:  "hello acp",
+		App:                                     "test-fake-acp",
+		Adapter:                                 adapter,
+		Activity:                                activity.NewBridge(sink),
+		Workdir:                                 dir,
+		AutoFireFirstTurn:                       true,
+		FirstTurnPayload:                        "hello acp",
+		ACPBestEffortPermissionRequestResponder: responder,
 		Environment: ChildEnvironment{
 			Mode: EnvironmentReplace,
 			Set:  []string{"SAFE=value with spaces", "DUP=first", "DUP=last"},
@@ -295,6 +299,14 @@ printf '{"echo":"%s"}\n' "$line"
 	}
 	if got, want := client.snapshotLaunch().Env, []string{"DUP=last", "SAFE=value with spaces"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("ACP LaunchParams.Env = %#v, want %#v", got, want)
+	}
+	launch := client.snapshotLaunch()
+	if launch.BestEffortPermissionRequestResponder == nil {
+		t.Fatal("ACP best-effort permission responder was not forwarded to LaunchParams")
+	}
+	selection, err := launch.BestEffortPermissionRequestResponder(context.Background(), acp.PermissionRequest{})
+	if err != nil || selection.OptionID != "allow" {
+		t.Fatalf("forwarded ACP permission responder returned %+v, %v", selection, err)
 	}
 	if prompts := client.snapshotPrompts(); len(prompts) != 1 || prompts[0] != "hello acp" {
 		t.Errorf("acp.Client.Prompt calls = %v, want [\"hello acp\"]", prompts)

@@ -164,6 +164,14 @@ type Config struct {
 	// stderr/protocol bytes are never placed on the ordinary event stream.
 	OnACPDiagnostic func(acp.Diagnostic)
 
+	// ACPBestEffortPermissionRequestResponder answers ACP
+	// session/request_permission calls when the selected agent chooses to ask.
+	// Nil retains the selected client's established non-blocking decline (see
+	// [acp.LaunchParams]). The seam is
+	// deliberately best-effort and does not replace authoritative host gates:
+	// providers may execute operation classes without requesting permission.
+	ACPBestEffortPermissionRequestResponder acp.BestEffortPermissionRequestResponder
+
 	// OnSessionID, when non-nil, is invoked the first time the running
 	// session observes a provider-assigned session id — in addition to,
 	// not instead of, [Wrapper.Run]'s own unconditional

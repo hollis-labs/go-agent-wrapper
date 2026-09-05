@@ -107,15 +107,16 @@
 // server-initiated request) is a standard ACP `{options, sessionId,
 // toolCall: {toolCallId, rawInput, ...}}` shape, structurally identical
 // to [adapters/opencodeacp]'s own — this package reuses the exact same
-// generic pass-through/deny handling (no interactive approval mechanism
-// wired in; Nanite's own policy/approval layer sits upstream of this
-// package). Live-verified that Claude executes ordinary tool calls (a
+// shared best-effort responder handling, with a cancelled default when none is
+// configured. Live-verified that Claude executes ordinary tool calls (a
 // real Bash command) without ever invoking `session/request_permission`
 // or the declared-false `fs`/`terminal` client capabilities — consistent
 // with 17-acp.md's documented expectation that Claude does its own
 // fs/terminal work internally regardless of what the client declares,
 // for at least this one tool-call shape (not exhaustively confirmed for
-// every ACP-proxyable operation).
+// every ACP-proxyable operation). The responder therefore cannot replace an
+// authoritative host permission gate; the ordinary Bash bypass is a measured
+// limitation, not an edge case hidden behind the ACP abstraction.
 //
 // # Real, verified Interrupt capability
 //

@@ -8,6 +8,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Best-effort ACP permission responder.** Hosts can set
+  `wrapper.Config.ACPBestEffortPermissionRequestResponder` (or the matching
+  `acp.LaunchParams` field) to answer `session/request_permission` across
+  Claude, Codex, Copilot, OpenCode, and Pi. The shared option-ID contract
+  validates provider offers, preserves raw request extensions for the approval
+  UI, cancels with turn/session lifecycle, and fails closed on malformed input,
+  callback errors/panics, session mismatch, or invalid selections. It is
+  explicitly not a general execution gate where a provider does not ask.
+  Request and callback admission are bounded per client, response/cancel writes
+  have teardown-safe deadlines, and all clients preserve numeric, string, and
+  schema-present null request IDs while rejecting invalid ID shapes. An
+  undeliverable permission response emits a fixed, redacted fail-closed event
+  and terminates the transport instead of leaving the child blocked.
+
 - **Explicit child-process environment contract.** `wrapper.Config.Environment`
   now accepts a typed `ChildEnvironment` with inherit/merge/replace modes, an
   inherited-key allowlist, ordered `Set` entries (last duplicate wins), and a
@@ -110,11 +124,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Documented the authoritative host boundary.** Nanite's tool-grant, skill
   capability, and plugin pre-hook gates remain responsible for preventing
-  execution. ACP `session/request_permission` remains a separate, narrower
-  protocol control point: Claude, Codex, OpenCode, and Pi default it to a
-  well-formed cancelled outcome, while Copilot currently returns JSON-RPC
-  method-not-handled. Wiring a host response is separate work and can only be
-  described as best-effort where a provider actually asks.
+  execution. ACP `session/request_permission` is now a separate, narrower
+  best-effort responder point. Nil preserves Claude/Codex/OpenCode/Pi's
+  well-formed cancelled outcomes and Copilot's distinct JSON-RPC
+  method-not-handled behavior. The measured coverage table calls out providers
+  that execute ordinary tool classes without asking.
 
 ### Tests
 
@@ -138,7 +152,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   produced only after the child has already created a side-effect marker.
 - Added ACP protocol coverage proving Claude's default cancelled response
   unblocks a child waiting on `session/request_permission`, and locking down
-  Copilot's distinct method-not-handled response without adding a responder.
+  Copilot's distinct method-not-handled default.
+- Added a real subprocess conformance matrix across all five ACP clients for
+  default, allow, reject, explicit cancel, turn cancel, callback error, invalid
+  selection, concurrent requests, string/null/invalid request IDs, and responder
+  re-entry into Prompt/Close, plus shared race/stress coverage, exact
+  legacy-default assertions, real non-reading-child floods,
+  backpressured response/cancel teardown, and redaction assertions.
 
 ## v0.8.0 — 2026-08-21
 

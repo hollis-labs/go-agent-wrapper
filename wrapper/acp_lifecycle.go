@@ -66,14 +66,15 @@ func (w *Wrapper) runACP(
 	}
 
 	launch := acp.LaunchParams{
-		Cwd:             w.cfg.Workdir,
-		Env:             childEnv,
-		SystemPrompt:    w.cfg.SystemPrompt,
-		SessionIDPreset: w.cfg.SessionIDPreset,
-		AuthMethodID:    w.cfg.ACPAuthMethodID,
-		SessionModeID:   w.cfg.ACPSessionModeID,
-		SessionConfig:   cloneSessionConfig(w.cfg.ACPSessionConfig),
-		OnDiagnostic:    w.cfg.OnACPDiagnostic,
+		Cwd:                                  w.cfg.Workdir,
+		Env:                                  childEnv,
+		SystemPrompt:                         w.cfg.SystemPrompt,
+		SessionIDPreset:                      w.cfg.SessionIDPreset,
+		AuthMethodID:                         w.cfg.ACPAuthMethodID,
+		SessionModeID:                        w.cfg.ACPSessionModeID,
+		SessionConfig:                        cloneSessionConfig(w.cfg.ACPSessionConfig),
+		OnDiagnostic:                         w.cfg.OnACPDiagnostic,
+		BestEffortPermissionRequestResponder: w.cfg.ACPBestEffortPermissionRequestResponder,
 	}
 	session, err := manager.Launch(ctx, acp.SessionConfig{
 		ID: w.sessionID, Client: adapter.ACPClient(), Launch: launch,

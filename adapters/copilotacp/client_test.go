@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +34,172 @@ func skipUnlessSh(t *testing.T) {
 	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not available on PATH")
+	}
+}
+
+func TestCancelSharesPromptAdmissionLock(t *testing.T) {
+	client := NewClient(adapters.TransportStdio)
+	client.promptCloseMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			client.promptCloseMu.Unlock()
+		}
+	}()
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(started)
+		done <- client.Cancel(context.Background())
+	}()
+	<-started
+	select {
+	case <-done:
+		t.Fatal("Cancel was not linearized with Prompt admission")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	client.promptCloseMu.Unlock()
+	locked = false
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Cancel did not proceed after Prompt admission lock was released")
+	}
+}
+
+func TestDecodeServerRequestID(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want bool
+	}{
+		{raw: `"permission-1"`, want: true},
+		{raw: `99`, want: true},
+		{raw: `null`, want: true},
+		{raw: `{}`, want: false},
+		{raw: `true`, want: false},
+	}
+	for _, test := range tests {
+		if _, ok := acp.DecodeJSONRPCRequestID(json.RawMessage(test.raw)); ok != test.want {
+			t.Errorf("DecodeJSONRPCRequestID(%s) valid = %v, want %v", test.raw, ok, test.want)
+		}
+	}
+}
+
+type blockingPermissionWriter struct {
+	entered  chan struct{}
+	release  chan struct{}
+	deadline chan time.Time
+}
+
+func newBlockingPermissionWriter() *blockingPermissionWriter {
+	return &blockingPermissionWriter{
+		entered:  make(chan struct{}, 1),
+		release:  make(chan struct{}),
+		deadline: make(chan time.Time, 1),
+	}
+}
+
+func (w *blockingPermissionWriter) Write([]byte) (int, error) {
+	select {
+	case w.entered <- struct{}{}:
+	default:
+	}
+	select {
+	case <-w.release:
+		return 0, context.Canceled
+	case deadline := <-w.deadline:
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		select {
+		case <-w.release:
+			return 0, context.Canceled
+		case <-timer.C:
+			return 0, context.DeadlineExceeded
+		}
+	}
+}
+
+func (w *blockingPermissionWriter) SetWriteDeadline(deadline time.Time) error {
+	if deadline.IsZero() {
+		return nil
+	}
+	select {
+	case w.deadline <- deadline:
+	default:
+	}
+	return nil
+}
+
+func (w *blockingPermissionWriter) Close() error {
+	select {
+	case <-w.release:
+	default:
+		close(w.release)
+	}
+	return nil
+}
+
+func TestCancelAndClosePreemptBackpressuredPermissionResponse(t *testing.T) {
+	client := NewClient(adapters.TransportStdio)
+	writer := newBlockingPermissionWriter()
+	requests := acp.NewBestEffortPermissionRequests(func(context.Context, acp.PermissionRequest) (acp.PermissionSelection, error) {
+		return acp.SelectPermissionOption("allow"), nil
+	})
+	requests.SetResponseGate(&client.promptCloseMu)
+	requests.SetSessionID("session")
+	requests.BeginTurn()
+	client.mu.Lock()
+	client.writer = writer
+	client.stdin = writer
+	client.sessionID = "session"
+	client.sessionClose = true
+	client.permissions = requests
+	client.turnInFlight = true
+	client.currentTurnID = "turn"
+	client.mu.Unlock()
+
+	respondDone := make(chan struct{})
+	go func() {
+		defer close(respondDone)
+		requests.Respond(json.RawMessage(`{"sessionId":"session","toolCall":{"toolCallId":"call"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}`), func(resolution acp.PermissionResolution) error {
+			return client.writeServerResponse(json.RawMessage("99"), marshalPayload(resolution.Result()), nil)
+		})
+	}()
+	select {
+	case <-writer.entered:
+	case <-time.After(time.Second):
+		t.Fatal("permission response did not reach blocked writer")
+	}
+
+	select {
+	case <-respondDone:
+	case <-time.After(time.Second):
+		t.Fatal("permission response write deadline did not release lifecycle gate")
+	}
+
+	cancelDone := make(chan error, 1)
+	go func() { cancelDone <- client.Cancel(context.Background()) }()
+	select {
+	case <-writer.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Cancel notification did not reach blocked writer")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- client.Close(context.Background()) }()
+	select {
+	case <-cancelDone:
+	case <-time.After(time.Second):
+		t.Fatal("Cancel remained blocked behind response I/O")
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("concurrent Close remained blocked behind Cancel I/O")
 	}
 }
 
@@ -354,6 +522,9 @@ func TestClientTCP_PermissionRequestReturnsMethodNotHandled(t *testing.T) {
 		if scanner.Scan() {
 			respCh <- scanner.Text()
 		}
+		// Keep the transport alive until the client closes it so session.ready
+		// cannot race the listener's return and event-channel teardown.
+		_ = scanner.Scan()
 	})
 
 	c := NewClient(adapters.TransportTCP, WithDialOnly(host, port))
@@ -392,6 +563,62 @@ func TestClientTCP_PermissionRequestReturnsMethodNotHandled(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("client never responded to the server-initiated request")
+	}
+}
+
+func TestClientTCP_BestEffortPermissionResponderSelectsOfferedOption(t *testing.T) {
+	responseCh := make(chan string, 1)
+	host, port := fakeACPListener(t, func(t *testing.T, conn net.Conn) {
+		scanner := bufio.NewScanner(conn)
+		if !scanner.Scan() { // initialize
+			return
+		}
+		_, _ = conn.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}` + "\n"))
+		if !scanner.Scan() { // session/new
+			return
+		}
+		_, _ = conn.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"sessionId":"permission-tcp"}}` + "\n"))
+		if !scanner.Scan() { // session/prompt
+			return
+		}
+		var prompt wireFrame
+		if err := json.Unmarshal(scanner.Bytes(), &prompt); err != nil || prompt.ID == nil {
+			t.Errorf("decode prompt: frame=%s err=%v", scanner.Bytes(), err)
+			return
+		}
+		_, _ = conn.Write([]byte(`{"jsonrpc":"2.0","id":"permission-tcp-id","method":"session/request_permission","params":{"sessionId":"permission-tcp","toolCall":{"toolCallId":"call-1","rawInput":{"command":"echo hi"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}}` + "\n"))
+		if !scanner.Scan() {
+			return
+		}
+		responseCh <- scanner.Text()
+		_, _ = conn.Write([]byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"stopReason":"end_turn"}}`, *prompt.ID) + "\n"))
+	})
+
+	client := NewClient(adapters.TransportTCP, WithDialOnly(host, port))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := client.Launch(ctx, acp.LaunchParams{
+		Cwd: t.TempDir(),
+		BestEffortPermissionRequestResponder: func(_ context.Context, request acp.PermissionRequest) (acp.PermissionSelection, error) {
+			if request.SessionID != "permission-tcp" || request.ToolCall.ToolCallID != "call-1" {
+				t.Errorf("permission request = %+v", request)
+			}
+			return acp.SelectPermissionOption("allow"), nil
+		},
+	}); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	defer client.Close(context.Background())
+	if err := client.Prompt(ctx, "permission over TCP"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	select {
+	case response := <-responseCh:
+		if !strings.Contains(response, `"id":"permission-tcp-id"`) || !strings.Contains(response, `"outcome":"selected"`) || !strings.Contains(response, `"optionId":"allow"`) {
+			t.Fatalf("permission response = %s", response)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for TCP permission response")
 	}
 }
 

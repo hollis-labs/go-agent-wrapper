@@ -77,6 +77,7 @@ type Client struct {
 	terminated   chan struct{}
 	lifetimeCtx  context.Context
 	lifetimeStop context.CancelFunc
+	permissions  *acp.BestEffortPermissionRequests
 	diagnosticMu sync.Mutex
 	diagnostic   func(acp.Diagnostic)
 }
@@ -138,12 +139,12 @@ func (e *rpcError) Error() string {
 // rpcFrame is the minimal shape the reader loop needs to classify an
 // inbound line into response / notification / server-initiated request.
 type rpcFrame struct {
-	JSONRPC string           `json:"jsonrpc"`
-	ID      *json.RawMessage `json:"id,omitempty"`
-	Method  string           `json:"method,omitempty"`
-	Params  json.RawMessage  `json:"params,omitempty"`
-	Result  json.RawMessage  `json:"result,omitempty"`
-	Error   *rpcError        `json:"error,omitempty"`
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *rpcError       `json:"error,omitempty"`
 }
 
 // resolveBinary applies the WithBinary override, then OPENCODE_CLI_PATH,
@@ -216,6 +217,8 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	c.terminated = make(chan struct{})
 	c.termination = acp.NewTransportTermination(true)
 	c.lifetimeCtx, c.lifetimeStop = context.WithCancel(context.Background())
+	c.permissions = acp.NewBestEffortPermissionRequests(params.BestEffortPermissionRequestResponder)
+	c.permissions.SetResponseGate(&c.promptCloseMu)
 	c.diagnostic = params.OnDiagnostic
 	c.mu.Unlock()
 
@@ -267,6 +270,7 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 		_ = c.Close(context.Background())
 		return fmt.Errorf("opencodeacp: session/new: %w", err)
 	}
+	c.permissions.SetSessionID(c.ProviderSessionID())
 	if err := c.configureSession(ctx, params); err != nil {
 		_ = c.Close(context.Background())
 		return fmt.Errorf("opencodeacp: configure session: %w", err)
@@ -389,6 +393,7 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 	lifetimeCtx := c.lifetimeCtx
 	turnID := runtimeevents.NewTurnID()
 	c.currentTurnID = turnID
+	c.permissions.BeginTurn()
 	// Admit the async turn while holding the same lifecycle mutex Close uses,
 	// so closeEvents cannot begin a zero-count Wait before this Add.
 	c.turnWG.Add(1)
@@ -430,6 +435,7 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 }
 
 func (c *Client) finishTurn(turnID string, result json.RawMessage, callErr error) {
+	c.permissions.EndTurn()
 	c.turnMu.Lock()
 	if c.currentTurnID == turnID {
 		c.currentTurnID = ""
@@ -473,6 +479,9 @@ func (c *Client) finishTurn(turnID string, result json.RawMessage, callErr error
 // background goroutine emits the resulting turn.completed/turn.failed
 // event when it arrives. A no-op (returns nil) when no turn is active.
 func (c *Client) Cancel(ctx context.Context) error {
+	c.promptCloseMu.Lock()
+	defer c.promptCloseMu.Unlock()
+
 	c.mu.Lock()
 	sessionID := c.sessionID
 	c.mu.Unlock()
@@ -482,7 +491,11 @@ func (c *Client) Cancel(ctx context.Context) error {
 	if sessionID == "" || turnID == "" {
 		return nil
 	}
-	return c.notify(map[string]any{
+	c.mu.Lock()
+	permissions := c.permissions
+	c.mu.Unlock()
+	permissions.CancelTurn()
+	return c.notify(ctx, map[string]any{
 		"jsonrpc": "2.0",
 		"method":  "session/cancel",
 		"params":  map[string]any{"sessionId": sessionID},
@@ -528,28 +541,38 @@ func (c *Client) Close(ctx context.Context) error {
 	waitDone := c.waitDone
 	terminated := c.terminated
 	lifetimeStop := c.lifetimeStop
+	permissions := c.permissions
 	sessionID := c.sessionID
 	sessionClose := c.sessionClose
 	c.mu.Unlock()
+	permissions.Close()
+	if lifetimeStop != nil {
+		lifetimeStop()
+	}
 	var closeErr error
 	if sessionClose && sessionID != "" {
 		closeCtx, cancel := context.WithTimeout(ctx, time.Second)
-		_, closeErr = c.call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
+		closeResult := make(chan error, 1)
+		go func() {
+			_, err := c.call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
+			closeResult <- err
+		}()
+		select {
+		case closeErr = <-closeResult:
+		case <-closeCtx.Done():
+			closeErr = closeCtx.Err()
+		}
 		cancel()
 	}
 	c.promptCloseMu.Unlock()
 
 	c.failPending(errors.New("opencodeacp: client closed"))
-	if lifetimeStop != nil {
-		lifetimeStop()
+	if stdin != nil {
+		_ = stdin.Close()
 	}
-
 	if cmd == nil || cmd.Process == nil {
 		c.closeEvents()
 		return closeErr
-	}
-	if stdin != nil {
-		_ = stdin.Close()
 	}
 	if waitDone == nil {
 		return closeErr
@@ -600,6 +623,8 @@ func (c *Client) coordinateTermination() {
 	cmd := c.cmd
 	stdin := c.stdin
 	terminated := c.terminated
+	lifetimeStop := c.lifetimeStop
+	permissions := c.permissions
 	c.mu.Unlock()
 	result := termination.Coordinate(func() {
 		if stdin != nil {
@@ -611,6 +636,10 @@ func (c *Client) coordinateTermination() {
 		}
 		return nil
 	})
+	permissions.Close()
+	if lifetimeStop != nil {
+		lifetimeStop()
+	}
 	if result.ShouldEmitProcessExit() {
 		payload := map[string]any{"exit_code": result.Process.ExitCode}
 		if result.Process.Err != nil {
@@ -672,17 +701,23 @@ func (c *Client) readLoop(stdout io.Reader) {
 			continue
 		}
 		switch {
-		case frame.Method != "" && frame.ID != nil:
+		case frame.Method != "" && len(frame.ID) != 0:
+			if _, ok := acp.DecodeJSONRPCRequestID(frame.ID); !ok {
+				malformed = true
+				c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticProtocol, "invalid JSON-RPC request id", ""))
+				continue
+			}
 			c.handleServerRequest(frame)
 		case frame.Method != "":
 			c.handleNotification(frame.Method, frame.Params)
-		case frame.ID != nil:
-			c.deliverResponse(*frame.ID, frame.Result, frame.Error)
+		case len(frame.ID) != 0:
+			c.deliverResponse(frame.ID, frame.Result, frame.Error)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		c.reportReadError("reading ACP protocol stream", err)
 	}
+	c.permissions.Close()
 	c.failPending(errors.New("opencodeacp: protocol stream closed before response"))
 	c.mu.Lock()
 	termination := c.termination
@@ -786,11 +821,64 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 }
 
 // notify writes a pre-built JSON-RPC notification frame (no id).
-func (c *Client) notify(frame any) error {
-	return c.writeLine(frame)
+func (c *Client) notify(ctx context.Context, frame any) error {
+	writeCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- c.writeLineWithDeadline(frame, time.Now().Add(250*time.Millisecond))
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			c.mu.Lock()
+			stdin := c.stdin
+			c.mu.Unlock()
+			if stdin != nil {
+				_ = stdin.Close()
+			}
+		}
+		return err
+	case <-writeCtx.Done():
+		c.mu.Lock()
+		stdin := c.stdin
+		c.mu.Unlock()
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		return writeCtx.Err()
+	}
+}
+
+// abortPermissionTransport is the fail-closed path for an undeliverable
+// permission response. It intentionally avoids promptCloseMu: response I/O may
+// still own that ordering gate when the failure is observed.
+func (c *Client) abortPermissionTransport() {
+	c.mu.Lock()
+	stdin := c.stdin
+	cmd := c.cmd
+	lifetimeStop := c.lifetimeStop
+	c.mu.Unlock()
+	if lifetimeStop != nil {
+		lifetimeStop()
+	}
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
 }
 
 func (c *Client) writeLine(v any) error {
+	return c.writeLineWithDeadline(v, time.Time{})
+}
+
+type writeDeadliner interface {
+	SetWriteDeadline(time.Time) error
+}
+
+func (c *Client) writeLineWithDeadline(v any, deadline time.Time) error {
 	encoded, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("opencodeacp: encode: %w", err)
@@ -803,6 +891,13 @@ func (c *Client) writeLine(v any) error {
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	if !deadline.IsZero() {
+		if writer, ok := stdin.(writeDeadliner); ok {
+			if deadlineErr := writer.SetWriteDeadline(deadline); deadlineErr == nil {
+				defer func() { _ = writer.SetWriteDeadline(time.Time{}) }()
+			}
+		}
+	}
 	_, err = stdin.Write(append(encoded, '\n'))
 	return err
 }
@@ -811,14 +906,14 @@ func (c *Client) writeLine(v any) error {
 // (a frame carrying both `method` and `id`). JSON-RPC 2.0 requires a
 // response for every request that carries an id — without one, opencode
 // blocks waiting for it.
-func (c *Client) respondToServerRequest(id json.RawMessage, result any, rpcErr *rpcError) {
+func (c *Client) respondToServerRequest(id json.RawMessage, result any, rpcErr *rpcError) error {
 	resp := map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(id)}
 	if rpcErr != nil {
 		resp["error"] = rpcErr
 	} else {
 		resp["result"] = result
 	}
-	_ = c.writeLine(resp)
+	return c.writeLineWithDeadline(resp, time.Now().Add(250*time.Millisecond))
 }
 
 // emit pushes ev onto the Events channel. ID/Sequence/SessionID/App/

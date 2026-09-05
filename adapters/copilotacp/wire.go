@@ -20,6 +20,26 @@ type wireFrame struct {
 	Error   *wireError      `json:"error,omitempty"`
 }
 
+// incomingWireFrame keeps an inbound JSON-RPC id raw until the method has
+// established whether this is a server request or a response to one of our own
+// numeric requests. ACP permits string as well as numeric request IDs, so a
+// server-request ID must not be decoded through wireFrame's numeric-only field.
+type incomingWireFrame struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *wireError      `json:"error,omitempty"`
+}
+
+type serverResponseFrame struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *wireError      `json:"error,omitempty"`
+}
+
 // wireError is the JSON-RPC 2.0 error envelope.
 type wireError struct {
 	Code    int             `json:"code"`

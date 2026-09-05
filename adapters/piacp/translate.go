@@ -3,6 +3,7 @@ package piacp
 import (
 	"encoding/json"
 
+	"github.com/hollis-labs/go-agent-wrapper/acp"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -211,12 +212,11 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 //
 // `session/request_permission` maps onto
 // agent.permission_requested/resolved per 17-acp.md's explicit mapping
-// (Nanite repo). This Client has no interactive approval mechanism
-// wired in (that is Nanite's own policy/approval layer, upstream of this
-// package) — it emits the request/resolved pair for visibility and
-// responds with a "cancelled" outcome (a well-formed ACP deny, not a
-// raw JSON-RPC protocol error) so the agent can react gracefully rather
-// than treating it as a wire-level fault.
+// (Nanite repo). A configured best-effort responder selects one exact
+// provider-offered option; without one, the Client retains its established
+// "cancelled" outcome. Both paths emit a correlated request/resolved pair.
+// The callback is defensive rather than comprehensive because Pi normally
+// executes tools locally without issuing this request.
 //
 // Other server-initiated methods this Client's declared
 // clientCapabilities (fs: false, terminal: false — see Launch) tell
@@ -231,7 +231,7 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 // changes that.
 func (c *Client) handleServerRequest(frame rpcFrame) {
 	if frame.Method != "session/request_permission" {
-		c.respondToServerRequest(*frame.ID, nil, &rpcError{
+		c.respondToServerRequest(frame.ID, nil, &rpcError{
 			Code:    -32601,
 			Message: "piacp: no handler configured for server-initiated method " + frame.Method,
 		})
@@ -248,7 +248,7 @@ func (c *Client) handleServerRequest(frame rpcFrame) {
 	// documented contract leaves Event.ID zero for the caller's own
 	// Emitter/activity.Bridge to assign, so this Client must not invent
 	// one just to self-correlate two of its own events.
-	acpRequestID := json.RawMessage(*frame.ID)
+	acpRequestID := json.RawMessage(frame.ID)
 	c.emit(runtimeevents.Event{
 		Kind:   runtimeevents.KindAgentPermissionRequested,
 		TurnID: turnID,
@@ -258,18 +258,50 @@ func (c *Client) handleServerRequest(frame rpcFrame) {
 			"params":     frame.Params,
 		}),
 	})
+	if !c.permissions.Configured() {
+		if err := c.respondToServerRequest(frame.ID, map[string]any{
+			"outcome": map[string]any{"outcome": "cancelled"},
+		}, nil); err != nil {
+			c.emit(runtimeevents.Event{
+				Kind:    runtimeevents.KindAgentPermissionResolved,
+				TurnID:  turnID,
+				Payload: mustMarshal(acp.PermissionResolution{}.DeliveryFailureEventPayload(acpRequestID)),
+			})
+			c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticProtocol, "ACP permission response delivery failed; transport closed", ""))
+			c.abortPermissionTransport()
+			return
+		}
+		c.emit(runtimeevents.Event{
+			Kind:   runtimeevents.KindAgentPermissionResolved,
+			TurnID: turnID,
+			Payload: mustMarshal(map[string]any{
+				"request_id": acpRequestID,
+				"allowed":    false,
+				"reason":     "piacp: no approval handler configured",
+			}),
+		})
+		return
+	}
 
-	c.respondToServerRequest(*frame.ID, map[string]any{
-		"outcome": map[string]any{"outcome": "cancelled"},
-	}, nil)
-
-	c.emit(runtimeevents.Event{
-		Kind:   runtimeevents.KindAgentPermissionResolved,
-		TurnID: turnID,
-		Payload: mustMarshal(map[string]any{
-			"request_id": acpRequestID,
-			"allowed":    false,
-			"reason":     "piacp: no approval handler configured",
-		}),
+	requestID := append(json.RawMessage(nil), frame.ID...)
+	c.permissions.Dispatch(frame.Params, func(resolution acp.PermissionResolution) error {
+		err := c.respondToServerRequest(requestID, resolution.Result(), nil)
+		payload := resolution.ResolvedEventPayload(acpRequestID)
+		if err != nil {
+			payload = resolution.DeliveryFailureEventPayload(acpRequestID)
+		}
+		c.emit(runtimeevents.Event{
+			Kind:    runtimeevents.KindAgentPermissionResolved,
+			TurnID:  turnID,
+			Payload: mustMarshal(payload),
+		})
+		return err
+	}, func(resolution acp.PermissionResolution) {
+		if resolution.ResponseError() != nil {
+			c.abortPermissionTransport()
+		}
+		if diagnostic, ok := resolution.Diagnostic(); ok {
+			c.reportDiagnostic(diagnostic)
+		}
 	})
 }

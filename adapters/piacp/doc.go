@@ -123,9 +123,10 @@
 //     is a DOCUMENTED, permanent design limitation: "No ACP filesystem
 //     delegation (fs/*) and no ACP terminal delegation (terminal/*). pi
 //     reads/writes and executes locally." [Client] still answers any
-//     such request defensively (a well-formed ACP "cancelled" outcome,
-//     matching opencodeacp's precedent) rather than assuming this
-//     permanently, in case a future `pi-acp` release changes it.
+//     such request defensively through the shared best-effort responder (or a
+//     well-formed ACP "cancelled" default) rather than assuming this
+//     permanently, in case a future `pi-acp` release changes it. This seam is
+//     not general enforcement while Pi continues to execute locally.
 //
 // `session/cancel` is a JSON-RPC *notification* (no `id`, no direct
 // response) exactly as spec'd — confirmed live.

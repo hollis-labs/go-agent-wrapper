@@ -67,17 +67,19 @@
 // [provider.CLIAdapter] remains available for compatibility and parsing reuse,
 // but is not the execution path Wrapper chooses for ACP.
 //
-// # Known limitation: no fs/terminal proxying
+// # Permission responder and known fs/terminal limitation
 //
 // Per docs/engineering/architecture/17-acp.md's own flagged unknown
 // ("Tool-call/fs/terminal proxying is a per-agent unknown, not a settled
 // no"), this package does not implement `fs/read_text_file`,
-// `fs/write_text_file`, `terminal/*`, or `session/request_permission`
-// servicing. [Client] declares `fs`/`terminal` capabilities as false
-// during `initialize` and answers any server-initiated request Copilot
-// sends anyway with a JSON-RPC "method not handled" error, rather than
-// hanging forever — the same defensive default agentkit's own
-// JsonRpcRequestHook uses when unconfigured. A turn that genuinely
+// `fs/write_text_file` or `terminal/*` servicing. [Client] declares
+// `fs`/`terminal` capabilities as false during `initialize` and answers those
+// methods with JSON-RPC "method not handled". A configured
+// [acp.BestEffortPermissionRequestResponder] now services
+// `session/request_permission`, validates the exact offered option, and emits
+// the same permission events as the other clients. With no responder Copilot
+// retains its established method-not-handled/no-event behavior rather than
+// silently changing compatibility. A turn that genuinely
 // requires client-served fs/terminal access will fail or degrade rather
 // than complete; building a real in-process fs/terminal server was
 // explicitly out of scope per the architecture doc's own call ("worth

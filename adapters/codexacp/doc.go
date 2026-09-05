@@ -96,9 +96,9 @@
 // consistent with docs/engineering/architecture/17-acp.md's documented
 // expectation that Codex/Claude do their own fs/terminal work regardless
 // of declared client capabilities) but IS wired per
-// [Client.handleServerRequest] for correctness, using the same "respond
-// cancelled, emit requested/resolved for visibility" pattern opencodeacp
-// uses.
+// [Client.handleServerRequest] for correctness, using the shared best-effort
+// responder when configured and the established cancelled default otherwise.
+// The plain-shell bypass means the responder is not a general execution gate.
 //
 // # Real, verified Interrupt capability
 //

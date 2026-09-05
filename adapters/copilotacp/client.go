@@ -114,6 +114,7 @@ type Client struct {
 	clientName    string
 	clientVersion string
 	stderr        io.Writer
+	permissions   *acp.BestEffortPermissionRequests
 	diagnosticMu  sync.Mutex
 	diagnostic    func(acp.Diagnostic)
 
@@ -209,6 +210,10 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	}
 	c.launched = true
 	c.diagnostic = params.OnDiagnostic
+	if params.BestEffortPermissionRequestResponder != nil {
+		c.permissions = acp.NewBestEffortPermissionRequests(params.BestEffortPermissionRequestResponder)
+		c.permissions.SetResponseGate(&c.promptCloseMu)
+	}
 	c.mu.Unlock()
 
 	var reader io.Reader
@@ -305,6 +310,7 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	// given no dedicated handshake field exists.
 	c.systemPrompt = params.SystemPrompt
 	c.mu.Unlock()
+	c.permissions.SetSessionID(sessionID)
 	if err := c.configureSession(ctx, params); err != nil {
 		_ = c.Close(ctx)
 		return fmt.Errorf("copilotacp: configure session: %w", err)
@@ -522,7 +528,28 @@ func freeTCPPort() (int, error) {
 // active transport, serialized against concurrent writers.
 func (c *Client) writeFrame(f wireFrame) error {
 	f.JSONRPC = "2.0"
-	data, err := json.Marshal(f)
+	return c.writeJSONFrame(f)
+}
+
+func (c *Client) writeServerResponse(id json.RawMessage, result json.RawMessage, rpcErr *wireError) error {
+	return c.writeJSONFrameWithDeadline(serverResponseFrame{
+		JSONRPC: "2.0",
+		ID:      append(json.RawMessage(nil), id...),
+		Result:  result,
+		Error:   rpcErr,
+	}, time.Now().Add(250*time.Millisecond))
+}
+
+func (c *Client) writeJSONFrame(frame any) error {
+	return c.writeJSONFrameWithDeadline(frame, time.Time{})
+}
+
+type writeDeadliner interface {
+	SetWriteDeadline(time.Time) error
+}
+
+func (c *Client) writeJSONFrameWithDeadline(frame any, deadline time.Time) error {
+	data, err := json.Marshal(frame)
 	if err != nil {
 		return err
 	}
@@ -537,6 +564,13 @@ func (c *Client) writeFrame(f wireFrame) error {
 
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	if !deadline.IsZero() {
+		if writer, ok := w.(writeDeadliner); ok {
+			if deadlineErr := writer.SetWriteDeadline(deadline); deadlineErr == nil {
+				defer func() { _ = writer.SetWriteDeadline(time.Time{}) }()
+			}
+		}
+	}
 	_, err = w.Write(data)
 	return err
 }
@@ -584,12 +618,68 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 }
 
 // notify sends a JSON-RPC notification (no id, no response expected).
-func (c *Client) notify(method string, params any) error {
+func (c *Client) notify(ctx context.Context, method string, params any) error {
 	raw, err := json.Marshal(params)
 	if err != nil {
 		return err
 	}
-	return c.writeFrame(wireFrame{Method: method, Params: raw})
+	writeCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- c.writeJSONFrameWithDeadline(
+			wireFrame{JSONRPC: "2.0", Method: method, Params: raw},
+			time.Now().Add(250*time.Millisecond),
+		)
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			c.mu.Lock()
+			stdin := c.stdin
+			conn := c.conn
+			c.mu.Unlock()
+			if stdin != nil {
+				_ = stdin.Close()
+			}
+			if conn != nil {
+				_ = conn.Close()
+			}
+		}
+		return err
+	case <-writeCtx.Done():
+		c.mu.Lock()
+		stdin := c.stdin
+		conn := c.conn
+		c.mu.Unlock()
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		if conn != nil {
+			_ = conn.Close()
+		}
+		return writeCtx.Err()
+	}
+}
+
+// abortPermissionTransport is the fail-closed path for an undeliverable
+// permission response. It intentionally avoids promptCloseMu: response I/O may
+// still own that ordering gate when the failure is observed.
+func (c *Client) abortPermissionTransport() {
+	c.mu.Lock()
+	stdin := c.stdin
+	conn := c.conn
+	cmd := c.cmd
+	c.mu.Unlock()
+	if stdin != nil {
+		_ = stdin.Close()
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
 }
 
 // Prompt implements [acp.Client]. It sends `session/prompt` and returns
@@ -621,6 +711,7 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 	turnID := runtimeevents.NewTurnID()
 	c.turnInFlight = true
 	c.currentTurnID = turnID
+	c.permissions.BeginTurn()
 	// Admit the turn under the same lifecycle mutex Close uses so its
 	// closeEvents Wait cannot observe zero before this Add.
 	c.turnWG.Add(1)
@@ -682,25 +773,26 @@ func (c *Client) failTurn(turnID string, err error) {
 
 func (c *Client) awaitPromptResult(turnID string, ch chan wireFrame) {
 	defer c.turnWG.Done()
-	defer c.endTurn()
 	f, ok := <-ch
+	var event runtimeevents.Event
 	if !ok {
 		payload, _ := json.Marshal(map[string]any{"error": "connection closed before session/prompt response"})
-		c.pushEvent(runtimeevents.Event{Kind: runtimeevents.KindTurnFailed, TurnID: turnID, Payload: payload})
-		return
-	}
-	if f.Error != nil {
+		event = runtimeevents.Event{Kind: runtimeevents.KindTurnFailed, TurnID: turnID, Payload: payload}
+	} else if f.Error != nil {
 		payload, _ := json.Marshal(map[string]any{"error": f.Error.Message})
-		c.pushEvent(runtimeevents.Event{Kind: runtimeevents.KindTurnFailed, TurnID: turnID, Payload: payload})
-		return
+		event = runtimeevents.Event{Kind: runtimeevents.KindTurnFailed, TurnID: turnID, Payload: payload}
+	} else {
+		var res sessionPromptResult
+		_ = json.Unmarshal(f.Result, &res)
+		payload, _ := json.Marshal(map[string]any{"stop_reason": res.StopReason})
+		event = runtimeevents.Event{Kind: runtimeevents.KindTurnCompleted, TurnID: turnID, Payload: payload}
 	}
-	var res sessionPromptResult
-	_ = json.Unmarshal(f.Result, &res)
-	payload, _ := json.Marshal(map[string]any{"stop_reason": res.StopReason})
-	c.pushEvent(runtimeevents.Event{Kind: runtimeevents.KindTurnCompleted, TurnID: turnID, Payload: payload})
+	c.endTurn()
+	c.pushEvent(event)
 }
 
 func (c *Client) endTurn() {
+	c.permissions.EndTurn()
 	c.mu.Lock()
 	c.turnInFlight = false
 	c.currentTurnID = ""
@@ -713,6 +805,9 @@ func (c *Client) endTurn() {
 // acknowledge cancellation while the turn runs to completion regardless.
 // No-op (returns nil) when no turn is currently in flight.
 func (c *Client) Cancel(ctx context.Context) error {
+	c.promptCloseMu.Lock()
+	defer c.promptCloseMu.Unlock()
+
 	c.mu.Lock()
 	sessionID := c.sessionID
 	inFlight := c.turnInFlight
@@ -720,7 +815,8 @@ func (c *Client) Cancel(ctx context.Context) error {
 	if sessionID == "" || !inFlight {
 		return nil
 	}
-	return c.notify("session/cancel", sessionCancelParams{SessionID: sessionID})
+	c.permissions.CancelTurn()
+	return c.notify(ctx, "session/cancel", sessionCancelParams{SessionID: sessionID})
 }
 
 // Events implements [acp.Client].
@@ -759,10 +855,22 @@ func (c *Client) Close(ctx context.Context) error {
 		terminated := c.terminated
 		sessionID := c.sessionID
 		sessionClose := c.sessionClose
+		permissions := c.permissions
 		c.mu.Unlock()
+		permissions.Close()
 		if sessionClose && sessionID != "" {
 			closeCtx, cancel := context.WithTimeout(ctx, time.Second)
-			_, closeErr := c.call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
+			closeResult := make(chan error, 1)
+			go func() {
+				_, err := c.call(closeCtx, "session/close", map[string]any{"sessionId": sessionID})
+				closeResult <- err
+			}()
+			var closeErr error
+			select {
+			case closeErr = <-closeResult:
+			case <-closeCtx.Done():
+				closeErr = closeCtx.Err()
+			}
 			cancel()
 			c.mu.Lock()
 			c.closeErr = closeErr
@@ -830,6 +938,7 @@ func (c *Client) coordinateTermination() {
 	stdin := c.stdin
 	conn := c.conn
 	terminated := c.terminated
+	permissions := c.permissions
 	c.mu.Unlock()
 	result := termination.Coordinate(func() {
 		if stdin != nil {
@@ -844,6 +953,7 @@ func (c *Client) coordinateTermination() {
 		}
 		return nil
 	})
+	permissions.Close()
 	if result.ShouldEmitProcessExit() {
 		payload := map[string]any{"exit_code": result.Process.ExitCode}
 		if result.Process.Err != nil {
@@ -914,6 +1024,7 @@ func (c *Client) readLoop(r io.Reader) {
 	if err := scanner.Err(); err != nil {
 		c.reportReadError("reading ACP protocol stream", err)
 	}
+	c.permissions.Close()
 	c.onReaderClosed()
 	c.mu.Lock()
 	termination := c.termination
@@ -922,21 +1033,41 @@ func (c *Client) readLoop(r io.Reader) {
 }
 
 func (c *Client) handleLine(line []byte) bool {
-	var f wireFrame
+	var f incomingWireFrame
 	if err := json.Unmarshal(line, &f); err != nil {
 		c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticMalformedJSON, "invalid JSON-RPC frame", string(line)))
 		return true
 	}
 	switch {
-	case f.Method != "" && f.ID != nil:
+	case f.Method != "" && len(f.ID) != 0:
 		// Server-initiated request (fs/*, terminal/*,
 		// session/request_permission, ...). Decline rather than hang —
 		// see package doc's "no fs/terminal proxying" note.
-		c.respondUnsupported(*f.ID, f.Method)
+		requestID, ok := acp.DecodeJSONRPCRequestID(f.ID)
+		if !ok {
+			c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticProtocol, "invalid JSON-RPC request id", ""))
+			return true
+		}
+		if f.Method == "session/request_permission" && c.permissions != nil {
+			c.handlePermissionRequest(f.ID, requestID, f.Params)
+		} else {
+			c.respondUnsupported(f.ID, f.Method)
+		}
 	case f.Method != "":
 		c.handleNotification(f.Method, f.Params)
-	case f.ID != nil:
-		c.deliverResponse(*f.ID, f)
+	case len(f.ID) != 0:
+		var id int64
+		if err := json.Unmarshal(f.ID, &id); err != nil {
+			c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticProtocol, "unexpected non-numeric JSON-RPC response id", ""))
+			return true
+		}
+		idCopy := id
+		c.deliverResponse(id, wireFrame{
+			JSONRPC: f.JSONRPC,
+			ID:      &idCopy,
+			Result:  f.Result,
+			Error:   f.Error,
+		})
 	}
 	return false
 }
@@ -954,16 +1085,49 @@ func (c *Client) deliverResponse(id int64, f wireFrame) {
 	ch <- f
 }
 
-func (c *Client) respondUnsupported(id int64, method string) {
-	idCopy := id
-	resp := wireFrame{
-		ID: &idCopy,
-		Error: &wireError{
-			Code:    -32601,
-			Message: "copilotacp: no handler for server-initiated method " + method,
-		},
-	}
-	_ = c.writeFrame(resp)
+func (c *Client) respondUnsupported(id json.RawMessage, method string) {
+	_ = c.writeServerResponse(id, nil, &wireError{
+		Code:    -32601,
+		Message: "copilotacp: no handler for server-initiated method " + method,
+	})
+}
+
+func (c *Client) handlePermissionRequest(id json.RawMessage, eventID any, params json.RawMessage) {
+	c.mu.Lock()
+	turnID := c.currentTurnID
+	c.mu.Unlock()
+
+	c.pushEvent(runtimeevents.Event{
+		Kind:   runtimeevents.KindAgentPermissionRequested,
+		TurnID: turnID,
+		Payload: marshalPayload(map[string]any{
+			"request_id": eventID,
+			"method":     "session/request_permission",
+			"params":     params,
+		}),
+	})
+
+	id = append(json.RawMessage(nil), id...)
+	c.permissions.Dispatch(params, func(resolution acp.PermissionResolution) error {
+		err := c.writeServerResponse(id, marshalPayload(resolution.Result()), nil)
+		payload := resolution.ResolvedEventPayload(eventID)
+		if err != nil {
+			payload = resolution.DeliveryFailureEventPayload(eventID)
+		}
+		c.pushEvent(runtimeevents.Event{
+			Kind:    runtimeevents.KindAgentPermissionResolved,
+			TurnID:  turnID,
+			Payload: marshalPayload(payload),
+		})
+		return err
+	}, func(resolution acp.PermissionResolution) {
+		if resolution.ResponseError() != nil {
+			c.abortPermissionTransport()
+		}
+		if diagnostic, ok := resolution.Diagnostic(); ok {
+			c.reportDiagnostic(diagnostic)
+		}
+	})
 }
 
 func (c *Client) handleNotification(method string, params json.RawMessage) {

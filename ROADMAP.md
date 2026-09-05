@@ -38,10 +38,10 @@ The full kind set from
 - `agent.subagent_spawn` from provider typed events (e.g. Claude `Task`).
 - `agent.permission_requested` / `agent.permission_resolved` for
   server-initiated JSON-RPC requests where the direct client maps them.
-  Claude, Codex, OpenCode, and Pi currently emit both events and answer
-  `session/request_permission` with a cancelled outcome; Copilot answers with
-  method-not-handled and emits neither. A host-supplied ACP permission
-  responder remains separate work.
+  A configured best-effort responder now produces both events in every client,
+  validates the exact provider-offered option ID, and answers with ACP selected
+  or cancelled. With no responder, Claude, Codex, OpenCode, and Pi retain their
+  cancelled/event behavior; Copilot retains method-not-handled and no events.
 - `session.processing` / `session.idle` around observed turn boundaries.
 - `session.heartbeat` from provider typed heartbeats, plus optional
   wrapper-synthesized heartbeats via `Config.HeartbeatInterval`.
@@ -58,9 +58,10 @@ their side effects, so this seam will not grow rewrite-back or block semantics.
 Hosts retain their own authoritative pre-execution gates.
 
 ACP `session/request_permission` is the narrower exception: the protocol lets a
-child block waiting for an answer. A future responder may enforce there, but
-only for providers and operation classes that actually issue the request. Keep
-that work separate from `PolicyObserver` and document measured coverage.
+child block waiting for an answer. `ACPBestEffortPermissionRequestResponder`
+now supplies that answer, but only for providers and operation classes that
+actually issue the request. It remains separate from `PolicyObserver`; the
+README coverage table records the measured bypasses and limitations.
 
 ### Filters
 
@@ -113,21 +114,17 @@ calls for byte-exact raw events.
 
 ## Open design questions
 
-1. **ACP permission response.** A host-supplied responder for
-   `session/request_permission` needs an app/operator decision path. Default
-   behavior and provider coverage differ today; it must stay best-effort and
-   must not be conflated with `PolicyObserver`.
-2. **`WithID` option misuse.** `runtimeevents.WithID` lets callers
+1. **`WithID` option misuse.** `runtimeevents.WithID` lets callers
    pre-generate an event ID for `ParentID` correlation. Duplicate IDs
    in the same session would break correlation. Document the contract
    harder, or expose a safer `EmitReturning(ctx, ...) (id, err)` shape.
-3. **Filter policy-observation boundary.** `classifybridge` lives in this module
+2. **Filter policy-observation boundary.** `classifybridge` lives in this module
    and depends on `go-harness-filters/classify`. If filter consumers
    (Nanite/Torque/Tether) want filter-driven policy without the wrapper,
    they'd need this bridge in a neutral location. Extract to a
    third-party `go-policy-decisions` module? Or accept the wrapper
    dependency and document it? Revisit after first real app integration.
-4. **TurnID semantics on adapter runtime.** The subprocess-per-turn
+3. **TurnID semantics on adapter runtime.** The subprocess-per-turn
    adapter runtime is genuinely turn-shaped (each `SendInput` spawns a
    fresh child). Our `turn.*` events align well there. For long-lived
    runtimes (streaming-stdio, jsonrpc-stdio, http-sse), turns are
