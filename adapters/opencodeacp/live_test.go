@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hollis-labs/go-agent-wrapper/acp"
+	"github.com/hollis-labs/go-agent-wrapper/internal/testgate"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -20,7 +21,8 @@ import (
 // verified directly, not assumed".
 //
 // These tests drive the REAL `opencode acp` binary — no fake script, no
-// mock. They skip (not fail) when `opencode` isn't on PATH, or when
+// mock. They run only when GO_AGENT_WRAPPER_LIVE_PROVIDER_TESTS=1 is set,
+// then skip when `opencode` isn't on PATH or when
 // Launch fails for an environment reason (no provider auth configured,
 // etc.) rather than a code defect, so `go test ./...` stays green in an
 // environment without a live, authenticated opencode install. On the
@@ -32,6 +34,7 @@ import (
 
 func requireRealOpenCode(t *testing.T) {
 	t.Helper()
+	testgate.RequireLiveProvider(t)
 	if _, err := exec.LookPath("opencode"); err != nil {
 		t.Skip("opencode binary not on PATH; skipping live ACP test")
 	}

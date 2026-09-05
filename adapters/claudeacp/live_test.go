@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hollis-labs/go-agent-wrapper/acp"
+	"github.com/hollis-labs/go-agent-wrapper/internal/testgate"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -21,8 +22,9 @@ import (
 // These tests spawn the REAL `npx -y @agentclientprotocol/claude-agent-acp`
 // bridge — no fake script, no mock — which in turn drives the real Claude
 // Agent SDK using whatever credentials are already configured on the
-// host (the same auth the `claude` CLI itself uses). They skip (not
-// fail) when `npx` isn't on PATH, or when Launch fails for an
+// host (the same auth the `claude` CLI itself uses). They run only when
+// GO_AGENT_WRAPPER_LIVE_PROVIDER_TESTS=1 is set, then skip when `npx`
+// isn't on PATH or when Launch fails for an
 // environment reason (no provider auth configured, network unavailable,
 // etc.) rather than a code defect, so `go test ./...` stays green in an
 // environment without Node.js/npm/npx or live, authenticated Claude
@@ -36,6 +38,7 @@ import (
 
 func requireRealBridgeRuntime(t *testing.T) {
 	t.Helper()
+	testgate.RequireLiveProvider(t)
 	if _, err := exec.LookPath("npx"); err != nil {
 		t.Skip("npx not on PATH; skipping live ACP bridge test (Node.js/npm/npx runtime requirement — see package doc)")
 	}

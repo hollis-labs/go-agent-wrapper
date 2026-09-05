@@ -370,6 +370,25 @@ golangci-lint run     # lint
 govulncheck ./...     # vulnerability scan
 ```
 
+The default suite is deterministic and never launches an installed Claude,
+Codex, Copilot, OpenCode, or Pi process merely because its CLI (or `npx`) is on
+`PATH`. Real-provider tests are a separate, explicit operator action:
+
+```sh
+GO_AGENT_WRAPPER_LIVE_PROVIDER_TESTS=1 \
+  go test -race ./adapters/claudeacp ./adapters/codexacp \
+    ./adapters/copilotacp ./adapters/opencodeacp ./adapters/piacp \
+    ./sidebyside -run '^(TestLive|TestReal)'
+```
+
+Those tests additionally require the named provider binaries, bridge runtimes,
+credentials, account quota, and model configuration. Opting in keeps genuine
+provider failures visible; it does not convert an installed but unauthenticated
+or incompatible provider into deterministic test coverage. In particular, the
+ambient Copilot configuration may still reject `reasoning_effort="medium"`
+when it routes to `claude-haiku-4.5`; that is external provider/account state,
+not synthetic adapter coverage.
+
 CI (`.github/workflows/check.yml`) runs the same checks on push and pull
 request to `main`. It reads the exact Go 1.26.6 toolchain declaration from
 `go.mod`, avoiding drift from a moving `stable` alias.

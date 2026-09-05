@@ -36,10 +36,10 @@
 // All tests here spawn REAL processes — the real `claude` CLI directly for
 // the native path, and the real `npx -y @agentclientprotocol/claude-agent-acp`
 // bridge (which itself drives the Claude Agent SDK using whatever
-// credentials are already configured on the host) for the ACP path. They
-// skip (not fail) when a required real dependency (the `claude` binary,
-// `npx`/Node.js, or live auth) is unavailable, matching every other live
-// test in this repo (adapters/{claudeacp,codexacp,opencodeacp,piacp}/live_test.go).
+// credentials are already configured on the host) for the ACP path. They run
+// only with GO_AGENT_WRAPPER_LIVE_PROVIDER_TESTS=1, then skip when a required
+// real dependency (the `claude` binary, `npx`/Node.js, or live auth) is
+// unavailable, matching every other installed-provider test in this repo.
 //
 // See TASKS/agent-host-acp/17-native-vs-acp-side-by-side-comparison.md
 // (Nanite repo) for this task's own Work Log, which reproduces the numbers

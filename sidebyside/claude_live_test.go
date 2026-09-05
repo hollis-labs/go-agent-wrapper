@@ -14,6 +14,7 @@ import (
 	"github.com/hollis-labs/go-agent-wrapper/activity"
 	"github.com/hollis-labs/go-agent-wrapper/adapters/claude"
 	"github.com/hollis-labs/go-agent-wrapper/adapters/claudeacp"
+	"github.com/hollis-labs/go-agent-wrapper/internal/testgate"
 	"github.com/hollis-labs/go-agent-wrapper/wrapper"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
@@ -22,14 +23,16 @@ import (
 // TASKS/agent-host-acp/17 (Nanite repo). See this package's doc comment
 // for why Claude (native adapters/claude vs. bridge-mediated
 // adapters/claudeacp) was chosen as the comparison pair. Every test here
-// spawns REAL processes and skips (never fails) when a real dependency
-// (claude binary, npx/Node.js, live auth) is unavailable — same
+// spawns REAL processes only when GO_AGENT_WRAPPER_LIVE_PROVIDER_TESTS=1
+// is set, and then skips when a real dependency (claude binary,
+// npx/Node.js, live auth) is unavailable — same
 // discipline as adapters/{claudeacp,codexacp,opencodeacp,piacp}'s own
 // live_test.go files.
 // ---------------------------------------------------------------------
 
 func requireRealClaudeBothPaths(t *testing.T) {
 	t.Helper()
+	testgate.RequireLiveProvider(t)
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skip("claude CLI not on PATH; skipping live native-vs-ACP comparison")
 	}

@@ -6,7 +6,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
-No changes yet.
+### Fixed
+
+- Real-provider integration tests now require the explicit
+  `GO_AGENT_WRAPPER_LIVE_PROVIDER_TESTS=1` opt-in before checking installed
+  CLIs or launching provider/bridge processes. The ordinary deterministic
+  suite no longer mistakes a hosted runner's bundled `npx` for configured
+  Claude credentials.
 
 ## v0.9.0 — 2026-09-05
 

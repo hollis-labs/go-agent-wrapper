@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hollis-labs/go-agent-wrapper/acp"
+	"github.com/hollis-labs/go-agent-wrapper/internal/testgate"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -21,8 +22,9 @@ import (
 // These tests spawn the REAL `npx -y @agentclientprotocol/codex-acp`
 // bridge, which in turn spawns a REAL `codex app-server` subprocess (the
 // real system `codex` CLI, resolved the same way [WithClientCodexBinary]
-// resolves it by default) — no fake script, no mock. They skip (not
-// fail) when `npx` isn't on PATH, or when Launch fails for an
+// resolves it by default) — no fake script, no mock. They run only when
+// GO_AGENT_WRAPPER_LIVE_PROVIDER_TESTS=1 is set, then skip when `npx`
+// isn't on PATH or when Launch fails for an
 // environment reason (no Node.js, no real Codex credentials configured,
 // network unavailable to fetch the npm package, ...) rather than a code
 // defect, so `go test ./...` stays green in an environment without a
@@ -37,6 +39,7 @@ import (
 
 func requireRealBridge(t *testing.T) {
 	t.Helper()
+	testgate.RequireLiveProvider(t)
 	if _, err := exec.LookPath("npx"); err != nil {
 		t.Skip("npx not on PATH (Node.js/npm not installed); skipping live ACP bridge test")
 	}

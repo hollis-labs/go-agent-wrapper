@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hollis-labs/go-agent-wrapper/acp"
+	"github.com/hollis-labs/go-agent-wrapper/internal/testgate"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -20,7 +21,8 @@ import (
 //
 // These tests drive the REAL `npx -y pi-acp` bridge, which in turn
 // drives a REAL `pi --mode rpc` process — no fake script, no mock. They
-// skip (not fail) when `npx`/`pi` aren't on PATH, or when Launch fails
+// run only when GO_AGENT_WRAPPER_LIVE_PROVIDER_TESTS=1 is set, then skip
+// when `npx`/`pi` aren't on PATH or when Launch fails
 // for an environment reason (no model/provider configured), rather than
 // a code defect, so `go test ./...` stays green in an environment
 // without a live, configured `pi` install.
@@ -45,6 +47,7 @@ import (
 
 func requireRealPiACP(t *testing.T) {
 	t.Helper()
+	testgate.RequireLiveProvider(t)
 	if _, err := exec.LookPath("npx"); err != nil {
 		t.Skip("npx not on PATH; skipping live ACP test (Node.js/npm/npx runtime requirement — see package doc)")
 	}

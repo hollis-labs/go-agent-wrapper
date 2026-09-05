@@ -12,6 +12,7 @@ import (
 	"github.com/hollis-labs/go-agent-wrapper/acp"
 	"github.com/hollis-labs/go-agent-wrapper/activity"
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
+	"github.com/hollis-labs/go-agent-wrapper/internal/testgate"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -23,7 +24,8 @@ import (
 // independently-verified Interrupt capability check.
 //
 // These tests drive the real `copilot` binary directly — no fake
-// script, no fake listener. They require:
+// script, no fake listener. They run only when
+// GO_AGENT_WRAPPER_LIVE_PROVIDER_TESTS=1 is set and require:
 //   - `copilot` on PATH (skipped otherwise, mirroring skipUnlessSh's
 //     pattern for other real-binary requirements in this repo).
 //   - A real, already-authenticated Copilot CLI session on this machine
@@ -36,6 +38,7 @@ import (
 
 func skipUnlessCopilotBinary(t *testing.T) {
 	t.Helper()
+	testgate.RequireLiveProvider(t)
 	if _, err := exec.LookPath("copilot"); err != nil {
 		t.Skip("copilot CLI not found on PATH; skipping real end-to-end ACP test")
 	}
