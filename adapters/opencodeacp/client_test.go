@@ -143,6 +143,28 @@ func TestClosePreemptsBlockedPromptWrite(t *testing.T) {
 	}
 }
 
+func TestCloseBackgroundBoundsUnclosedTermination(t *testing.T) {
+	waitDone := make(chan struct{})
+	close(waitDone)
+	client := NewClient()
+	client.mu.Lock()
+	client.cmd = &exec.Cmd{Process: &os.Process{Pid: -1}}
+	client.waitDone = waitDone
+	client.terminated = make(chan struct{})
+	client.mu.Unlock()
+
+	closed := make(chan error, 1)
+	go func() { closed <- client.Close(context.Background()) }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close remained blocked on an unclosed termination observer")
+	}
+}
+
 func TestCancelAndClosePreemptBackpressuredPermissionResponse(t *testing.T) {
 	client := NewClient()
 	writer := newBlockingPermissionWriter()

@@ -13,6 +13,12 @@ import (
 // retains wire order; a backpressured Prompt is preempted after the grace.
 const PromptDrainGrace = 250 * time.Millisecond
 
+// TerminationDrainGrace bounds the final transport-coordinator handoff. The
+// subprocess or reader has already stopped before callers reach this wait, so
+// this is only a short opportunity to publish the final event and close the
+// lifecycle channel; teardown must not trust that observer forever.
+const TerminationDrainGrace = 250 * time.Millisecond
+
 // Once serializes an idempotent close operation and publishes its result only
 // after the owning cleanup has finished. sync.Once deliberately makes
 // concurrent followers wait for the owner instead of observing an early

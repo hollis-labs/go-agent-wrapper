@@ -144,6 +144,19 @@ func (w *blockingPermissionWriter) Close() error {
 	return nil
 }
 
+type enteredConn struct {
+	net.Conn
+	entered chan struct{}
+}
+
+func (c *enteredConn) Write(p []byte) (int, error) {
+	select {
+	case c.entered <- struct{}{}:
+	default:
+	}
+	return c.Conn.Write(p)
+}
+
 func TestClosePreemptsBlockedPromptWrite(t *testing.T) {
 	client := NewClient(adapters.TransportStdio)
 	writer := newBlockingPermissionWriter()
@@ -171,6 +184,61 @@ func TestClosePreemptsBlockedPromptWrite(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("Close did not preempt blocked Prompt write")
+	}
+}
+
+func TestClosePreemptsBlockedTCPPromptWrite(t *testing.T) {
+	rawClientConn, peerConn := net.Pipe()
+	defer peerConn.Close()
+	clientConn := &enteredConn{Conn: rawClientConn, entered: make(chan struct{}, 1)}
+	client := NewClient(adapters.TransportTCP)
+	client.mu.Lock()
+	client.conn = clientConn
+	client.writer = clientConn
+	client.sessionID = "session"
+	client.mu.Unlock()
+
+	promptDone := make(chan error, 1)
+	go func() { promptDone <- client.Prompt(context.Background(), "blocked") }()
+	select {
+	case <-clientConn.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Prompt did not reach blocked TCP transport write")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := client.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case err := <-promptDone:
+		if err == nil {
+			t.Fatal("Prompt returned nil after TCP transport preemption")
+		}
+	case <-ctx.Done():
+		t.Fatal("Close did not preempt blocked TCP Prompt write")
+	}
+}
+
+func TestCloseBackgroundBoundsUnclosedTermination(t *testing.T) {
+	readerDone := make(chan struct{})
+	close(readerDone)
+	client := NewClient(adapters.TransportStdio)
+	client.mu.Lock()
+	client.started = true
+	client.readerDone = readerDone
+	client.terminated = make(chan struct{})
+	client.mu.Unlock()
+
+	closed := make(chan error, 1)
+	go func() { closed <- client.Close(context.Background()) }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close remained blocked on an unclosed termination observer")
 	}
 }
 

@@ -602,6 +602,7 @@ func (c *Client) Close(ctx context.Context) error {
 				select {
 				case <-terminated:
 				case <-ctx.Done():
+				case <-time.After(closegate.TerminationDrainGrace):
 				}
 			}
 			return closeErr
@@ -619,6 +620,7 @@ func (c *Client) Close(ctx context.Context) error {
 			select {
 			case <-terminated:
 			case <-ctx.Done():
+			case <-time.After(closegate.TerminationDrainGrace):
 			}
 		}
 		return closeErr
