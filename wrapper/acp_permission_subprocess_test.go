@@ -727,7 +727,7 @@ while IFS= read -r line; do
   esac
 done
 `
-	return writeExecutableFixture(t, dir, "permission-acp-fixture", []byte(body))
+	return writeShellFixtureLauncher(t, dir, "permission-acp-fixture", []byte(body))
 }
 
 func writePermissionFloodACPFixture(t *testing.T, dir string) string {
@@ -753,7 +753,7 @@ while IFS= read -r line; do
   esac
 done
 `
-	return writeExecutableFixture(t, dir, "permission-flood-acp-fixture", []byte(body))
+	return writeShellFixtureLauncher(t, dir, "permission-flood-acp-fixture", []byte(body))
 }
 
 func writeLatePermissionACPFixture(t *testing.T, dir string) string {
@@ -790,5 +790,5 @@ while IFS= read -r line; do
   esac
 done
 `
-	return writeExecutableFixture(t, dir, "late-permission-acp-fixture", []byte(body))
+	return writeShellFixtureLauncher(t, dir, "late-permission-acp-fixture", []byte(body))
 }

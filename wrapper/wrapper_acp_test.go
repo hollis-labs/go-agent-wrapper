@@ -248,7 +248,7 @@ func TestRunFakeACPAdapter_JsonRpcStdio(t *testing.T) {
 IFS= read -r line
 printf '{"echo":"%s"}\n' "$line"
 `
-	script := writeExecutableFixture(t, dir, "fake-acp", []byte(scriptBody))
+	script := writeShellFixtureLauncher(t, dir, "fake-acp", []byte(scriptBody))
 
 	client := newFakeACPClient(adapters.InterruptTurn)
 	cli := &fakeACPCLIAdapter{client: client, script: script}

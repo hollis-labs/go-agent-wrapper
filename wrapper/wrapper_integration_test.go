@@ -275,7 +275,7 @@ func writeFakeScript(t *testing.T, dir string, lines []string) string {
 		body += "printf '%s\\n' '" + l + "'\n"
 	}
 	body += "exit 0\n"
-	return writeExecutableFixture(t, dir, "fake-cli", []byte(body))
+	return writeShellFixtureLauncher(t, dir, "fake-cli", []byte(body))
 }
 
 // ---------------------------------------------------------------------
@@ -418,9 +418,9 @@ func TestRunCtxCancelStopsSession(t *testing.T) {
 		"delta:about-to-block",
 	})
 	// Patch the script to add a tail that reads stdin (blocks until EOF).
-	scriptBody, _ := os.ReadFile(script)
+	scriptBody, _ := os.ReadFile(shellFixtureScriptPath(script))
 	scriptBody = append(scriptBody[:len(scriptBody)-len("exit 0\n")], []byte("cat > /dev/null\nexit 0\n")...)
-	script = writeExecutableFixture(t, dir, "fake-cli-blocking", scriptBody)
+	script = writeShellFixtureLauncher(t, dir, "fake-cli-blocking", scriptBody)
 
 	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: script}}
 	sink := newCapturingSink()
@@ -729,7 +729,7 @@ printf '%s\n' "$$" > "$PID_FILE"
 trap 'exit 0' TERM INT
 while :; do /bin/sleep 1; done
 `
-	script := writeExecutableFixture(t, dir, "blocking-turn", []byte(body))
+	script := writeShellFixtureLauncher(t, dir, "blocking-turn", []byte(body))
 	sbErr := errors.New("sandbox rejected after start")
 	applier := &gatedErrorApplier{
 		entered: make(chan struct{}), release: make(chan struct{}), err: sbErr,
@@ -1003,7 +1003,7 @@ func TestRunBlockRecommendationIsPostSideEffect(t *testing.T) {
 		"printf '%s' 'executed' > '" + marker + "'\n" +
 		"printf '%s\\n' '" + toolLine + "'\n" +
 		"printf '%s\\n' 'done'\n"
-	script := writeExecutableFixture(t, dir, "native-side-effect", []byte(body))
+	script := writeShellFixtureLauncher(t, dir, "native-side-effect", []byte(body))
 
 	markerSeenDuringObservation := false
 	observer := &recordingPolicyObserver{
@@ -1278,7 +1278,7 @@ func writeFakeScriptWithStderr(t *testing.T, dir string, stderrLine string, stdo
 		body += "printf '%s\\n' '" + l + "'\n"
 	}
 	body += "exit 0\n"
-	return writeExecutableFixture(t, dir, "fake-cli-stderr", []byte(body))
+	return writeShellFixtureLauncher(t, dir, "fake-cli-stderr", []byte(body))
 }
 
 // TestRunEmitsStdoutRawAndLineEvents verifies that session output
@@ -1472,9 +1472,9 @@ func TestRunStopEmitsInterruptPair(t *testing.T) {
 	script := writeFakeScript(t, dir, []string{"delta:hello"})
 	// Patch script to read stdin forever after emitting — Stop is
 	// the only way to terminate it.
-	scriptBody, _ := os.ReadFile(script)
+	scriptBody, _ := os.ReadFile(shellFixtureScriptPath(script))
 	scriptBody = append(scriptBody[:len(scriptBody)-len("exit 0\n")], []byte("cat > /dev/null\nexit 0\n")...)
-	script = writeExecutableFixture(t, dir, "fake-cli-stop-blocking", scriptBody)
+	script = writeShellFixtureLauncher(t, dir, "fake-cli-stop-blocking", scriptBody)
 
 	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: script}}
 	sink := newCapturingSink()
@@ -1525,9 +1525,9 @@ func TestRunStopEmitsInterruptPair(t *testing.T) {
 func TestRunCtxCancelEmitsInterruptPair(t *testing.T) {
 	dir := t.TempDir()
 	script := writeFakeScript(t, dir, []string{"delta:hello"})
-	scriptBody, _ := os.ReadFile(script)
+	scriptBody, _ := os.ReadFile(shellFixtureScriptPath(script))
 	scriptBody = append(scriptBody[:len(scriptBody)-len("exit 0\n")], []byte("cat > /dev/null\nexit 0\n")...)
-	script = writeExecutableFixture(t, dir, "fake-cli-context-blocking", scriptBody)
+	script = writeShellFixtureLauncher(t, dir, "fake-cli-context-blocking", scriptBody)
 
 	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: script}}
 	sink := newCapturingSink()

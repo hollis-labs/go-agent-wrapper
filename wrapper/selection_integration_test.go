@@ -30,8 +30,13 @@ printf '%s\n%s\n' "$SAFE_VALUE" "${LEAK_ME+present}" > "$PROBE_FILE"
 printf '%s\n' "$@" > "$ARGS_FILE"
 IFS= read -r line
 printf '%s\n' '{"type":"result","subtype":"success","result":"selected claude"}'
+# Claude streaming stdio is a session-lifetime process, not a per-turn
+# process. Remain alive after the authoritative result frame until Stop closes
+# stdin; exiting here would race agentkit's best-effort stdout teardown and
+# incorrectly conflate turn completion with process completion.
+IFS= read -r line || :
 `
-	binary := writeExecutableFixture(t, root, "fake claude with spaces", []byte(body))
+	binary := writeShellFixtureLauncher(t, root, "fake claude with spaces", []byte(body))
 	t.Setenv("LEAK_ME", "ambient-secret")
 	adapter, err := adapters.Select(adapters.Selection{
 		Provider: adapters.ProviderClaude, RuntimeKind: adapters.RuntimeKindCLI,
@@ -57,6 +62,22 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"selected claude"}'
 	}
 	runDone := make(chan error, 1)
 	go func() { runDone <- w.Run(context.Background()) }()
+	t.Cleanup(func() { _ = w.Stop(context.Background()) })
+	// The provider result is the authoritative turn terminal. Require it while
+	// the long-lived process is still running, then stop the session explicitly
+	// and require the independent process terminal below.
+	sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)
+	select {
+	case err := <-runDone:
+		t.Fatalf("streaming session exited before Stop: %v", err)
+	default:
+	}
+	if hasKind(sink.snapshot(), runtimeevents.KindProcessExited) {
+		t.Fatal("process.exited arrived before the explicit streaming-session Stop")
+	}
+	if err := w.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
 	select {
 	case err := <-runDone:
 		if err != nil {
@@ -83,10 +104,6 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"selected claude"}'
 			t.Errorf("argv missing distinct entry %q: %#v", want, args)
 		}
 	}
-	// Run completion and sink delivery are separate goroutine handoffs. Wait on
-	// the actual event barrier so scheduler delay cannot look like event loss;
-	// waitFor still fails with the observed kinds if either event is truly absent.
-	sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)
 	sink.waitFor(t, runtimeevents.KindProcessExited, 5*time.Second)
 }
 
@@ -101,7 +118,7 @@ for last do :; done
 printf '%s\n%s\n' "${LEAK_ME+present}" "${GO_AGENT_WRAPPER_EMPTY_ENVIRONMENT-missing}" > "$last"
 printf '%s\n' '{"type":"result","subtype":"success","result":"empty environment"}'
 `
-	binary := writeExecutableFixture(t, root, "empty-environment-claude", []byte(body))
+	binary := writeShellFixtureLauncher(t, root, "empty-environment-claude", []byte(body))
 	t.Setenv("LEAK_ME", "ambient-secret")
 	adapter, err := adapters.Select(adapters.Selection{
 		Provider: adapters.ProviderClaude, LaunchMode: adapters.LaunchStreamingStdio,
@@ -143,7 +160,7 @@ printf '%s\n' "$$" > "$PID_FILE"
 trap 'exit 0' TERM INT
 while :; do /bin/sleep 1; done
 `
-	binary := writeExecutableFixture(t, root, "blocking-claude", []byte(body))
+	binary := writeShellFixtureLauncher(t, root, "blocking-claude", []byte(body))
 	adapter, err := adapters.Select(adapters.Selection{
 		Provider: adapters.ProviderClaude, LaunchMode: adapters.LaunchStreamingStdio, Binary: binary,
 	})
@@ -221,7 +238,7 @@ func TestSelectedSubprocessPerTurnEnvironmentArgsEventsAndCleanup(t *testing.T) 
 				`printf '%s\n%s\n%s\n' "$SAFE_VALUE" "$META_VALUE" "${LEAK_ME+present}" > "$PROBE_FILE"` + "\n" +
 				`printf '%s\n' "$@" > "$ARGS_FILE"` + "\n" +
 				tc.scriptLine + "\n"
-			binary := writeExecutableFixture(t, binDir, "fake $(provider)", []byte(body))
+			binary := writeShellFixtureLauncher(t, binDir, "fake $(provider)", []byte(body))
 
 			t.Setenv("LEAK_ME", "ambient-secret")
 			prompt := "prompt with spaces; $(touch " + injectionMarker + ")"
@@ -326,7 +343,7 @@ func TestSelectedSubprocessPerTurnCancellationReapsProcess(t *testing.T) {
 				`printf '%s\n' "$$" > "$PID_FILE"` + "\n" +
 				`trap 'printf terminated > "$TERM_FILE"; exit 0' TERM INT` + "\n" +
 				`while :; do /bin/sleep 1; done` + "\n"
-			binary := writeExecutableFixture(t, root, "blocking-provider", []byte(body))
+			binary := writeShellFixtureLauncher(t, root, "blocking-provider", []byte(body))
 			adapter, err := adapters.Select(adapters.Selection{
 				Provider: providerID, LaunchMode: adapters.LaunchSubprocessPerTurn, Binary: binary,
 			})

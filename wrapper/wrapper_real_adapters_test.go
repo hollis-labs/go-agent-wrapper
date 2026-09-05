@@ -89,7 +89,7 @@ printf '{"type":"system","subtype":"init","session_id":"claude-fake-session"}\n'
 printf '{"type":"result","subtype":"success","result":"ok"}\n'
 `
 	body := fmt.Sprintf(scriptTpl, argvFile, stdinFile)
-	script := writeExecutableFixture(t, dir, "fake-claude", []byte(body))
+	script := writeShellFixtureLauncher(t, dir, "fake-claude", []byte(body))
 	t.Setenv("CLAUDE_CLI_PATH", script)
 
 	sink := newCapturingSink()
@@ -187,7 +187,7 @@ IFS= read -r line
 printf '%%s' "$line" > %s
 `
 	body := fmt.Sprintf(scriptTpl, stdinFile)
-	script := writeExecutableFixture(t, dir, "fake-codex", []byte(body))
+	script := writeShellFixtureLauncher(t, dir, "fake-codex", []byte(body))
 	t.Setenv("CODEX_CLI_PATH", script)
 
 	sink := newCapturingSink()
@@ -305,7 +305,7 @@ func TestRunRealOpenCodeAdapter_ServeHTTP(t *testing.T) {
 	defer server.Close()
 
 	scriptBody := fmt.Sprintf("#!/bin/sh\nprintf 'opencode server listening on %s\\n'\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n", server.URL)
-	script := writeExecutableFixture(t, dir, "fake-opencode", []byte(scriptBody))
+	script := writeShellFixtureLauncher(t, dir, "fake-opencode", []byte(scriptBody))
 	t.Setenv("OPENCODE_CLI_PATH", script)
 
 	sink := newCapturingSink()

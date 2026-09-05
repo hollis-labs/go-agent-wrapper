@@ -813,7 +813,7 @@ while IFS= read -r line; do
   fi
 done
 `, shellQuote(tracePath), shellQuote(mode))
-	return writeExecutableFixture(t, dir, "acp-fixture", []byte(body))
+	return writeShellFixtureLauncher(t, dir, "acp-fixture", []byte(body))
 }
 
 func shellQuote(value string) string {
