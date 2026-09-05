@@ -114,6 +114,35 @@ func (w *blockingPermissionWriter) Close() error {
 	return nil
 }
 
+func TestClosePreemptsBlockedPromptWrite(t *testing.T) {
+	client := NewClient()
+	writer := newBlockingPermissionWriter()
+	client.mu.Lock()
+	client.stdin = writer
+	client.sessionID = "session"
+	client.mu.Unlock()
+	promptDone := make(chan error, 1)
+	go func() { promptDone <- client.Prompt(context.Background(), "blocked") }()
+	select {
+	case <-writer.entered:
+	case <-time.After(time.Second):
+		t.Fatal("Prompt did not reach blocked transport write")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if err := client.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case err := <-promptDone:
+		if err == nil {
+			t.Fatal("Prompt returned nil after transport preemption")
+		}
+	case <-ctx.Done():
+		t.Fatal("Close did not preempt blocked Prompt write")
+	}
+}
+
 func TestCancelAndClosePreemptBackpressuredPermissionResponse(t *testing.T) {
 	client := NewClient()
 	writer := newBlockingPermissionWriter()

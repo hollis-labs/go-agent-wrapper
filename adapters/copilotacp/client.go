@@ -19,6 +19,7 @@ import (
 
 	"github.com/hollis-labs/go-agent-wrapper/acp"
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
+	"github.com/hollis-labs/go-agent-wrapper/internal/closegate"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -118,10 +119,11 @@ type Client struct {
 	diagnosticMu  sync.Mutex
 	diagnostic    func(acp.Diagnostic)
 
-	// promptCloseMu linearizes Prompt's admission and request write with
-	// Close's closed transition and session/close request. It must not guard
-	// general protocol writes: server-request responses need to remain able to
-	// run while Close waits for its response.
+	// promptCloseMu orders an admitted Prompt's request write with Close's
+	// bounded graceful session/close attempt. The closed state under mu seals
+	// new admissions before Close waits for this gate. It must not guard general
+	// protocol writes: server-request responses need to remain able to run while
+	// Close waits for its response.
 	promptCloseMu sync.Mutex
 
 	mu            sync.Mutex
@@ -138,7 +140,8 @@ type Client struct {
 	turnInFlight  bool
 	currentTurnID string
 
-	writeMu sync.Mutex
+	writeMu            sync.Mutex
+	transportCloseOnce sync.Once
 
 	nextID  atomic.Int64
 	pendMu  sync.Mutex
@@ -644,29 +647,11 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 	select {
 	case err := <-done:
 		if err != nil {
-			c.mu.Lock()
-			stdin := c.stdin
-			conn := c.conn
-			c.mu.Unlock()
-			if stdin != nil {
-				_ = stdin.Close()
-			}
-			if conn != nil {
-				_ = conn.Close()
-			}
+			c.closeTransport()
 		}
 		return err
 	case <-writeCtx.Done():
-		c.mu.Lock()
-		stdin := c.stdin
-		conn := c.conn
-		c.mu.Unlock()
-		if stdin != nil {
-			_ = stdin.Close()
-		}
-		if conn != nil {
-			_ = conn.Close()
-		}
+		c.closeTransport()
 		return writeCtx.Err()
 	}
 }
@@ -676,16 +661,9 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 // still own that ordering gate when the failure is observed.
 func (c *Client) abortPermissionTransport() {
 	c.mu.Lock()
-	stdin := c.stdin
-	conn := c.conn
 	cmd := c.cmd
 	c.mu.Unlock()
-	if stdin != nil {
-		_ = stdin.Close()
-	}
-	if conn != nil {
-		_ = conn.Close()
-	}
+	c.closeTransport()
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
@@ -853,11 +831,8 @@ func (c *Client) InterruptCapability() adapters.InterruptCapability {
 // escalates to Kill if it doesn't.
 func (c *Client) Close(ctx context.Context) error {
 	c.closeOnce.Do(func() {
-		c.promptCloseMu.Lock()
 		c.mu.Lock()
 		c.closed = true
-		stdin := c.stdin
-		conn := c.conn
 		cmd := c.cmd
 		started := c.started
 		waitDone := c.waitDone
@@ -866,8 +841,17 @@ func (c *Client) Close(ctx context.Context) error {
 		sessionClose := c.sessionClose
 		permissions := c.permissions
 		c.mu.Unlock()
-		permissions.Close()
-		if sessionClose && sessionID != "" {
+		if permissions != nil {
+			permissions.Close()
+		}
+		graceful := closegate.TryLockWithin(ctx, &c.promptCloseMu, closegate.PromptDrainGrace)
+		if !graceful {
+			// Prompt owns the admission gate across its synchronous transport
+			// write. Close the transport first so a backpressured write cannot
+			// prevent lifecycle teardown from reaching its deadline.
+			c.closeTransport()
+		}
+		if graceful && sessionClose && sessionID != "" {
 			closeCtx, cancel := context.WithTimeout(ctx, time.Second)
 			closeResult := make(chan error, 1)
 			go func() {
@@ -885,24 +869,28 @@ func (c *Client) Close(ctx context.Context) error {
 			c.closeErr = closeErr
 			c.mu.Unlock()
 		}
-		c.promptCloseMu.Unlock()
+		if graceful {
+			c.promptCloseMu.Unlock()
+		}
 
-		if stdin != nil {
-			_ = stdin.Close()
-		}
-		if conn != nil {
-			_ = conn.Close()
-		}
+		c.closeTransport()
 
 		if cmd != nil && cmd.Process != nil {
+			waited := false
 			select {
 			case <-waitDone:
+				waited = true
 			case <-time.After(3 * time.Second):
 				_ = cmd.Process.Kill()
-				<-waitDone
 			case <-ctx.Done():
 				_ = cmd.Process.Kill()
-				<-waitDone
+			}
+			if !waited {
+				select {
+				case <-waitDone:
+				case <-time.After(3 * time.Second):
+				case <-ctx.Done():
+				}
 			}
 		}
 
@@ -910,6 +898,7 @@ func (c *Client) Close(ctx context.Context) error {
 			select {
 			case <-c.readerDone:
 			case <-time.After(2 * time.Second):
+			case <-ctx.Done():
 			}
 			if terminated != nil {
 				select {
@@ -944,18 +933,11 @@ func (c *Client) coordinateTermination() {
 	c.mu.Lock()
 	termination := c.termination
 	cmd := c.cmd
-	stdin := c.stdin
-	conn := c.conn
 	terminated := c.terminated
 	permissions := c.permissions
 	c.mu.Unlock()
 	result := termination.Coordinate(func() {
-		if stdin != nil {
-			_ = stdin.Close()
-		}
-		if conn != nil {
-			_ = conn.Close()
-		}
+		c.closeTransport()
 	}, func() error {
 		if cmd != nil && cmd.Process != nil {
 			return cmd.Process.Kill()
@@ -972,6 +954,24 @@ func (c *Client) coordinateTermination() {
 	}
 	c.closeEvents()
 	close(terminated)
+}
+
+// closeTransport interrupts transport writes exactly once. It intentionally
+// does not take promptCloseMu or writeMu: either may be owned by the blocked
+// write this method exists to preempt.
+func (c *Client) closeTransport() {
+	c.transportCloseOnce.Do(func() {
+		c.mu.Lock()
+		stdin := c.stdin
+		conn := c.conn
+		c.mu.Unlock()
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		if conn != nil {
+			_ = conn.Close()
+		}
+	})
 }
 
 // closeEvents closes the events channel exactly once. It first waits
