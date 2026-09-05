@@ -6,8 +6,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## v0.9.1 — 2026-09-05
+
 ### Fixed
 
+- ACP `Close` now preserves graceful prompt/session-close wire ordering while
+  bounding admission and terminal-drain waits, then preempts a blocked Prompt
+  transport write across Claude, Codex, Copilot, OpenCode, and Pi. Regression
+  coverage includes Copilot's TCP transport as well as stdio.
 - Real-provider integration tests now require the explicit
   `GO_AGENT_WRAPPER_LIVE_PROVIDER_TESTS=1` opt-in before checking installed
   CLIs or launching provider/bridge processes. The ordinary deterministic
