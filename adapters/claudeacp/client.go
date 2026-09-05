@@ -581,6 +581,7 @@ func (c *Client) InterruptCapability() adapters.InterruptCapability {
 // Events implements [acp.Client].
 func (c *Client) Events() <-chan runtimeevents.Event { return c.events }
 
+// ProviderSessionID returns the id established by session/new or session/load.
 func (c *Client) ProviderSessionID() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -132,6 +132,7 @@ type SnapshotSet struct {
 // ChangeKind classifies one path's state in a [Diff] or [Preview].
 type ChangeKind string
 
+// Filesystem change kinds reported by Diff and Preview.
 const (
 	ChangeAdded    ChangeKind = "added"
 	ChangeModified ChangeKind = "modified"

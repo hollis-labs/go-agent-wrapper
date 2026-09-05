@@ -13,7 +13,7 @@ This is the "sibling agent in parallel" path identified by the
 `agentkit-wrapper-alignment-review-2026-05-26.md` rollout (step 9):
 filters / plant / sandbox composition + Tachyon `cmd/agent-wrap`.
 
-## Status
+## Status (v0.9.0, 2026-09-04)
 
 End-to-end launch path is wired:
 
@@ -70,6 +70,15 @@ priorities.
 
 Module path: `github.com/hollis-labs/go-agent-wrapper`
 
+## Install
+
+```sh
+go get github.com/hollis-labs/go-agent-wrapper@v0.9.0
+```
+
+The module requires Go 1.26.6. Its dependency graph contains no local
+`replace` directives.
+
 ## Quickstart
 
 ```go
@@ -88,8 +97,15 @@ import (
 func main() {
     // Pick any sink — FileSink writes JSONL, MultiSink fans out, or
     // implement runtimeevents.Sink yourself.
-    sink, _ := runtimeevents.OpenFileSink("/tmp/wrapper-events.jsonl")
-    defer sink.Close()
+    sink, err := runtimeevents.OpenFileSink("/tmp/wrapper-events.jsonl")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer func() {
+        if err := sink.Close(); err != nil {
+            log.Printf("close event sink: %v", err)
+        }
+    }()
 
     w, err := wrapper.New(wrapper.Config{
         App:      "my-app",
@@ -106,6 +122,11 @@ func main() {
     }
 }
 ```
+
+`Run` owns the complete session lifetime and blocks until the provider exits or
+the context is canceled. For a command you can run against an installed Claude
+CLI, including first-turn delivery, structured JSONL events, and signal-aware
+shutdown, see [`examples/claude-stream`](./examples/claude-stream/).
 
 ## Child environment and native adapter selection
 
@@ -292,21 +313,44 @@ preserves `ctx.Err()`.
 `Config.OnACPDiagnostic` receives only bounded, redacted stderr/protocol data;
 diagnostics are not mixed into model output.
 
+## Upgrade from v0.8.1
+
+v0.9.0 intentionally replaces the action-shaped policy API with names that
+describe its real post-execution, observational behavior. There are no
+deprecated aliases: stale integrations fail at compile time instead of keeping
+the misleading enforcement contract.
+
+| v0.8.1 | v0.9.0 |
+|---|---|
+| `wrapper.Config.Policy` | `wrapper.Config.PolicyObserver` |
+| `policy.Engine.Decide` | `policy.Observer.Observe` |
+| `policy.Request` / `policy.Decision` | `policy.Observation` / `policy.Finding` |
+| `policy.Mode` | `policy.Recommendation` |
+| `Decision.Mode` | `Finding.Recommendation` |
+| `Decision.Replacement` | `Finding.SuggestedReplacement` |
+| `policy.ObserveOnly` | `policy.NoOpObserver` |
+| `classifybridge.Engine` | `classifybridge.Observer` |
+
+The complete symbol and constant mapping is in [CHANGELOG.md](./CHANGELOG.md).
+Hosts may also adopt the new wrapper-owned `acp.Manager`, explicit
+`Config.Environment`, typed `adapters.Select`, and best-effort ACP permission
+responder. Remove any consumer-side replacements for `go-harness-filters` and
+`go-runtime-events`: this release uses their published v0.1.1 and v0.1.2 tags.
+
 ## Dependencies
 
-All cross-lib deps in this monorepo are wired via local `replace`
-directives in `go.mod`. Drop the replaces and bump to tagged versions
-before publishing — see [ROADMAP.md](./ROADMAP.md) §"Publish blockers".
-
-- `github.com/hollis-labs/agentkit` (v0.1.0+) — sessions, launch,
+- `github.com/hollis-labs/agentkit` (v0.5.0) — sessions, launch,
   runtime, context, broker.
-- `github.com/hollis-labs/go-runtime-events` (v0.1.0+, this monorepo) —
+- `github.com/hollis-labs/go-runtime-events` (v0.1.2) —
   runtime activity event envelope.
-- `github.com/hollis-labs/go-harness-filters` (v0.1.0+, this monorepo) —
+- `github.com/hollis-labs/go-harness-filters` (v0.1.1) —
   classify + directive + repair (used via `classifybridge/`).
-- `github.com/hollis-labs/go-sandbox` (v0.2.1+) — sandbox profiles.
-- `github.com/hollis-labs/go-runner` (v0.6.0+) — process supervision.
-- `github.com/hollis-labs/go-providers` (v0.23.0+) — provider adapters.
+- `github.com/hollis-labs/go-sandbox` (v0.2.1) — sandbox profiles.
+- `github.com/hollis-labs/go-runner` (v0.5.0, indirect) — process supervision.
+- `github.com/hollis-labs/go-providers` (v0.23.0) — provider adapters.
+
+All requirements are released versions fetched through the public Go module
+proxy; `go.mod` contains no `replace` directive.
 
 ## Architecture notes
 
@@ -327,7 +371,8 @@ govulncheck ./...     # vulnerability scan
 ```
 
 CI (`.github/workflows/check.yml`) runs the same checks on push and pull
-request to `main`.
+request to `main`. It reads the exact Go 1.26.6 toolchain declaration from
+`go.mod`, avoiding drift from a moving `stable` alias.
 
 ## License
 

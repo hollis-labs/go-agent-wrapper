@@ -13,6 +13,7 @@ import (
 // Provider identifies a built-in upstream CLI agent for [Select].
 type Provider string
 
+// Providers supported by the native adapter factory.
 const (
 	ProviderClaude   Provider = "claude"
 	ProviderCodex    Provider = "codex"
@@ -24,6 +25,7 @@ const (
 // transport are separate axes described by the selected Adapter.
 type RuntimeKind string
 
+// Host-level runtime kinds understood by the native adapter factory.
 const (
 	RuntimeKindCLI RuntimeKind = "cli"
 	RuntimeKindAPI RuntimeKind = "api"

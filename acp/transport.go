@@ -63,6 +63,7 @@ type TransportTermination struct {
 	processOnce     sync.Once
 }
 
+// NewTransportTermination constructs a reader/process termination coordinator.
 func NewTransportTermination(processExpected bool) *TransportTermination {
 	return &TransportTermination{
 		processExpected: processExpected,

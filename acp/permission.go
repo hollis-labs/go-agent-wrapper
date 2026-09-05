@@ -15,6 +15,7 @@ import (
 // rejected; option ID, not kind, is the wire-level selection authority.
 type PermissionOptionKind string
 
+// Standard ACP v1 permission option kinds.
 const (
 	PermissionAllowOnce    PermissionOptionKind = "allow_once"
 	PermissionAllowAlways  PermissionOptionKind = "allow_always"
@@ -123,6 +124,7 @@ type PermissionResolution struct {
 // response.
 type PermissionOutcome string
 
+// Normalized permission response outcomes.
 const (
 	PermissionOutcomeCancelled PermissionOutcome = "cancelled"
 	PermissionOutcomeSelected  PermissionOutcome = "selected"

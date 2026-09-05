@@ -1,22 +1,13 @@
 # go-agent-wrapper Roadmap
 
-Status as of v0.1.0 (2026-05-26). See
+Status as of v0.9.0 (2026-09-04). See
 [CHANGELOG.md](./CHANGELOG.md) for what landed.
 
 ## Publish blockers
 
-1. **Drop local `replace` directives.** Each cross-lib dependency
-   (`agentkit`, `go-runtime-events`, `go-harness-filters`, `go-sandbox`,
-   `go-runner`, `go-providers`, `go-llm-types`, `go-llm-contracts`) is
-   wired via a local path replace in `go.mod`. Before tagging v0.1.0,
-   each dep needs a real tag and the require lines need to bump to it.
-   Dependency order for publishing:
-   1. `go-runtime-events` (no internal deps).
-   2. `go-harness-filters` (no internal deps in this module).
-   3. `go-agent-wrapper` (depends on both above + agentkit).
-2. **No CI publishing pipeline yet.** Folio scaffolded the standard
-   `.github/workflows/check.yml` (test + vet + lint + vulncheck); a
-   release workflow is the next step.
+None. Every dependency is available at the version required by `go.mod`, and
+the module contains no local `replace` directive. Release publication remains
+a deliberate manual operation after independent review.
 
 ## Deferred this pass
 
@@ -24,7 +15,7 @@ Status as of v0.1.0 (2026-05-26). See
 
 - **PTY adapter** — `Wrapper.Run` dispatches the `pty` runtime token to
   `Capabilities.PTY=true`, but no PTY-shaped concrete adapter ships in
-  v0.1.0. Claude has `provider.NewClaudeAdapterPTY()`, Codex has a PTY
+  v0.9.0. Claude has `provider.NewClaudeAdapterPTY()`, Codex has a PTY
   shape too — both are mechanical follow-ons to the existing
   streaming-stdio / jsonrpc-stdio adapters.
 
@@ -114,17 +105,17 @@ calls for byte-exact raw events.
 
 ## Open design questions
 
-1. **`WithID` option misuse.** `runtimeevents.WithID` lets callers
-   pre-generate an event ID for `ParentID` correlation. Duplicate IDs
-   in the same session would break correlation. Document the contract
-   harder, or expose a safer `EmitReturning(ctx, ...) (id, err)` shape.
-2. **Filter policy-observation boundary.** `classifybridge` lives in this module
+The former event-correlation question is resolved by
+`runtimeevents.Emitter.EmitReturning` in go-runtime-events v0.1.2; callers no
+longer need to pre-generate an ID through `WithID` merely to establish a parent.
+
+1. **Filter policy-observation boundary.** `classifybridge` lives in this module
    and depends on `go-harness-filters/classify`. If filter consumers
    (Nanite/Torque/Tether) want filter-driven policy without the wrapper,
    they'd need this bridge in a neutral location. Extract to a
    third-party `go-policy-decisions` module? Or accept the wrapper
    dependency and document it? Revisit after first real app integration.
-3. **TurnID semantics on adapter runtime.** The subprocess-per-turn
+2. **TurnID semantics on adapter runtime.** The subprocess-per-turn
    adapter runtime is genuinely turn-shaped (each `SendInput` spawns a
    fresh child). Our `turn.*` events align well there. For long-lived
    runtimes (streaming-stdio, jsonrpc-stdio, http-sse), turns are
@@ -133,12 +124,20 @@ calls for byte-exact raw events.
    turn. Validate this matches Claude/Codex/OpenCode reality once we
    exercise them with live binaries.
 
-## Pre-publish polish
+## Release readiness
 
 - Per-package `doc.go` files exist for every subpackage; spot-check
   they read well as godoc.
-- `examples/README.md` is empty. Drop runnable usage examples in
-  before the public tag.
+- `examples/claude-stream` is a runnable native streaming example with
+  first-turn delivery, JSONL events, and signal-aware shutdown.
+- CI performs format, vet, compatible pinned lint, full race tests, and
+  vulnerability checks with the exact Go 1.26.6 version declared in `go.mod`.
+
+## Deferred release automation
+
+There is no workflow that tags or publishes a release. Keep publication manual
+until the project has an explicit provenance and approval design; do not infer
+release authority from a green validation workflow.
 
 ## Related docs
 

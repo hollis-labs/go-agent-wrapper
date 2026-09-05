@@ -6,6 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+No changes yet.
+
+## v0.9.0 — 2026-09-04
+
+This is a minor release under the module's pre-1.0 compatibility policy. It
+contains substantial additive ACP lifecycle, environment, adapter-selection,
+and permission-response APIs, plus one intentional breaking correction to the
+misleading policy API described below.
+
 ### Added
 
 - **Best-effort ACP permission responder.** Hosts can set
@@ -91,7 +100,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   consulted it only after emitting `agent.tool_use`, too late to prevent or
   replace the child operation. The replacement API is:
 
-  | v0.8.1 | Unreleased |
+  | v0.8.1 | v0.9.0 |
   |---|---|
   | `wrapper.Config.Policy` | `wrapper.Config.PolicyObserver` |
   | `policy.Engine.Decide` | `policy.Observer.Observe` |
@@ -133,6 +142,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   method-not-handled behavior. The measured coverage table calls out providers
   that execute ordinary tool classes without asking.
 
+- **Release-ready dependency graph.** Removed the local
+  `go-harness-filters` and `go-runtime-events` replacements and now require the
+  published v0.1.1 and v0.1.2 tags, respectively. The old v0.8.1 requirements
+  were stale behind those replacements: a clean consumer otherwise failed to
+  compile first on `repair.Chain`, then on
+  `runtimeevents.KindPolicyApprovalRequested`. The module now resolves all
+  dependencies from the public Go proxy with no sibling checkout.
+- Raised the declared Go patch level from 1.26.1 to 1.26.6, which contains the
+  standard-library security fixes reported by `govulncheck`. CI reads that
+  exact version from `go.mod` instead of following the moving `stable` alias
+  and source-builds pinned golangci-lint v2.11.4 with the same toolchain.
+
 ### Tests
 
 - Added adversarial environment coverage for inherited allowlists, empty
@@ -167,6 +188,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`kind: execute`) and the zero responder selection cancelled it. This is a
   one-shape measurement; synthetic fixtures separately cover stdio/TCP response
   handling and do not imply wider provider invocation coverage.
+
+## v0.8.1 — 2026-08-21
+
+The published tag added the Claude and Codex ACP adapter packages and the
+side-by-side live comparison harness. The tag's tree did not include a
+corresponding changelog section, so this historical entry records that shipped
+surface. Its stale `go-harness-filters` v0.1.0 and `go-runtime-events` v0.1.0
+requirements were masked during repository development by local replacements;
+v0.9.0 corrects the published dependency graph.
 
 ## v0.8.0 — 2026-08-21
 

@@ -16,6 +16,7 @@ import (
 // vocabulary. See the package documentation for the legacy wire mapping.
 type Recommendation string
 
+// Advisory recommendations produced for observed activity.
 const (
 	RecommendationNone            Recommendation = "observe"
 	RecommendationNudge           Recommendation = "nudge"
