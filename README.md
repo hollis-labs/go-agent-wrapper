@@ -228,6 +228,12 @@ bounded deadlines, so transport backpressure cannot pin cancellation or close
 coordination. If a decision cannot be delivered, the client emits a fixed,
 redacted fail-closed resolution and tears down the transport so an agent cannot
 remain blocked waiting for a response that never arrived.
+Each permission frame is bound to an immutable turn generation when the
+protocol reader admits it. The reader closes that admission before publishing
+the corresponding `session/prompt` response, and turn completion waits for all
+requests already admitted to that generation. A frame received after the
+barrier is answered `cancelled` without invoking a later turn's responder or
+emitting turn-scoped permission events.
 
 The name “best effort” is load-bearing. This callback is a real pre-execution
 decision point only when the provider sends `session/request_permission`; it
@@ -245,7 +251,7 @@ Nil preserves each adapter's established safe, non-blocking behavior:
 | Codex bridge | ACP `cancelled` | requested + resolved | A real ordinary shell call executed internally without asking; other classes are not exhaustively measured. |
 | OpenCode native ACP | ACP `cancelled` | requested + resolved | One real shell shape executed internally without asking; not an exhaustive guarantee. |
 | Pi bridge | ACP `cancelled` | requested + resolved | No permission request observed; `pi-acp` documents that Pi executes filesystem and terminal work locally. |
-| Copilot native ACP | JSON-RPC `-32601` | none | Baseline client never serviced permission requests; configured responders are covered over both stdio and TCP. |
+| Copilot native ACP | JSON-RPC `-32601` | none | A real Copilot CLI 1.0.12 stdio turn asked to run the non-mutating `pwd` shell command emitted one `session/request_permission` with tool kind `execute`; a zero responder selection cancelled it. This measures only that shell shape. Configured response transport is additionally covered synthetically over stdio and TCP. |
 
 All configured clients preserve numeric, string, and schema-present `null`
 JSON-RPC request IDs and reject object, array, or boolean IDs without exposing

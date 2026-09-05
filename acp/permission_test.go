@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -443,6 +444,172 @@ func TestBestEffortPermissionRequestsBoundsIgnoringCallbacksAcrossTurns(t *testi
 	recovered := requests.Respond(json.RawMessage(validPermissionParams), func(PermissionResolution) error { return nil })
 	if recovered.Outcome != PermissionOutcomeCancelled || recovered.Reason != "responder cancelled" {
 		t.Fatalf("responder capacity did not recover after callbacks exited: %+v", recovered)
+	}
+}
+
+func TestBestEffortPermissionRequestsAdmissionGenerationSurvivesEndAndBeginFlood(t *testing.T) {
+	var responderCalls atomic.Int64
+	requests := NewBestEffortPermissionRequests(func(context.Context, PermissionRequest) (PermissionSelection, error) {
+		responderCalls.Add(1)
+		return SelectPermissionOption("allow-1"), nil
+	})
+	requests.BeginTurn()
+
+	const overflow = 16
+	requestCount := MaxConcurrentBestEffortPermissionRequests + overflow
+	admitted := make(chan PermissionDispatchAdmission, requestCount)
+	releaseAdmission := make(chan struct{})
+	responses := make(chan struct {
+		admission  PermissionDispatchAdmission
+		resolution PermissionResolution
+	}, requestCount)
+	for i := 0; i < requestCount; i++ {
+		go requests.DispatchTurnRequest(json.RawMessage(validPermissionParams), func(admission PermissionDispatchAdmission) {
+			admitted <- admission
+			<-releaseAdmission
+		}, func(admission PermissionDispatchAdmission, resolution PermissionResolution) error {
+			responses <- struct {
+				admission  PermissionDispatchAdmission
+				resolution PermissionResolution
+			}{admission: admission, resolution: resolution}
+			return nil
+		}, nil)
+	}
+
+	for i := 0; i < requestCount; i++ {
+		select {
+		case admission := <-admitted:
+			if !admission.ActiveTurn || admission.Generation != 1 {
+				t.Fatalf("admission %d = %+v, want active generation 1", i, admission)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d/%d requests reached the admission barrier", i, requestCount)
+		}
+	}
+
+	endDone := make(chan struct{})
+	go func() {
+		requests.EndTurn()
+		close(endDone)
+	}()
+	waitForPermissionTurnEnding(t, requests, 1)
+	select {
+	case <-endDone:
+		t.Fatal("EndTurn returned before admitted requests completed")
+	default:
+	}
+
+	// A later generation may begin while old dispatch workers are queued. The
+	// immutable admission still forces every generation-1 request to cancel.
+	requests.BeginTurn()
+	close(releaseAdmission)
+	for i := 0; i < requestCount; i++ {
+		select {
+		case response := <-responses:
+			if response.admission.Generation != 1 || !response.admission.ActiveTurn {
+				t.Errorf("response admission = %+v", response.admission)
+			}
+			if response.resolution.Outcome != PermissionOutcomeCancelled {
+				t.Errorf("old-generation resolution = %+v, want cancelled", response.resolution)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d/%d old-generation responses completed", i, requestCount)
+		}
+	}
+	select {
+	case <-endDone:
+	case <-time.After(time.Second):
+		t.Fatal("EndTurn did not release after every admitted response completed")
+	}
+	if got := responderCalls.Load(); got != 0 {
+		t.Fatalf("old-generation requests invoked responder %d times", got)
+	}
+
+	newResponse := make(chan PermissionResolution, 1)
+	requests.DispatchTurnRequest(json.RawMessage(validPermissionParams), nil, func(admission PermissionDispatchAdmission, resolution PermissionResolution) error {
+		if !admission.ActiveTurn || admission.Generation != 2 {
+			t.Errorf("new-turn admission = %+v", admission)
+		}
+		newResponse <- resolution
+		return nil
+	}, nil)
+	select {
+	case resolution := <-newResponse:
+		if resolution.Outcome != PermissionOutcomeSelected || resolution.Option.OptionID != "allow-1" {
+			t.Fatalf("new-turn resolution = %+v", resolution)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("new-turn permission did not complete")
+	}
+	if got := responderCalls.Load(); got != 1 {
+		t.Fatalf("responder calls after new turn = %d, want 1", got)
+	}
+	requests.EndTurn()
+}
+
+func TestBestEffortPermissionRequestsLateClosedAdmissionCannotBecomeNextTurn(t *testing.T) {
+	var responderCalls atomic.Int64
+	requests := NewBestEffortPermissionRequests(func(context.Context, PermissionRequest) (PermissionSelection, error) {
+		responderCalls.Add(1)
+		return SelectPermissionOption("allow-1"), nil
+	})
+	requests.BeginTurn()
+	requests.EndTurn()
+
+	respondEntered := make(chan PermissionDispatchAdmission, 1)
+	releaseResponse := make(chan struct{})
+	completed := make(chan PermissionResolution, 1)
+	go requests.DispatchTurnRequest(json.RawMessage(validPermissionParams), func(admission PermissionDispatchAdmission) {
+		if admission.ActiveTurn {
+			t.Errorf("late request admitted as active: %+v", admission)
+		}
+	}, func(admission PermissionDispatchAdmission, resolution PermissionResolution) error {
+		respondEntered <- admission
+		<-releaseResponse
+		completed <- resolution
+		return nil
+	}, nil)
+
+	var lateAdmission PermissionDispatchAdmission
+	select {
+	case lateAdmission = <-respondEntered:
+	case <-time.After(time.Second):
+		t.Fatal("late permission response did not reach transport")
+	}
+	if lateAdmission.ActiveTurn || lateAdmission.Generation != 1 {
+		t.Fatalf("late admission = %+v, want inactive generation 1", lateAdmission)
+	}
+	requests.BeginTurn()
+	close(releaseResponse)
+	select {
+	case resolution := <-completed:
+		if resolution.Outcome != PermissionOutcomeCancelled || resolution.Reason != "turn not active" {
+			t.Fatalf("late resolution = %+v, want inactive cancellation", resolution)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("late permission response did not complete")
+	}
+	if got := responderCalls.Load(); got != 0 {
+		t.Fatalf("late request invoked next-turn responder %d times", got)
+	}
+	requests.EndTurn()
+}
+
+func waitForPermissionTurnEnding(t *testing.T, requests *BestEffortPermissionRequests, generation uint64) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		requests.mu.Lock()
+		turn := requests.turns[generation]
+		ending := turn != nil && turn.ending
+		requests.mu.Unlock()
+		if ending {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("permission generation %d did not start ending", generation)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

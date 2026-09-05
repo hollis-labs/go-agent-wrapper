@@ -204,6 +204,33 @@ type pendingPermission struct {
 	generation uint64
 }
 
+type permissionTurn struct {
+	active     bool
+	canceled   bool
+	ending     bool
+	dispatches int
+	done       chan struct{}
+	doneClosed bool
+}
+
+// PermissionDispatchAdmission identifies the turn state captured atomically
+// when a server permission request reaches DispatchTurnRequest. Generation is
+// immutable for the life of that request. ActiveTurn is false for a request
+// received after the turn admission barrier has closed; adapters must answer
+// such a request but suppress turn-scoped permission events.
+type PermissionDispatchAdmission struct {
+	Generation uint64
+	ActiveTurn bool
+}
+
+type permissionAdmission struct {
+	info       PermissionDispatchAdmission
+	turn       *permissionTurn
+	counted    bool
+	async      bool
+	atCapacity bool
+}
+
 // MaxConcurrentBestEffortPermissionRequests is the per-client upper bound on
 // asynchronously dispatched permission responses and on responder callbacks
 // that have started but not returned. The callback bound spans turn
@@ -218,29 +245,25 @@ const MaxConcurrentBestEffortPermissionRequests = 64
 // Callback goroutines are intentionally not joined: a responder that ignores
 // context cannot hold Prompt, Cancel, Close, or the protocol reader hostage.
 type BestEffortPermissionRequests struct {
-	mu           sync.Mutex
-	responder    BestEffortPermissionRequestResponder
-	nextID       uint64
-	pending      map[uint64]*pendingPermission
-	callbacks    int
-	dispatches   int
-	responseGate sync.Locker
-	dispatchDone chan struct{}
-	generation   uint64
-	turnActive   bool
-	turnCanceled bool
-	sessionID    string
-	closed       bool
+	mu              sync.Mutex
+	responder       BestEffortPermissionRequestResponder
+	nextID          uint64
+	pending         map[uint64]*pendingPermission
+	callbacks       int
+	asyncDispatches int
+	responseGate    sync.Locker
+	turns           map[uint64]*permissionTurn
+	generation      uint64
+	sessionID       string
+	closed          bool
 }
 
 // NewBestEffortPermissionRequests constructs a session-scoped coordinator.
 func NewBestEffortPermissionRequests(responder BestEffortPermissionRequestResponder) *BestEffortPermissionRequests {
-	dispatchDone := make(chan struct{})
-	close(dispatchDone)
 	return &BestEffortPermissionRequests{
-		responder:    responder,
-		pending:      make(map[uint64]*pendingPermission),
-		dispatchDone: dispatchDone,
+		responder: responder,
+		pending:   make(map[uint64]*pendingPermission),
+		turns:     make(map[uint64]*permissionTurn),
 	}
 }
 
@@ -273,42 +296,51 @@ func (p *BestEffortPermissionRequests) Dispatch(
 	respond func(PermissionResolution) error,
 	after func(PermissionResolution),
 ) {
-	if p == nil {
-		resolution := cancelledPermission("no responder configured")
-		resolution = deliverPermissionResponse(resolution, respond)
+	p.dispatchTurnRequest(rawParams, nil, func(_ PermissionDispatchAdmission, resolution PermissionResolution) error {
+		return respond(resolution)
+	}, after)
+}
+
+// DispatchTurnRequest is the adapter-facing permission dispatch path. It binds
+// the request to the current turn generation synchronously, before any worker
+// can be queued. onAdmission runs after the coordinator lock is released and
+// before response work starts. Adapters emit requested/resolved events only
+// when admission.ActiveTurn is true. Requests received after CloseTurnAdmission
+// are answered cancelled without being reclassified by a later BeginTurn.
+func (p *BestEffortPermissionRequests) DispatchTurnRequest(
+	rawParams json.RawMessage,
+	onAdmission func(PermissionDispatchAdmission),
+	respond func(PermissionDispatchAdmission, PermissionResolution) error,
+	after func(PermissionResolution),
+) {
+	p.dispatchTurnRequest(rawParams, onAdmission, respond, after)
+}
+
+func (p *BestEffortPermissionRequests) dispatchTurnRequest(
+	rawParams json.RawMessage,
+	onAdmission func(PermissionDispatchAdmission),
+	respond func(PermissionDispatchAdmission, PermissionResolution) error,
+	after func(PermissionResolution),
+) {
+	admission := p.admitPermission(true)
+	if onAdmission != nil {
+		onAdmission(admission.info)
+	}
+	run := func(raw json.RawMessage) {
+		resolution := p.respondAdmitted(admission, raw, func(resolution PermissionResolution) error {
+			return respond(admission.info, resolution)
+		})
+		p.completePermissionAdmission(admission)
 		if after != nil {
 			after(resolution)
 		}
+	}
+	if !admission.async {
+		run(rawParams)
 		return
 	}
-	p.mu.Lock()
-	if p.dispatches >= MaxConcurrentBestEffortPermissionRequests {
-		p.mu.Unlock()
-		resolution := permissionFailure("responder capacity reached", "ACP permission responder capacity reached; cancelled")
-		resolution = deliverPermissionResponse(resolution, respond)
-		if after != nil {
-			after(resolution)
-		}
-		return
-	}
-	if p.dispatches == 0 {
-		p.dispatchDone = make(chan struct{})
-	}
-	p.dispatches++
-	p.mu.Unlock()
 	rawCopy := append(json.RawMessage(nil), rawParams...)
-	go func() {
-		resolution := p.Respond(rawCopy, respond)
-		p.mu.Lock()
-		p.dispatches--
-		if p.dispatches == 0 {
-			close(p.dispatchDone)
-		}
-		p.mu.Unlock()
-		if after != nil {
-			after(resolution)
-		}
-	}()
+	go run(rawCopy)
 }
 
 // SetSessionID binds requests to the one provider session owned by the client.
@@ -323,6 +355,48 @@ func (p *BestEffortPermissionRequests) SetSessionID(sessionID string) {
 	p.mu.Unlock()
 }
 
+func (p *BestEffortPermissionRequests) admitPermission(forDispatch bool) permissionAdmission {
+	if p == nil {
+		return permissionAdmission{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	admission := permissionAdmission{
+		info: PermissionDispatchAdmission{Generation: p.generation},
+	}
+	turn := p.turns[p.generation]
+	if p.closed || turn == nil || !turn.active {
+		return admission
+	}
+	admission.info.ActiveTurn = true
+	admission.turn = turn
+	if !forDispatch {
+		return admission
+	}
+	admission.counted = true
+	turn.dispatches++
+	if p.asyncDispatches >= MaxConcurrentBestEffortPermissionRequests {
+		admission.atCapacity = true
+		return admission
+	}
+	p.asyncDispatches++
+	admission.async = true
+	return admission
+}
+
+func (p *BestEffortPermissionRequests) completePermissionAdmission(admission permissionAdmission) {
+	if p == nil || !admission.counted || admission.turn == nil {
+		return
+	}
+	p.mu.Lock()
+	if admission.async {
+		p.asyncDispatches--
+	}
+	admission.turn.dispatches--
+	p.closePermissionTurnDoneLocked(admission.turn)
+	p.mu.Unlock()
+}
+
 // Respond validates rawParams, invokes the configured responder away from the
 // calling goroutine, and passes a fail-safe ACP resolution to respond. Respond
 // itself must run outside the protocol reader because a legitimate operator
@@ -333,6 +407,15 @@ func (p *BestEffortPermissionRequests) SetSessionID(sessionID string) {
 // response backpressure can delay, but cannot indefinitely pin, EndTurn or
 // lifecycle coordination.
 func (p *BestEffortPermissionRequests) Respond(
+	rawParams json.RawMessage,
+	respond func(PermissionResolution) error,
+) PermissionResolution {
+	admission := p.admitPermission(false)
+	return p.respondAdmitted(admission, rawParams, respond)
+}
+
+func (p *BestEffortPermissionRequests) respondAdmitted(
+	admission permissionAdmission,
 	rawParams json.RawMessage,
 	respond func(PermissionResolution) error,
 ) PermissionResolution {
@@ -354,14 +437,18 @@ func (p *BestEffortPermissionRequests) Respond(
 		resolution := cancelledPermission("no responder configured")
 		return deliverPermissionResponse(resolution, respond)
 	}
-
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		resolution := cancelledPermission("client closed")
+	if !admission.info.ActiveTurn {
+		resolution := cancelledPermission("turn not active")
 		return deliverPermissionResponse(resolution, respond)
 	}
-	if !p.turnActive || p.turnCanceled {
+	if admission.atCapacity {
+		resolution := permissionFailure("responder capacity reached", "ACP permission responder capacity reached; cancelled")
+		return deliverPermissionResponse(resolution, respond)
+	}
+
+	p.mu.Lock()
+	turn := p.turns[admission.info.Generation]
+	if p.closed || turn == nil || turn != admission.turn || !turn.active || turn.canceled {
 		p.mu.Unlock()
 		resolution := cancelledPermission("turn not active")
 		return deliverPermissionResponse(resolution, respond)
@@ -374,7 +461,7 @@ func (p *BestEffortPermissionRequests) Respond(
 	ctx, cancel := context.WithCancel(context.Background())
 	p.nextID++
 	id := p.nextID
-	entry := &pendingPermission{cancel: cancel, generation: p.generation}
+	entry := &pendingPermission{cancel: cancel, generation: admission.info.Generation}
 	p.pending[id] = entry
 	p.callbacks++
 	p.mu.Unlock()
@@ -403,8 +490,9 @@ func (p *BestEffortPermissionRequests) Respond(
 	}
 
 	p.mu.Lock()
-	canceled := entry.canceled || p.closed || ctx.Err() != nil ||
-		!p.turnActive || p.turnCanceled || entry.generation != p.generation
+	turn = p.turns[entry.generation]
+	canceled := entry.canceled || p.closed || ctx.Err() != nil || turn == nil ||
+		turn != admission.turn || !turn.active || turn.canceled
 	var resolution PermissionResolution
 	if canceled || errors.Is(callback.err, context.Canceled) || errors.Is(callback.err, context.DeadlineExceeded) {
 		resolution = cancelledPermission("request cancelled")
@@ -468,6 +556,12 @@ func (p *BestEffortPermissionRequests) BeginTurn() {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if previous := p.turns[p.generation]; previous != nil && previous.active {
+		previous.active = false
+		previous.canceled = true
+		previous.ending = true
+		p.closePermissionTurnDoneLocked(previous)
+	}
 	for _, entry := range p.pending {
 		if entry.committed {
 			continue
@@ -476,27 +570,76 @@ func (p *BestEffortPermissionRequests) BeginTurn() {
 		entry.cancel()
 	}
 	p.generation++
-	p.turnActive = true
-	p.turnCanceled = false
+	p.turns[p.generation] = &permissionTurn{
+		active: true,
+		done:   make(chan struct{}),
+	}
 }
 
-// EndTurn closes the current permission generation and cancels any responder
-// call that outlived the provider's prompt result.
+// CloseTurnAdmission atomically closes the current generation to new
+// permission requests and cancels responder calls that have not committed. A
+// protocol reader calls this before publishing the session/prompt response so
+// a later wire frame cannot race through under the next turn. It does not wait
+// for already-admitted requests; EndTurn owns that barrier.
+func (p *BestEffortPermissionRequests) CloseTurnAdmission() {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.closeTurnAdmissionLocked(p.generation)
+	p.mu.Unlock()
+}
+
+func (p *BestEffortPermissionRequests) closeTurnAdmissionLocked(generation uint64) *permissionTurn {
+	turn := p.turns[generation]
+	if turn == nil {
+		return nil
+	}
+	turn.active = false
+	turn.ending = true
+	for _, entry := range p.pending {
+		if entry.generation == generation && !entry.committed {
+			entry.canceled = true
+			entry.cancel()
+		}
+	}
+	p.closePermissionTurnDoneLocked(turn)
+	return turn
+}
+
+func (p *BestEffortPermissionRequests) closePermissionTurnDoneLocked(turn *permissionTurn) {
+	if turn == nil || !turn.ending || turn.dispatches != 0 || turn.doneClosed {
+		return
+	}
+	close(turn.done)
+	turn.doneClosed = true
+}
+
+// EndTurn closes the current permission generation and waits for every
+// request admitted before that close to finish its response. The wait is on
+// this immutable generation, so a concurrent later BeginTurn cannot reclassify
+// queued work or extend the old turn's barrier with new-turn requests.
 func (p *BestEffortPermissionRequests) EndTurn() {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
-	p.turnActive = false
-	for _, entry := range p.pending {
-		if entry.generation == p.generation && !entry.committed {
-			entry.canceled = true
-			entry.cancel()
-		}
+	generation := p.generation
+	turn := p.closeTurnAdmissionLocked(generation)
+	var done <-chan struct{}
+	if turn != nil {
+		done = turn.done
 	}
-	dispatchDone := p.dispatchDone
 	p.mu.Unlock()
-	<-dispatchDone
+	if done == nil {
+		return
+	}
+	<-done
+	p.mu.Lock()
+	if p.turns[generation] == turn {
+		delete(p.turns, generation)
+	}
+	p.mu.Unlock()
 }
 
 // CancelTurn marks the current permission generation cancelled and cancels
@@ -508,7 +651,10 @@ func (p *BestEffortPermissionRequests) CancelTurn() {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.turnCanceled = true
+	turn := p.turns[p.generation]
+	if turn != nil {
+		turn.canceled = true
+	}
 	for _, entry := range p.pending {
 		if entry.generation == p.generation && !entry.committed {
 			entry.canceled = true
@@ -526,8 +672,12 @@ func (p *BestEffortPermissionRequests) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.closed = true
-	p.turnActive = false
-	p.turnCanceled = true
+	for _, turn := range p.turns {
+		turn.active = false
+		turn.canceled = true
+		turn.ending = true
+		p.closePermissionTurnDoneLocked(turn)
+	}
 	for _, entry := range p.pending {
 		if entry.committed {
 			continue

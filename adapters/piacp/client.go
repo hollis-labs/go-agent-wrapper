@@ -62,9 +62,9 @@ type Client struct {
 
 	nextID atomic.Int64
 	pendMu sync.Mutex
-	// pending maps an outbound request id to the channel its eventual
-	// response is delivered on. Guarded by pendMu.
-	pending map[int64]chan rpcResponse
+	// pending maps an outbound request id to its method metadata and eventual
+	// response channel. Guarded by pendMu.
+	pending map[int64]pendingRPCResponse
 
 	turnMu        sync.Mutex
 	currentTurnID string
@@ -114,7 +114,7 @@ func WithClientExtraArgs(args ...string) ClientOption {
 func NewClient(opts ...ClientOption) *Client {
 	c := &Client{
 		events:  make(chan runtimeevents.Event, 64),
-		pending: make(map[int64]chan rpcResponse),
+		pending: make(map[int64]pendingRPCResponse),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -127,6 +127,11 @@ func NewClient(opts ...ClientOption) *Client {
 type rpcResponse struct {
 	result json.RawMessage
 	err    *rpcError
+}
+
+type pendingRPCResponse struct {
+	response chan rpcResponse
+	prompt   bool
 }
 
 // rpcError mirrors JSON-RPC 2.0's error object.
@@ -770,7 +775,7 @@ func (c *Client) deliverResponse(idRaw json.RawMessage, result json.RawMessage, 
 		return // non-numeric id we never allocated; drop.
 	}
 	c.pendMu.Lock()
-	ch, ok := c.pending[id]
+	pending, ok := c.pending[id]
 	if ok {
 		delete(c.pending, id)
 	}
@@ -778,18 +783,21 @@ func (c *Client) deliverResponse(idRaw json.RawMessage, result json.RawMessage, 
 	if !ok {
 		return
 	}
-	ch <- rpcResponse{result: result, err: rpcErr}
-	close(ch)
+	if pending.prompt {
+		c.permissions.CloseTurnAdmission()
+	}
+	pending.response <- rpcResponse{result: result, err: rpcErr}
+	close(pending.response)
 }
 
 func (c *Client) failPending(err error) {
 	c.pendMu.Lock()
 	pending := c.pending
-	c.pending = make(map[int64]chan rpcResponse)
+	c.pending = make(map[int64]pendingRPCResponse)
 	c.pendMu.Unlock()
-	for _, ch := range pending {
-		ch <- rpcResponse{err: &rpcError{Code: -32000, Message: err.Error()}}
-		close(ch)
+	for _, call := range pending {
+		call.response <- rpcResponse{err: &rpcError{Code: -32000, Message: err.Error()}}
+		close(call.response)
 	}
 }
 
@@ -800,7 +808,7 @@ func (c *Client) beginCall(ctx context.Context, method string, params any) (int6
 	id := c.nextID.Add(1)
 	respCh := make(chan rpcResponse, 1)
 	c.pendMu.Lock()
-	c.pending[id] = respCh
+	c.pending[id] = pendingRPCResponse{response: respCh, prompt: method == "session/prompt"}
 	c.pendMu.Unlock()
 
 	type reqFrame struct {

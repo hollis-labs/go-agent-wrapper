@@ -142,7 +142,7 @@ type Client struct {
 
 	nextID  atomic.Int64
 	pendMu  sync.Mutex
-	pending map[int64]chan wireFrame
+	pending map[int64]pendingWireResponse
 
 	// turnWG tracks in-flight awaitPromptResult goroutines. closeEvents
 	// waits on it before actually closing the events channel — without
@@ -169,6 +169,11 @@ type Client struct {
 	closeErr     error
 }
 
+type pendingWireResponse struct {
+	response chan wireFrame
+	prompt   bool
+}
+
 // NewClient returns a [Client] for the given transport. Configure via
 // opts before calling [Client.Launch].
 func NewClient(transport adapters.Transport, opts ...Option) *Client {
@@ -177,7 +182,7 @@ func NewClient(transport adapters.Transport, opts ...Option) *Client {
 		host:          "127.0.0.1",
 		clientName:    defaultClientName,
 		clientVersion: defaultClientVersion,
-		pending:       make(map[int64]chan wireFrame),
+		pending:       make(map[int64]pendingWireResponse),
 		events:        make(chan runtimeevents.Event, 64),
 		readerDone:    make(chan struct{}),
 	}
@@ -588,7 +593,7 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	id := c.nextID.Add(1)
 	ch := make(chan wireFrame, 1)
 	c.pendMu.Lock()
-	c.pending[id] = ch
+	c.pending[id] = pendingWireResponse{response: ch, prompt: method == "session/prompt"}
 	c.pendMu.Unlock()
 	cleanup := func() {
 		c.pendMu.Lock()
@@ -739,7 +744,7 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 	id := c.nextID.Add(1)
 	ch := make(chan wireFrame, 1)
 	c.pendMu.Lock()
-	c.pending[id] = ch
+	c.pending[id] = pendingWireResponse{response: ch, prompt: true}
 	c.pendMu.Unlock()
 
 	// turnWG.Add was performed under c.mu before request preparation. That
@@ -1074,7 +1079,7 @@ func (c *Client) handleLine(line []byte) bool {
 
 func (c *Client) deliverResponse(id int64, f wireFrame) {
 	c.pendMu.Lock()
-	ch, ok := c.pending[id]
+	pending, ok := c.pending[id]
 	if ok {
 		delete(c.pending, id)
 	}
@@ -1082,7 +1087,10 @@ func (c *Client) deliverResponse(id int64, f wireFrame) {
 	if !ok {
 		return
 	}
-	ch <- f
+	if pending.prompt {
+		c.permissions.CloseTurnAdmission()
+	}
+	pending.response <- f
 }
 
 func (c *Client) respondUnsupported(id json.RawMessage, method string) {
@@ -1093,23 +1101,29 @@ func (c *Client) respondUnsupported(id json.RawMessage, method string) {
 }
 
 func (c *Client) handlePermissionRequest(id json.RawMessage, eventID any, params json.RawMessage) {
-	c.mu.Lock()
-	turnID := c.currentTurnID
-	c.mu.Unlock()
-
-	c.pushEvent(runtimeevents.Event{
-		Kind:   runtimeevents.KindAgentPermissionRequested,
-		TurnID: turnID,
-		Payload: marshalPayload(map[string]any{
-			"request_id": eventID,
-			"method":     "session/request_permission",
-			"params":     params,
-		}),
-	})
-
 	id = append(json.RawMessage(nil), id...)
-	c.permissions.Dispatch(params, func(resolution acp.PermissionResolution) error {
+	var turnID string
+	c.permissions.DispatchTurnRequest(params, func(admission acp.PermissionDispatchAdmission) {
+		if !admission.ActiveTurn {
+			return
+		}
+		c.mu.Lock()
+		turnID = c.currentTurnID
+		c.mu.Unlock()
+		c.pushEvent(runtimeevents.Event{
+			Kind:   runtimeevents.KindAgentPermissionRequested,
+			TurnID: turnID,
+			Payload: marshalPayload(map[string]any{
+				"request_id": eventID,
+				"method":     "session/request_permission",
+				"params":     params,
+			}),
+		})
+	}, func(admission acp.PermissionDispatchAdmission, resolution acp.PermissionResolution) error {
 		err := c.writeServerResponse(id, marshalPayload(resolution.Result()), nil)
+		if !admission.ActiveTurn {
+			return err
+		}
 		payload := resolution.ResolvedEventPayload(eventID)
 		if err != nil {
 			payload = resolution.DeliveryFailureEventPayload(eventID)
@@ -1158,10 +1172,10 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 func (c *Client) onReaderClosed() {
 	c.pendMu.Lock()
 	pending := c.pending
-	c.pending = make(map[int64]chan wireFrame)
+	c.pending = make(map[int64]pendingWireResponse)
 	c.pendMu.Unlock()
-	for _, ch := range pending {
-		close(ch)
+	for _, call := range pending {
+		close(call.response)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -253,6 +254,134 @@ func TestBestEffortPermissionResponseFailureTerminatesAllACPSubprocesses(t *test
 				}
 			}
 		})
+	}
+}
+
+func TestBestEffortPermissionLateFrameCannotCrossTurnsAllACPSubprocesses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
+	for _, fixture := range permissionClientFixtures() {
+		fixture := fixture
+		t.Run(fixture.name, func(t *testing.T) {
+			dir := t.TempDir()
+			marker := filepath.Join(dir, "late-permission-responses.ndjson")
+			client := fixture.newClient(writeLatePermissionACPFixture(t, dir))
+			var responderCalls atomic.Int64
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := client.Launch(ctx, acp.LaunchParams{
+				Cwd: dir,
+				Env: append(os.Environ(),
+					"ACP_PERMISSION_MARKER="+marker,
+				),
+				BestEffortPermissionRequestResponder: func(context.Context, acp.PermissionRequest) (acp.PermissionSelection, error) {
+					responderCalls.Add(1)
+					return acp.SelectPermissionOption("allow"), nil
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = client.Close(context.Background()) }()
+
+			if err := client.Prompt(ctx, "first turn"); err != nil {
+				t.Fatal(err)
+			}
+			firstEvents := collectPermissionTurnEvents(t, client)
+			assertPermissionEventIDs(t, firstEvents, nil)
+			firstResponses := waitForPermissionResponseLines(t, marker, 1)
+			assertPermissionWireOutcome(t, firstResponses[0], "late-1", "cancelled", "")
+			if got := responderCalls.Load(); got != 0 {
+				t.Fatalf("late frame invoked first/next-turn responder %d times", got)
+			}
+
+			if err := client.Prompt(ctx, "second turn"); err != nil {
+				t.Fatal(err)
+			}
+			secondEvents := collectPermissionTurnEvents(t, client)
+			assertPermissionEventIDs(t, secondEvents, []string{`"fresh-2"`})
+			responses := waitForPermissionResponseLines(t, marker, 2)
+			assertPermissionWireOutcome(t, responses[1], "fresh-2", "selected", "allow")
+			if got := responderCalls.Load(); got != 1 {
+				t.Fatalf("responder calls after fresh second-turn request = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func assertPermissionEventIDs(t *testing.T, events []runtimeevents.Event, want []string) {
+	t.Helper()
+	var requested, resolved []string
+	terminal := -1
+	for index, event := range events {
+		switch event.Kind {
+		case runtimeevents.KindAgentPermissionRequested:
+			var payload struct {
+				RequestID json.RawMessage `json:"request_id"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			requested = append(requested, string(payload.RequestID))
+		case runtimeevents.KindAgentPermissionResolved:
+			var payload struct {
+				RequestID json.RawMessage `json:"request_id"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatal(err)
+			}
+			resolved = append(resolved, string(payload.RequestID))
+		case runtimeevents.KindTurnCompleted, runtimeevents.KindTurnFailed:
+			terminal = index
+		}
+	}
+	if terminal < 0 {
+		t.Fatalf("events have no terminal: %+v", events)
+	}
+	if strings.Join(requested, ",") != strings.Join(want, ",") || strings.Join(resolved, ",") != strings.Join(want, ",") {
+		t.Fatalf("permission requested/resolved ids = %v/%v, want %v; events=%+v", requested, resolved, want, events)
+	}
+}
+
+func assertPermissionWireOutcome(t *testing.T, line, id, outcome, optionID string) {
+	t.Helper()
+	var frame struct {
+		ID     string `json:"id"`
+		Result struct {
+			Outcome struct {
+				Outcome  string `json:"outcome"`
+				OptionID string `json:"optionId"`
+			} `json:"outcome"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(line), &frame); err != nil {
+		t.Fatalf("decode permission response %q: %v", line, err)
+	}
+	if frame.ID != id || frame.Result.Outcome.Outcome != outcome || frame.Result.Outcome.OptionID != optionID {
+		t.Fatalf("permission response = %s, want id=%q outcome=%q option=%q", line, id, outcome, optionID)
+	}
+}
+
+func waitForPermissionResponseLines(t *testing.T, marker string, count int) []string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		data, err := os.ReadFile(marker)
+		if err == nil {
+			trimmed := strings.TrimSpace(string(data))
+			if trimmed != "" {
+				lines := strings.Split(trimmed, "\n")
+				if len(lines) >= count {
+					return lines
+				}
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("permission marker %s did not reach %d lines", marker, count)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -630,6 +759,47 @@ done
 `
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatalf("write permission flood ACP fixture: %v", err)
+	}
+	return path
+}
+
+func writeLatePermissionACPFixture(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "late-permission-acp-fixture.sh")
+	body := `#!/bin/sh
+prompt_count=0
+while IFS= read -r line; do
+  id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"authMethods":[],"agentCapabilities":{"sessionCapabilities":{"close":{}}}}}\n' "$id"
+      ;;
+    *'"method":"session/new"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"late-session"}}\n' "$id"
+      ;;
+    *'"method":"session/prompt"'*)
+      prompt_count=$((prompt_count + 1))
+      if [ "$prompt_count" -eq 1 ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+        printf '{"jsonrpc":"2.0","id":"late-1","method":"session/request_permission","params":{"sessionId":"late-session","toolCall":{"toolCallId":"late-call","rawInput":{"command":"must-not-run"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]}}\n'
+        IFS= read -r answer
+        printf '%s\n' "$answer" >> "$ACP_PERMISSION_MARKER"
+      else
+        printf '{"jsonrpc":"2.0","id":"fresh-2","method":"session/request_permission","params":{"sessionId":"late-session","toolCall":{"toolCallId":"fresh-call","rawInput":{"command":"safe-synthetic"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]}}\n'
+        IFS= read -r answer
+        printf '%s\n' "$answer" >> "$ACP_PERMISSION_MARKER"
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      fi
+      ;;
+    *'"method":"session/close"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+      exit 0
+      ;;
+  esac
+done
+`
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatalf("write late permission ACP fixture: %v", err)
 	}
 	return path
 }

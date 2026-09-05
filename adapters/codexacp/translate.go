@@ -44,7 +44,6 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 	if err := json.Unmarshal(envelope.Update, &kindProbe); err != nil {
 		return
 	}
-
 	c.turnMu.Lock()
 	turnID := c.currentTurnID
 	c.turnMu.Unlock()
@@ -211,55 +210,45 @@ func (c *Client) handleServerRequest(frame rpcFrame) {
 		return
 	}
 
-	c.turnMu.Lock()
-	turnID := c.currentTurnID
-	c.turnMu.Unlock()
-
 	// Correlate the requested/resolved pair via ACP's OWN JSON-RPC
 	// request id (a stable, protocol-native correlator) rather than a
 	// synthesized runtimeevents ID/ParentID pair — same convention
 	// opencodeacp uses, per [acp.Client.Events]'s documented contract
 	// that Event.ID is left zero for the caller's own
 	// Emitter/activity.Bridge to assign.
-	acpRequestID := json.RawMessage(frame.ID)
-	c.emit(runtimeevents.Event{
-		Kind:   runtimeevents.KindAgentPermissionRequested,
-		TurnID: turnID,
-		Payload: mustMarshal(map[string]any{
-			"request_id": acpRequestID,
-			"method":     frame.Method,
-			"params":     frame.Params,
-		}),
-	})
-	if !c.permissions.Configured() {
-		if err := c.respondToServerRequest(frame.ID, map[string]any{
-			"outcome": map[string]any{"outcome": "cancelled"},
-		}, nil); err != nil {
-			c.emit(runtimeevents.Event{
-				Kind:    runtimeevents.KindAgentPermissionResolved,
-				TurnID:  turnID,
-				Payload: mustMarshal(acp.PermissionResolution{}.DeliveryFailureEventPayload(acpRequestID)),
-			})
-			c.reportDiagnostic(acp.NewDiagnostic(acp.DiagnosticProtocol, "ACP permission response delivery failed; transport closed", ""))
-			c.abortPermissionTransport()
+	acpRequestID := append(json.RawMessage(nil), frame.ID...)
+	requestID := append(json.RawMessage(nil), frame.ID...)
+	configured := c.permissions.Configured()
+	var turnID string
+	c.permissions.DispatchTurnRequest(frame.Params, func(admission acp.PermissionDispatchAdmission) {
+		if !admission.ActiveTurn {
 			return
 		}
+		c.turnMu.Lock()
+		turnID = c.currentTurnID
+		c.turnMu.Unlock()
 		c.emit(runtimeevents.Event{
-			Kind:   runtimeevents.KindAgentPermissionResolved,
+			Kind:   runtimeevents.KindAgentPermissionRequested,
 			TurnID: turnID,
 			Payload: mustMarshal(map[string]any{
 				"request_id": acpRequestID,
-				"allowed":    false,
-				"reason":     "codexacp: no approval handler configured",
+				"method":     frame.Method,
+				"params":     frame.Params,
 			}),
 		})
-		return
-	}
-
-	requestID := append(json.RawMessage(nil), frame.ID...)
-	c.permissions.Dispatch(frame.Params, func(resolution acp.PermissionResolution) error {
+	}, func(admission acp.PermissionDispatchAdmission, resolution acp.PermissionResolution) error {
 		err := c.respondToServerRequest(requestID, resolution.Result(), nil)
+		if !admission.ActiveTurn {
+			return err
+		}
 		payload := resolution.ResolvedEventPayload(acpRequestID)
+		if !configured {
+			payload = map[string]any{
+				"request_id": acpRequestID,
+				"allowed":    false,
+				"reason":     "codexacp: no approval handler configured",
+			}
+		}
 		if err != nil {
 			payload = resolution.DeliveryFailureEventPayload(acpRequestID)
 		}

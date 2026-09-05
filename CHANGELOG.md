@@ -20,7 +20,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   have teardown-safe deadlines, and all clients preserve numeric, string, and
   schema-present null request IDs while rejecting invalid ID shapes. An
   undeliverable permission response emits a fixed, redacted fail-closed event
-  and terminates the transport instead of leaving the child blocked.
+  and terminates the transport instead of leaving the child blocked. Reader
+  admission binds every request to one immutable turn generation; prompt
+  completion closes that generation and waits its admitted responses, while a
+  later frame is cancelled quietly rather than reclassified into the next turn.
 
 - **Explicit child-process environment contract.** `wrapper.Config.Environment`
   now accepts a typed `ChildEnvironment` with inherit/merge/replace modes, an
@@ -159,6 +162,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   re-entry into Prompt/Close, plus shared race/stress coverage, exact
   legacy-default assertions, real non-reading-child floods,
   backpressured response/cancel teardown, and redaction assertions.
+- Safely measured provider-side Copilot CLI 1.0.12 behavior with a real stdio
+  turn: a non-mutating `pwd` shell request emitted one ACP permission request
+  (`kind: execute`) and the zero responder selection cancelled it. This is a
+  one-shape measurement; synthetic fixtures separately cover stdio/TCP response
+  handling and do not imply wider provider invocation coverage.
 
 ## v0.8.0 — 2026-08-21
 

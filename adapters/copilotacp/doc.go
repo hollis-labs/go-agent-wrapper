@@ -79,7 +79,13 @@
 // `session/request_permission`, validates the exact offered option, and emits
 // the same permission events as the other clients. With no responder Copilot
 // retains its established method-not-handled/no-event behavior rather than
-// silently changing compatibility. A turn that genuinely
+// silently changing compatibility. Provider-side coverage was measured safely
+// against a real Copilot CLI 1.0.12 stdio session: a prompt to run the
+// non-mutating `pwd` shell command produced exactly one permission request with
+// tool kind `execute` and allow-once/allow-always/reject-once options; returning
+// the zero selection cancelled it. That is evidence for this one shell shape,
+// not a claim about other tools or operation classes. Synthetic fixtures cover
+// response servicing over both stdio and TCP. A turn that genuinely
 // requires client-served fs/terminal access will fail or degrade rather
 // than complete; building a real in-process fs/terminal server was
 // explicitly out of scope per the architecture doc's own call ("worth
