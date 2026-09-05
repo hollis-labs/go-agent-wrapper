@@ -674,7 +674,6 @@ func readPermissionResponses(t *testing.T, marker string) []string {
 
 func writePermissionACPFixture(t *testing.T, dir string) string {
 	t.Helper()
-	path := filepath.Join(dir, "permission-acp-fixture.sh")
 	body := `#!/bin/sh
 while IFS= read -r line; do
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
@@ -728,15 +727,11 @@ while IFS= read -r line; do
   esac
 done
 `
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("write permission ACP fixture: %v", err)
-	}
-	return path
+	return writeExecutableFixture(t, dir, "permission-acp-fixture", []byte(body))
 }
 
 func writePermissionFloodACPFixture(t *testing.T, dir string) string {
 	t.Helper()
-	path := filepath.Join(dir, "permission-flood-acp-fixture.sh")
 	body := `#!/bin/sh
 while IFS= read -r line; do
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
@@ -758,15 +753,11 @@ while IFS= read -r line; do
   esac
 done
 `
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("write permission flood ACP fixture: %v", err)
-	}
-	return path
+	return writeExecutableFixture(t, dir, "permission-flood-acp-fixture", []byte(body))
 }
 
 func writeLatePermissionACPFixture(t *testing.T, dir string) string {
 	t.Helper()
-	path := filepath.Join(dir, "late-permission-acp-fixture.sh")
 	body := `#!/bin/sh
 prompt_count=0
 while IFS= read -r line; do
@@ -799,8 +790,5 @@ while IFS= read -r line; do
   esac
 done
 `
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("write late permission ACP fixture: %v", err)
-	}
-	return path
+	return writeExecutableFixture(t, dir, "late-permission-acp-fixture", []byte(body))
 }

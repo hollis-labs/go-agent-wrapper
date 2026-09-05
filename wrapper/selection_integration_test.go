@@ -25,16 +25,13 @@ func TestSelectedClaudeDeveloperStreamingEnvironmentAndEvents(t *testing.T) {
 	root := t.TempDir()
 	probe := filepath.Join(root, "environment.txt")
 	argsProbe := filepath.Join(root, "arguments.txt")
-	binary := filepath.Join(root, "fake claude with spaces.sh")
 	body := `#!/bin/sh
 printf '%s\n%s\n' "$SAFE_VALUE" "${LEAK_ME+present}" > "$PROBE_FILE"
 printf '%s\n' "$@" > "$ARGS_FILE"
 IFS= read -r line
 printf '%s\n' '{"type":"result","subtype":"success","result":"selected claude"}'
 `
-	if err := os.WriteFile(binary, []byte(body), 0o755); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
+	binary := writeExecutableFixture(t, root, "fake claude with spaces", []byte(body))
 	t.Setenv("LEAK_ME", "ambient-secret")
 	adapter, err := adapters.Select(adapters.Selection{
 		Provider: adapters.ProviderClaude, RuntimeKind: adapters.RuntimeKindCLI,
@@ -86,9 +83,11 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"selected claude"}'
 			t.Errorf("argv missing distinct entry %q: %#v", want, args)
 		}
 	}
-	if !hasKind(sink.snapshot(), runtimeevents.KindTurnCompleted) || !hasKind(sink.snapshot(), runtimeevents.KindProcessExited) {
-		t.Fatalf("normalized terminal events missing: %v", sink.kinds())
-	}
+	// Run completion and sink delivery are separate goroutine handoffs. Wait on
+	// the actual event barrier so scheduler delay cannot look like event loss;
+	// waitFor still fails with the observed kinds if either event is truly absent.
+	sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)
+	sink.waitFor(t, runtimeevents.KindProcessExited, 5*time.Second)
 }
 
 func TestSelectedClaudeExplicitEmptyEnvironmentDoesNotInherit(t *testing.T) {
@@ -97,15 +96,12 @@ func TestSelectedClaudeExplicitEmptyEnvironmentDoesNotInherit(t *testing.T) {
 	}
 	root := t.TempDir()
 	probe := filepath.Join(root, "empty-environment.txt")
-	binary := filepath.Join(root, "empty-environment-claude.sh")
 	body := `#!/bin/sh
 for last do :; done
 printf '%s\n%s\n' "${LEAK_ME+present}" "${GO_AGENT_WRAPPER_EMPTY_ENVIRONMENT-missing}" > "$last"
 printf '%s\n' '{"type":"result","subtype":"success","result":"empty environment"}'
 `
-	if err := os.WriteFile(binary, []byte(body), 0o755); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
+	binary := writeExecutableFixture(t, root, "empty-environment-claude", []byte(body))
 	t.Setenv("LEAK_ME", "ambient-secret")
 	adapter, err := adapters.Select(adapters.Selection{
 		Provider: adapters.ProviderClaude, LaunchMode: adapters.LaunchStreamingStdio,
@@ -142,15 +138,12 @@ func TestSelectedClaudeStreamingCancellationReapsProcess(t *testing.T) {
 	}
 	root := t.TempDir()
 	pidFile := filepath.Join(root, "pid")
-	binary := filepath.Join(root, "blocking-claude.sh")
 	body := `#!/bin/sh
 printf '%s\n' "$$" > "$PID_FILE"
 trap 'exit 0' TERM INT
 while :; do /bin/sleep 1; done
 `
-	if err := os.WriteFile(binary, []byte(body), 0o755); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
+	binary := writeExecutableFixture(t, root, "blocking-claude", []byte(body))
 	adapter, err := adapters.Select(adapters.Selection{
 		Provider: adapters.ProviderClaude, LaunchMode: adapters.LaunchStreamingStdio, Binary: binary,
 	})
@@ -224,14 +217,11 @@ func TestSelectedSubprocessPerTurnEnvironmentArgsEventsAndCleanup(t *testing.T) 
 			probe := filepath.Join(root, "environment.txt")
 			argsProbe := filepath.Join(root, "arguments.txt")
 			injectionMarker := filepath.Join(root, "must-not-exist")
-			binary := filepath.Join(binDir, "fake $(provider).sh")
 			body := "#!/bin/sh\n" +
 				`printf '%s\n%s\n%s\n' "$SAFE_VALUE" "$META_VALUE" "${LEAK_ME+present}" > "$PROBE_FILE"` + "\n" +
 				`printf '%s\n' "$@" > "$ARGS_FILE"` + "\n" +
 				tc.scriptLine + "\n"
-			if err := os.WriteFile(binary, []byte(body), 0o755); err != nil {
-				t.Fatalf("write fixture: %v", err)
-			}
+			binary := writeExecutableFixture(t, binDir, "fake $(provider)", []byte(body))
 
 			t.Setenv("LEAK_ME", "ambient-secret")
 			prompt := "prompt with spaces; $(touch " + injectionMarker + ")"
@@ -332,14 +322,11 @@ func TestSelectedSubprocessPerTurnCancellationReapsProcess(t *testing.T) {
 			root := t.TempDir()
 			pidFile := filepath.Join(root, "pid")
 			termFile := filepath.Join(root, "terminated")
-			binary := filepath.Join(root, "blocking-provider.sh")
 			body := "#!/bin/sh\n" +
 				`printf '%s\n' "$$" > "$PID_FILE"` + "\n" +
 				`trap 'printf terminated > "$TERM_FILE"; exit 0' TERM INT` + "\n" +
 				`while :; do /bin/sleep 1; done` + "\n"
-			if err := os.WriteFile(binary, []byte(body), 0o755); err != nil {
-				t.Fatalf("write fixture: %v", err)
-			}
+			binary := writeExecutableFixture(t, root, "blocking-provider", []byte(body))
 			adapter, err := adapters.Select(adapters.Selection{
 				Provider: providerID, LaunchMode: adapters.LaunchSubprocessPerTurn, Binary: binary,
 			})

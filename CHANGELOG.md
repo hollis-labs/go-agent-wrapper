@@ -13,6 +13,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CLIs or launching provider/bridge processes. The ordinary deterministic
   suite no longer mistakes a hosted runner's bundled `npx` for configured
   Claude credentials.
+- Executable test fixtures are now published at unique, immutable paths only
+  after their writers are closed, preventing Linux `ETXTBSY` races in the
+  concurrent and race-enabled suites.
 
 ## v0.9.0 — 2026-09-05
 

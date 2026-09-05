@@ -275,11 +275,7 @@ func writeFakeScript(t *testing.T, dir string, lines []string) string {
 		body += "printf '%s\\n' '" + l + "'\n"
 	}
 	body += "exit 0\n"
-	path := filepath.Join(dir, "fake-cli.sh")
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
-	return path
+	return writeExecutableFixture(t, dir, "fake-cli", []byte(body))
 }
 
 // ---------------------------------------------------------------------
@@ -424,9 +420,7 @@ func TestRunCtxCancelStopsSession(t *testing.T) {
 	// Patch the script to add a tail that reads stdin (blocks until EOF).
 	scriptBody, _ := os.ReadFile(script)
 	scriptBody = append(scriptBody[:len(scriptBody)-len("exit 0\n")], []byte("cat > /dev/null\nexit 0\n")...)
-	if err := os.WriteFile(script, scriptBody, 0o755); err != nil {
-		t.Fatalf("rewrite script: %v", err)
-	}
+	script = writeExecutableFixture(t, dir, "fake-cli-blocking", scriptBody)
 
 	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: script}}
 	sink := newCapturingSink()
@@ -730,15 +724,12 @@ func TestRunSandboxErrorDrainsAcceptedTurnAndReapsProcess(t *testing.T) {
 	}
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "sandbox-turn.pid")
-	script := filepath.Join(dir, "blocking-turn.sh")
 	body := `#!/bin/sh
 printf '%s\n' "$$" > "$PID_FILE"
 trap 'exit 0' TERM INT
 while :; do /bin/sleep 1; done
 `
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
+	script := writeExecutableFixture(t, dir, "blocking-turn", []byte(body))
 	sbErr := errors.New("sandbox rejected after start")
 	applier := &gatedErrorApplier{
 		entered: make(chan struct{}), release: make(chan struct{}), err: sbErr,
@@ -1002,7 +993,6 @@ func TestRunBlockRecommendationIsPostSideEffect(t *testing.T) {
 
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "side-effect.marker")
-	script := filepath.Join(dir, "native-side-effect.sh")
 	toolLine := toolUseScriptLine(t, "Delete", map[string]any{"path": "/tmp/x"})
 	for _, value := range []string{marker, toolLine} {
 		if strings.ContainsRune(value, '\'') {
@@ -1013,9 +1003,7 @@ func TestRunBlockRecommendationIsPostSideEffect(t *testing.T) {
 		"printf '%s' 'executed' > '" + marker + "'\n" +
 		"printf '%s\\n' '" + toolLine + "'\n" +
 		"printf '%s\\n' 'done'\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatalf("write native side-effect script: %v", err)
-	}
+	script := writeExecutableFixture(t, dir, "native-side-effect", []byte(body))
 
 	markerSeenDuringObservation := false
 	observer := &recordingPolicyObserver{
@@ -1290,11 +1278,7 @@ func writeFakeScriptWithStderr(t *testing.T, dir string, stderrLine string, stdo
 		body += "printf '%s\\n' '" + l + "'\n"
 	}
 	body += "exit 0\n"
-	path := filepath.Join(dir, "fake-cli-stderr.sh")
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
-	return path
+	return writeExecutableFixture(t, dir, "fake-cli-stderr", []byte(body))
 }
 
 // TestRunEmitsStdoutRawAndLineEvents verifies that session output
@@ -1490,9 +1474,7 @@ func TestRunStopEmitsInterruptPair(t *testing.T) {
 	// the only way to terminate it.
 	scriptBody, _ := os.ReadFile(script)
 	scriptBody = append(scriptBody[:len(scriptBody)-len("exit 0\n")], []byte("cat > /dev/null\nexit 0\n")...)
-	if err := os.WriteFile(script, scriptBody, 0o755); err != nil {
-		t.Fatalf("rewrite script: %v", err)
-	}
+	script = writeExecutableFixture(t, dir, "fake-cli-stop-blocking", scriptBody)
 
 	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: script}}
 	sink := newCapturingSink()
@@ -1545,9 +1527,7 @@ func TestRunCtxCancelEmitsInterruptPair(t *testing.T) {
 	script := writeFakeScript(t, dir, []string{"delta:hello"})
 	scriptBody, _ := os.ReadFile(script)
 	scriptBody = append(scriptBody[:len(scriptBody)-len("exit 0\n")], []byte("cat > /dev/null\nexit 0\n")...)
-	if err := os.WriteFile(script, scriptBody, 0o755); err != nil {
-		t.Fatalf("rewrite script: %v", err)
-	}
+	script = writeExecutableFixture(t, dir, "fake-cli-context-blocking", scriptBody)
 
 	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: script}}
 	sink := newCapturingSink()

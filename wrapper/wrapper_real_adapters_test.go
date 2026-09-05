@@ -89,10 +89,7 @@ printf '{"type":"system","subtype":"init","session_id":"claude-fake-session"}\n'
 printf '{"type":"result","subtype":"success","result":"ok"}\n'
 `
 	body := fmt.Sprintf(scriptTpl, argvFile, stdinFile)
-	script := filepath.Join(dir, "fake-claude.sh")
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatalf("write fake claude script: %v", err)
-	}
+	script := writeExecutableFixture(t, dir, "fake-claude", []byte(body))
 	t.Setenv("CLAUDE_CLI_PATH", script)
 
 	sink := newCapturingSink()
@@ -190,10 +187,7 @@ IFS= read -r line
 printf '%%s' "$line" > %s
 `
 	body := fmt.Sprintf(scriptTpl, stdinFile)
-	script := filepath.Join(dir, "fake-codex.sh")
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatalf("write fake codex script: %v", err)
-	}
+	script := writeExecutableFixture(t, dir, "fake-codex", []byte(body))
 	t.Setenv("CODEX_CLI_PATH", script)
 
 	sink := newCapturingSink()
@@ -311,10 +305,7 @@ func TestRunRealOpenCodeAdapter_ServeHTTP(t *testing.T) {
 	defer server.Close()
 
 	scriptBody := fmt.Sprintf("#!/bin/sh\nprintf 'opencode server listening on %s\\n'\ntrap 'exit 0' TERM INT\nwhile true; do sleep 1; done\n", server.URL)
-	script := filepath.Join(dir, "fake-opencode.sh")
-	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
-		t.Fatalf("write fake opencode script: %v", err)
-	}
+	script := writeExecutableFixture(t, dir, "fake-opencode", []byte(scriptBody))
 	t.Setenv("OPENCODE_CLI_PATH", script)
 
 	sink := newCapturingSink()

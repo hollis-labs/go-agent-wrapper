@@ -3,8 +3,6 @@ package wrapper
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -250,10 +248,7 @@ func TestRunFakeACPAdapter_JsonRpcStdio(t *testing.T) {
 IFS= read -r line
 printf '{"echo":"%s"}\n' "$line"
 `
-	script := filepath.Join(dir, "fake-acp.sh")
-	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
-		t.Fatalf("write fake acp script: %v", err)
-	}
+	script := writeExecutableFixture(t, dir, "fake-acp", []byte(scriptBody))
 
 	client := newFakeACPClient(adapters.InterruptTurn)
 	cli := &fakeACPCLIAdapter{client: client, script: script}

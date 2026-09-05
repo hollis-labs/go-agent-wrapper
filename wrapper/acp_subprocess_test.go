@@ -718,7 +718,6 @@ func reserveTCPPort(t *testing.T) int {
 
 func writeACPFixture(t *testing.T, dir, tracePath, mode string) string {
 	t.Helper()
-	scriptPath := filepath.Join(dir, "acp-fixture.sh")
 	body := fmt.Sprintf(`#!/bin/sh
 trace=%s
 mode=%s
@@ -814,10 +813,7 @@ while IFS= read -r line; do
   fi
 done
 `, shellQuote(tracePath), shellQuote(mode))
-	if err := os.WriteFile(scriptPath, []byte(body), 0o755); err != nil {
-		t.Fatalf("write ACP fixture: %v", err)
-	}
-	return scriptPath
+	return writeExecutableFixture(t, dir, "acp-fixture", []byte(body))
 }
 
 func shellQuote(value string) string {
