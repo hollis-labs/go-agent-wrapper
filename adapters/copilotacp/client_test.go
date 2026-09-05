@@ -257,7 +257,7 @@ func TestClientStdio_LaunchPromptEvents(t *testing.T) {
 	if err := c.Launch(ctx, acp.LaunchParams{Cwd: dir}); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	defer c.Close(context.Background())
+	defer func() { _ = c.Close(context.Background()) }()
 
 	if err := c.Prompt(ctx, "hi"); err != nil {
 		t.Fatalf("Prompt: %v", err)
@@ -362,7 +362,7 @@ func fakeACPListener(t *testing.T, fn func(t *testing.T, conn net.Conn)) (host s
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		fn(t, conn)
 	}()
 	return addr.IP.String(), addr.Port
@@ -400,7 +400,7 @@ func TestClientTCP_LaunchPromptEvents(t *testing.T) {
 	if err := c.Launch(ctx, acp.LaunchParams{Cwd: t.TempDir()}); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	defer c.Close(context.Background())
+	defer func() { _ = c.Close(context.Background()) }()
 
 	if err := c.Prompt(ctx, "hi"); err != nil {
 		t.Fatalf("Prompt: %v", err)
@@ -459,7 +459,7 @@ func TestClientTCP_CancelSendsRealNotification(t *testing.T) {
 	if err := c.Launch(ctx, acp.LaunchParams{Cwd: t.TempDir()}); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	defer c.Close(context.Background())
+	defer func() { _ = c.Close(context.Background()) }()
 
 	if err := c.Prompt(ctx, "long task"); err != nil {
 		t.Fatalf("Prompt: %v", err)
@@ -534,7 +534,7 @@ func TestClientTCP_PermissionRequestReturnsMethodNotHandled(t *testing.T) {
 	if err := c.Launch(ctx, acp.LaunchParams{Cwd: t.TempDir()}); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	defer c.Close(context.Background())
+	defer func() { _ = c.Close(context.Background()) }()
 
 	select {
 	case line := <-respCh:
@@ -608,7 +608,7 @@ func TestClientTCP_BestEffortPermissionResponderSelectsOfferedOption(t *testing.
 	}); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	defer client.Close(context.Background())
+	defer func() { _ = client.Close(context.Background()) }()
 	if err := client.Prompt(ctx, "permission over TCP"); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
@@ -642,7 +642,7 @@ func TestClient_DoubleLaunchRejected(t *testing.T) {
 	if err := c.Launch(ctx, acp.LaunchParams{Cwd: t.TempDir()}); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	defer c.Close(context.Background())
+	defer func() { _ = c.Close(context.Background()) }()
 
 	if err := c.Launch(ctx, acp.LaunchParams{Cwd: t.TempDir()}); err != ErrAlreadyLaunched {
 		t.Errorf("second Launch = %v, want ErrAlreadyLaunched", err)

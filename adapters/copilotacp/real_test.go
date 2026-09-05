@@ -51,7 +51,7 @@ func TestRealCopilotACP_Stdio_EndToEnd(t *testing.T) {
 	if err := c.Launch(ctx, acp.LaunchParams{Cwd: t.TempDir()}); err != nil {
 		t.Fatalf("Launch (stdio): %v", err)
 	}
-	defer c.Close(context.Background())
+	defer func() { _ = c.Close(context.Background()) }()
 
 	if err := c.Prompt(ctx, "Reply with exactly the word PONGSTDIO and nothing else."); err != nil {
 		t.Fatalf("Prompt: %v", err)
@@ -74,7 +74,7 @@ func TestRealCopilotACP_TCP_EndToEnd(t *testing.T) {
 	if err := c.Launch(ctx, acp.LaunchParams{Cwd: t.TempDir()}); err != nil {
 		t.Fatalf("Launch (tcp): %v", err)
 	}
-	defer c.Close(context.Background())
+	defer func() { _ = c.Close(context.Background()) }()
 
 	if port := c.Port(); port == 0 {
 		t.Error("Client.Port() = 0 after a successful TCP Launch, want the real auto-picked port")
@@ -218,7 +218,7 @@ func TestRealCopilotACP_CancelInterruptsTurn(t *testing.T) {
 	if err := c.Launch(ctx, acp.LaunchParams{Cwd: t.TempDir()}); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	defer c.Close(context.Background())
+	defer func() { _ = c.Close(context.Background()) }()
 
 	if err := c.Prompt(ctx, "Write a very long, detailed 2000 word essay about the history of distributed systems, in full prose, do not stop early."); err != nil {
 		t.Fatalf("Prompt: %v", err)
@@ -292,7 +292,7 @@ func TestRealCopilotACP_EventsMapToActivityBridge(t *testing.T) {
 	if err := c.Launch(ctx, acp.LaunchParams{Cwd: t.TempDir()}); err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
-	defer c.Close(context.Background())
+	defer func() { _ = c.Close(context.Background()) }()
 
 	source := runtimeevents.Source{Channel: runtimeevents.ChannelJSONRPC, Confidence: runtimeevents.ConfidenceExact}
 

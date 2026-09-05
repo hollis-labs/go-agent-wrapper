@@ -537,7 +537,7 @@ func TestRunInvokesPlanter(t *testing.T) {
 	if idxStart < 0 || idxDone < 0 || idxReady < 0 {
 		t.Fatalf("missing plant/session events: started=%d done=%d ready=%d", idxStart, idxDone, idxReady)
 	}
-	if !(idxStart < idxDone && idxDone < idxReady) {
+	if idxStart >= idxDone || idxDone >= idxReady {
 		t.Errorf("event order wrong: plant.started=%d plant.completed=%d session.ready=%d", idxStart, idxDone, idxReady)
 	}
 
@@ -657,7 +657,7 @@ func TestRunInvokesSandbox(t *testing.T) {
 	if idxReady < 0 || idxSandbox < 0 {
 		t.Fatalf("missing events: ready=%d sandbox=%d", idxReady, idxSandbox)
 	}
-	if !(idxReady < idxSandbox) {
+	if idxReady >= idxSandbox {
 		t.Errorf("sandbox.applied (idx %d) should fire after session.ready (idx %d)", idxSandbox, idxReady)
 	}
 
@@ -896,7 +896,7 @@ func TestRunEmitsSessionProcessingIdleAndHeartbeat(t *testing.T) {
 		t.Fatalf("missing session state events: processing=%d delta=%d done=%d idle=%d kinds=%v",
 			idxProcessing, idxDelta, idxDone, idxIdle, kindList(evs))
 	}
-	if !(idxProcessing < idxDelta && idxDone < idxIdle) {
+	if idxProcessing >= idxDelta || idxDone >= idxIdle {
 		t.Errorf("session state order wrong: processing=%d delta=%d done=%d idle=%d",
 			idxProcessing, idxDelta, idxDone, idxIdle)
 	}
@@ -1084,7 +1084,7 @@ func TestRunPolicyNudgeRecommendationEmitsCorrelatedLegacyEvent(t *testing.T) {
 	if idxNudge < 0 {
 		t.Fatalf("missing policy.nudge event; kinds: %v", kindList(evs))
 	}
-	if !(idxTool < idxNudge) {
+	if idxTool >= idxNudge {
 		t.Errorf("policy.nudge (idx %d) should fire after agent.tool_use (idx %d)", idxNudge, idxTool)
 	}
 	if evs[idxNudge].ParentID != evs[idxTool].ID {
@@ -1521,7 +1521,7 @@ func TestRunStopEmitsInterruptPair(t *testing.T) {
 	if idxReq < 0 || idxAck < 0 {
 		t.Fatalf("missing interrupt events: req=%d ack=%d (kinds: %v)", idxReq, idxAck, kindList(evs))
 	}
-	if !(idxReq < idxAck) {
+	if idxReq >= idxAck {
 		t.Errorf("interrupt.requested (idx %d) should fire before interrupt.acknowledged (idx %d)", idxReq, idxAck)
 	}
 	if evs[idxAck].ParentID != evs[idxReq].ID {
@@ -1622,7 +1622,7 @@ func TestRunEmitsTurnStartedBeforeFirstAgentEvent(t *testing.T) {
 		t.Fatalf("missing turn-lifecycle events: start=%d delta=%d done=%d (kinds: %v)",
 			idxStart, idxDelta, idxDone, kindList(evs))
 	}
-	if !(idxStart < idxDelta && idxDelta < idxDone) {
+	if idxStart >= idxDelta || idxDelta >= idxDone {
 		t.Errorf("event order wrong: turn.started=%d delta=%d turn.completed=%d",
 			idxStart, idxDelta, idxDone)
 	}

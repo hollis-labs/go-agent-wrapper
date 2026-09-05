@@ -135,7 +135,7 @@ printf '{"type":"result","subtype":"success","result":"ok"}\n'
 		t.Fatalf("read argv capture: %v", err)
 	}
 	argv := strings.Split(strings.TrimRight(string(argvBytes), "\n"), "\n")
-	if !(len(argv) >= 2 && argv[0] == "--resume" && argv[1] == "claude-resume-id") {
+	if len(argv) < 2 || argv[0] != "--resume" || argv[1] != "claude-resume-id" {
 		t.Errorf("argv = %v, want to start with [--resume claude-resume-id] (SessionIDPreset not forwarded to real BuildArgs)", argv)
 	}
 

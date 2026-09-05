@@ -465,7 +465,7 @@ func TestWaitForPIDFileRetriesTruncateAndPartialWrite(t *testing.T) {
 	}
 	target := strconv.Itoa(os.Getpid())
 	if len(target) < 2 {
-		file.Close()
+		_ = file.Close()
 		t.Fatalf("test process pid %q is unexpectedly short", target)
 	}
 	partialReady := make(chan struct{})

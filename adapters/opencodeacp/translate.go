@@ -187,7 +187,7 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 // assumed universal.
 func (c *Client) handleServerRequest(frame rpcFrame) {
 	if frame.Method != "session/request_permission" {
-		c.respondToServerRequest(frame.ID, nil, &rpcError{
+		_ = c.respondToServerRequest(frame.ID, nil, &rpcError{
 			Code:    -32601,
 			Message: "opencodeacp: no handler configured for server-initiated method " + frame.Method,
 		})

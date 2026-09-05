@@ -230,7 +230,7 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 // changes that.
 func (c *Client) handleServerRequest(frame rpcFrame) {
 	if frame.Method != "session/request_permission" {
-		c.respondToServerRequest(frame.ID, nil, &rpcError{
+		_ = c.respondToServerRequest(frame.ID, nil, &rpcError{
 			Code:    -32601,
 			Message: "piacp: no handler configured for server-initiated method " + frame.Method,
 		})

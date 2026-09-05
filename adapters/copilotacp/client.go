@@ -521,12 +521,16 @@ func freeTCPPort() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer l.Close()
 	addr, ok := l.Addr().(*net.TCPAddr)
 	if !ok {
+		_ = l.Close()
 		return 0, fmt.Errorf("copilotacp: unexpected listener addr type %T", l.Addr())
 	}
-	return addr.Port, nil
+	port := addr.Port
+	if err := l.Close(); err != nil {
+		return 0, fmt.Errorf("copilotacp: release reserved TCP port: %w", err)
+	}
+	return port, nil
 }
 
 // writeFrame serializes f as one NDJSON line and writes it to the

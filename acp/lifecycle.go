@@ -23,6 +23,7 @@ type ClientAdapter interface {
 // State is the authoritative lifecycle state of a managed ACP session.
 type State string
 
+// Managed session lifecycle states.
 const (
 	StateLaunching  State = "launching"
 	StateReady      State = "ready"
@@ -36,6 +37,7 @@ const (
 // callers parse provider-specific error strings.
 type OutcomeKind string
 
+// Normalized managed-session terminal outcomes.
 const (
 	OutcomeClosed          OutcomeKind = "closed"
 	OutcomeDisconnected    OutcomeKind = "disconnected"
@@ -45,12 +47,18 @@ const (
 )
 
 var (
-	ErrNotLive          = errors.New("acp: session is not live")
+	// ErrNotLive reports that a managed session cannot accept the operation.
+	ErrNotLive = errors.New("acp: session is not live")
+	// ErrDuplicateSession reports an attempted duplicate manager registration.
 	ErrDuplicateSession = errors.New("acp: session id is already registered")
-	ErrDisconnected     = errors.New("acp: transport disconnected")
-	ErrChildExit        = errors.New("acp: child process exited")
-	ErrMalformedStream  = errors.New("acp: malformed protocol stream")
-	ErrCanceled         = errors.New("acp: operation canceled")
+	// ErrDisconnected reports an unexpected ACP transport disconnect.
+	ErrDisconnected = errors.New("acp: transport disconnected")
+	// ErrChildExit reports an ACP child-process exit.
+	ErrChildExit = errors.New("acp: child process exited")
+	// ErrMalformedStream reports malformed ACP protocol input.
+	ErrMalformedStream = errors.New("acp: malformed protocol stream")
+	// ErrCanceled reports a canceled ACP lifecycle operation.
+	ErrCanceled = errors.New("acp: operation canceled")
 )
 
 // LifecycleError is the normalized error returned for an abnormal managed
@@ -99,6 +107,7 @@ func (e *LifecycleError) Unwrap() error {
 // bytes are never exposed without passing through NewDiagnostic's redactor.
 type DiagnosticKind string
 
+// Diagnostic categories emitted by managed ACP sessions.
 const (
 	DiagnosticStderr        DiagnosticKind = "stderr"
 	DiagnosticMalformedJSON DiagnosticKind = "malformed_json"
@@ -243,9 +252,13 @@ func (s *Session) ProviderSessionID() string {
 	return s.providerSessionID
 }
 
+// Events returns the managed session's normalized runtime event stream.
 func (s *Session) Events() <-chan runtimeevents.Event { return s.events }
-func (s *Session) Diagnostics() <-chan Diagnostic     { return s.diagnostics }
 
+// Diagnostics returns the managed session's bounded, redacted diagnostics.
+func (s *Session) Diagnostics() <-chan Diagnostic { return s.diagnostics }
+
+// Snapshot returns the session's current immutable lifecycle view.
 func (s *Session) Snapshot() Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -378,15 +391,16 @@ func (s *Session) observeEvent(ev runtimeevents.Event) {
 		} else if s.state == StateLaunching {
 			s.pendingReady = true
 		}
-	case runtimeevents.KindTurnCompleted, runtimeevents.KindTurnFailed:
+	case runtimeevents.KindTurnCompleted:
 		if s.state != StateClosing {
 			s.state = StateReady
 		}
-		if ev.Kind == runtimeevents.KindTurnFailed {
-			s.lastTurnOutcome = classifyTurnFailure(ev.Payload)
-		} else if ev.Kind == runtimeevents.KindTurnCompleted {
-			s.lastTurnOutcome = classifyTurnCompletion(ev.Payload)
+		s.lastTurnOutcome = classifyTurnCompletion(ev.Payload)
+	case runtimeevents.KindTurnFailed:
+		if s.state != StateClosing {
+			s.state = StateReady
 		}
+		s.lastTurnOutcome = classifyTurnFailure(ev.Payload)
 	case runtimeevents.KindTurnStarted:
 		if s.state != StateClosing {
 			s.state = StateProcessing
@@ -514,6 +528,7 @@ type Manager struct {
 	sessions map[string]*Session
 }
 
+// NewManager constructs an empty ACP session manager.
 func NewManager() *Manager { return &Manager{sessions: make(map[string]*Session)} }
 
 // Launch reserves cfg.ID before starting the client, preventing concurrent
@@ -605,6 +620,7 @@ func (m *Manager) unregister(id string, expected *Session) {
 	m.mu.Unlock()
 }
 
+// Lookup returns the registered session for id, if any.
 func (m *Manager) Lookup(id string) (*Session, bool) {
 	if m == nil {
 		return nil, false
@@ -615,11 +631,13 @@ func (m *Manager) Lookup(id string) (*Session, bool) {
 	return s, ok
 }
 
+// IsLive reports whether id names a registered session accepting control.
 func (m *Manager) IsLive(id string) bool {
 	s, ok := m.Lookup(id)
 	return ok && s.Snapshot().Live
 }
 
+// Cancel requests cancellation of the active turn for id.
 func (m *Manager) Cancel(ctx context.Context, id string) error {
 	s, ok := m.Lookup(id)
 	if !ok {
@@ -628,6 +646,7 @@ func (m *Manager) Cancel(ctx context.Context, id string) error {
 	return s.Cancel(ctx)
 }
 
+// Close closes id if it is registered. Closing an unknown id is a no-op.
 func (m *Manager) Close(ctx context.Context, id string) error {
 	s, ok := m.Lookup(id)
 	if !ok {
@@ -636,6 +655,7 @@ func (m *Manager) Close(ctx context.Context, id string) error {
 	return s.Close(ctx)
 }
 
+// Shutdown closes every currently registered session and joins any errors.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	if m == nil {
 		return nil
@@ -655,6 +675,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// Len returns the number of currently registered sessions.
 func (m *Manager) Len() int {
 	if m == nil {
 		return 0

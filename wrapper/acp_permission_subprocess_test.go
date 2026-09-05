@@ -477,9 +477,10 @@ func runPermissionSubprocessScenario(t *testing.T, fixture permissionClientFixtu
 	events := collectPermissionTurnEvents(t, client)
 	lines := readPermissionResponses(t, marker)
 	wantResponses := 1
-	if scenario == "concurrent" {
+	switch scenario {
+	case "concurrent":
 		wantResponses = 2
-	} else if scenario == "invalid-id" {
+	case "invalid-id":
 		wantResponses = 0
 	}
 	if len(lines) != wantResponses {
@@ -659,7 +660,7 @@ func readPermissionResponses(t *testing.T, marker string) []string {
 	if err != nil {
 		t.Fatalf("open permission responses: %v", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	var lines []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {

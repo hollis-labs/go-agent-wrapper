@@ -137,8 +137,7 @@ func TestCancelAndClosePreemptBackpressuredPermissionResponse(t *testing.T) {
 	go func() {
 		defer close(respondDone)
 		requests.Respond(json.RawMessage(`{"sessionId":"session","toolCall":{"toolCallId":"call"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"}]}`), func(resolution acp.PermissionResolution) error {
-			client.respondToServerRequest(json.RawMessage("99"), resolution.Result(), nil)
-			return nil
+			return client.respondToServerRequest(json.RawMessage("99"), resolution.Result(), nil)
 		})
 	}()
 	select {

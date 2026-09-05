@@ -748,7 +748,7 @@ func (sg *ShadowGit) currentBlobHash(root, relPath string) (hash string, exists 
 
 func gitBlobHash(content []byte) string {
 	h := sha1.New() //nolint:gosec // git's object format, not a security boundary
-	fmt.Fprintf(h, "blob %d\x00", len(content))
+	_, _ = fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write(content)
 	return hex.EncodeToString(h.Sum(nil))
 }
