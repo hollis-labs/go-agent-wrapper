@@ -63,7 +63,7 @@ func (w *Wrapper) runACP(
 	}
 
 	launchCWD := w.cfg.Workdir
-	childEnv := baseEnv
+	var childEnv []string
 	var command *acp.LaunchCommand
 	var sandboxPolicy *sandboxprofile.ResolvedAccessPolicy
 	if prepared != nil {
