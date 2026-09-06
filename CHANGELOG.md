@@ -6,6 +6,26 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## v0.10.0 — 2026-09-06
+
+### Added
+
+- Prepared-execution and shared-planter entry points preserve exact launch
+  bindings and artifact ownership without planting a second time.
+- Local native/ACP launches enforce resolved sandbox policies or reject
+  unsupported required confinement before spawn. Remote/pre-existing ACP
+  endpoints report their enforcement limitations explicitly.
+- Typed delivery capabilities, content-free correlation fields, route
+  generation checks and honest receipt stages; `PlanDelivery` reports
+  unsupported, busy, offline and stale-route outcomes without sending.
+- Cross-library conformance examples and fixtures cover tree materialization,
+  prepared execution, runtime delivery capabilities and OS denial behavior.
+
+### Changed
+
+- Update dependencies to agentkit v0.6.0, go-providers v0.26.0,
+  go-sandbox v0.3.0 and transitive go-runner v0.7.0.
+
 ## v0.9.1 — 2026-09-05
 
 ### Fixed
