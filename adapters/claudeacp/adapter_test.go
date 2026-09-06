@@ -31,6 +31,12 @@ func TestAdapterDescribe(t *testing.T) {
 	if desc.Interrupt != adapters.InterruptTurn {
 		t.Errorf("Interrupt = %q, want %q (verified live and by source — see package doc)", desc.Interrupt, adapters.InterruptTurn)
 	}
+	if err := desc.Delivery.Validate(); err != nil {
+		t.Fatalf("Delivery.Validate: %v", err)
+	}
+	if !desc.Delivery.Supports(adapters.DeliveryCapabilitySendTurn) {
+		t.Fatal("Delivery does not advertise send_turn")
+	}
 	wantChannels := []runtimeevents.SourceChannel{runtimeevents.ChannelJSONRPC}
 	if !reflect.DeepEqual(desc.Channels, wantChannels) {
 		t.Errorf("Channels = %v, want %v", desc.Channels, wantChannels)

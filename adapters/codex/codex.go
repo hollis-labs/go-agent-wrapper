@@ -60,6 +60,7 @@ func (*Adapter) Describe() adapters.Descriptor {
 		Transport: adapters.TransportStdio,
 		Interrupt: adapters.InterruptProcess,
 		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelJSONRPC},
+		Delivery:  adapters.DeliveryCapabilitiesForRuntime("codex", adapters.ProtocolCodexAppServer, adapters.TransportStdio, adapters.InterruptProcess, false),
 	}
 }
 

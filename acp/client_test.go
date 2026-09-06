@@ -184,6 +184,19 @@ func TestDescriptorFor(t *testing.T) {
 	if len(desc.Channels) != 1 || desc.Channels[0] != runtimeevents.ChannelJSONRPC {
 		t.Errorf("Channels = %v, want [jsonrpc]", desc.Channels)
 	}
+	if err := desc.Delivery.Validate(); err != nil {
+		t.Fatalf("Delivery.Validate: %v", err)
+	}
+	for _, cap := range []adapters.DeliveryCapability{
+		adapters.DeliveryCapabilitySendTurn,
+		adapters.DeliveryCapabilityCancelTurn,
+		adapters.DeliveryCapabilityLifecycleStop,
+		adapters.DeliveryCapabilityInterrupt,
+	} {
+		if !desc.Delivery.Supports(cap) {
+			t.Fatalf("Delivery does not advertise %s", cap)
+		}
+	}
 }
 
 func TestDescriptorForTCPTransport(t *testing.T) {
@@ -197,6 +210,12 @@ func TestDescriptorForTCPTransport(t *testing.T) {
 	}
 	if desc.Interrupt != adapters.InterruptProcess {
 		t.Errorf("Interrupt = %q, want %q", desc.Interrupt, adapters.InterruptProcess)
+	}
+	if !desc.Delivery.Supports(adapters.DeliveryCapabilitySendTurn) {
+		t.Fatal("Delivery does not advertise send_turn over ACP TCP")
+	}
+	if !desc.Delivery.Supports(adapters.DeliveryCapabilityCancelTurn) {
+		t.Fatal("Delivery does not advertise ACP cancel_turn over ACP TCP")
 	}
 }
 

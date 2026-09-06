@@ -145,6 +145,12 @@ type Descriptor struct {
 	// provenance and confidence of observations; they do not make advisory
 	// recommendations enforceable.
 	Channels []runtimeevents.SourceChannel
+
+	// Delivery lists concrete provider/runtime delivery and control
+	// operations this adapter can honestly perform today. Unsupported optional
+	// behavior is absent and should be surfaced through typed capability errors,
+	// not silently downgraded.
+	Delivery DeliveryCapabilities
 }
 
 // ResolveContext gives an Adapter everything it needs to produce a Spec

@@ -76,6 +76,12 @@ func TestSelectRuntimeMatrix(t *testing.T) {
 			if got := slices.Contains(args, "--dangerously-skip-permissions"); got != tc.wantDevFlag {
 				t.Fatalf("developer flag present = %v, want %v; args=%#v", got, tc.wantDevFlag, args)
 			}
+			if err := desc.Delivery.Validate(); err != nil {
+				t.Fatalf("Delivery.Validate: %v", err)
+			}
+			if !desc.Delivery.Supports(DeliveryCapabilitySendTurn) {
+				t.Fatal("Delivery does not advertise send_turn")
+			}
 		})
 	}
 }
@@ -155,5 +161,17 @@ func TestSelectPreservesMatchingConfiguredCLIAdapter(t *testing.T) {
 	}
 	if decorated.CLIAdapter != configured {
 		t.Fatal("Select replaced the host-configured CLI adapter")
+	}
+}
+
+func TestSelectedAdapterDescribeClonesDeliveryCapabilities(t *testing.T) {
+	adapter, err := Select(Selection{Provider: ProviderClaude})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	desc := adapter.Describe()
+	desc.Delivery.Supported[0].Evidence = "mutated"
+	if got, _ := adapter.Describe().Delivery.Evidence(DeliveryCapabilitySendTurn); got.Evidence == "mutated" {
+		t.Fatal("Describe returned delivery slice sharing adapter backing storage")
 	}
 }

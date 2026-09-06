@@ -232,6 +232,7 @@ func selectedRuntime(
 				Provider: string(providerID), Protocol: ProtocolClaudeStreamJSON,
 				Transport: TransportStdio, Interrupt: InterruptProcess,
 				Channels: []runtimeevents.SourceChannel{runtimeevents.ChannelClaudeStreamJSON},
+				Delivery: DeliveryCapabilitiesForRuntime(string(providerID), ProtocolClaudeStreamJSON, TransportStdio, InterruptProcess, false),
 			}, factory, nil
 		case LaunchSubprocessPerTurn:
 			factory := func() provider.CLIAdapter { return provider.NewClaudeAdapter() }
@@ -257,6 +258,7 @@ func selectedRuntime(
 				Provider: string(providerID), Protocol: ProtocolCodexAppServer,
 				Transport: TransportStdio, Interrupt: InterruptProcess,
 				Channels: []runtimeevents.SourceChannel{runtimeevents.ChannelJSONRPC},
+				Delivery: DeliveryCapabilitiesForRuntime(string(providerID), ProtocolCodexAppServer, TransportStdio, InterruptProcess, false),
 			}, func() provider.CLIAdapter { return provider.NewCodexAdapterAppServer() }, nil
 		default:
 			return unsupported()
@@ -276,6 +278,7 @@ func selectedRuntime(
 				Provider: string(providerID), Protocol: ProtocolOpenCodeNative,
 				Transport: TransportHTTPSSE, Interrupt: InterruptTurn,
 				Channels: []runtimeevents.SourceChannel{runtimeevents.ChannelOpenCodePlugin},
+				Delivery: DeliveryCapabilitiesForRuntime(string(providerID), ProtocolOpenCodeNative, TransportHTTPSSE, InterruptTurn, false),
 			}, func() provider.CLIAdapter { return provider.NewOpencodeAdapterServeHTTP() }, nil
 		default:
 			return unsupported()
@@ -288,6 +291,7 @@ func subprocessDescriptor(providerID Provider, channel runtimeevents.SourceChann
 	return Descriptor{
 		Provider: string(providerID), Interrupt: InterruptProcess,
 		Channels: []runtimeevents.SourceChannel{channel},
+		Delivery: DeliveryCapabilitiesForRuntime(string(providerID), "", "", InterruptProcess, false),
 	}
 }
 
@@ -304,6 +308,7 @@ func (a *selectedAdapter) Name() string { return string(a.provider) }
 func (a *selectedAdapter) Describe() Descriptor {
 	desc := a.descriptor
 	desc.Channels = append([]runtimeevents.SourceChannel(nil), desc.Channels...)
+	desc.Delivery = desc.Delivery.Clone()
 	return desc
 }
 

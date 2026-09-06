@@ -64,6 +64,7 @@ func (*Adapter) Describe() adapters.Descriptor {
 		Transport: adapters.TransportHTTPSSE,
 		Interrupt: adapters.InterruptTurn,
 		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelOpenCodePlugin},
+		Delivery:  adapters.DeliveryCapabilitiesForRuntime("opencode", adapters.ProtocolOpenCodeNative, adapters.TransportHTTPSSE, adapters.InterruptTurn, false),
 	}
 }
 

@@ -285,11 +285,13 @@ func InitializeSupportsSessionClose(result json.RawMessage) bool {
 // Transport is selected, since ACP is a protocol, not a transport (see
 // [adapters.Protocol]'s own doc comment).
 func DescriptorFor(client Client, providerName string, transport adapters.Transport) adapters.Descriptor {
+	interrupt := client.InterruptCapability()
 	return adapters.Descriptor{
 		Provider:  providerName,
 		Protocol:  adapters.ProtocolACP,
 		Transport: transport,
-		Interrupt: client.InterruptCapability(),
+		Interrupt: interrupt,
 		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelJSONRPC},
+		Delivery:  adapters.DeliveryCapabilitiesForRuntime(providerName, adapters.ProtocolACP, transport, interrupt, true),
 	}
 }

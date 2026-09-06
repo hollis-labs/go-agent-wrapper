@@ -63,6 +63,7 @@ func (*Adapter) Describe() adapters.Descriptor {
 		Transport: adapters.TransportStdio,
 		Interrupt: adapters.InterruptProcess,
 		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelClaudeStreamJSON},
+		Delivery:  adapters.DeliveryCapabilitiesForRuntime("claude", adapters.ProtocolClaudeStreamJSON, adapters.TransportStdio, adapters.InterruptProcess, false),
 	}
 }
 

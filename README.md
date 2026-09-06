@@ -313,6 +313,24 @@ preserves `ctx.Err()`.
 `Config.OnACPDiagnostic` receives only bounded, redacted stderr/protocol data;
 diagnostics are not mixed into model output.
 
+## Delivery capability planning
+
+Adapter descriptors include `adapters.DeliveryCapabilities`, a static list of
+provider/runtime operations the adapter can perform with evidence. Current
+shipped adapters advertise `send_turn` and `lifecycle_stop`; ACP adapters also
+advertise non-closing `cancel_turn`; runtimes with verified native mid-turn
+abort advertise `interrupt`. Unsupported optional operations, including
+Claude Code cross-session `ListAgents`/`SendMessage` routing, remain absent
+until this repository owns a provider-backed implementation.
+
+Hosts can call `Wrapper.DeliveryCapabilities()` for the static declaration or
+`Wrapper.PlanDelivery()` to combine it with current idle/busy/offline liveness,
+route-generation fencing, optional provider session IDs, and delivery/attempt
+correlations. Planning is read-only: it does not send a turn, open provider
+sockets, or claim message consumption. Receipt stages are limited to operations
+this layer can observe, such as `turn_submitted`, `turn_cancel_requested`, and
+`lifecycle_stop_issued`.
+
 ## Upgrade from v0.8.1
 
 v0.9.0 intentionally replaces the action-shaped policy API with names that
