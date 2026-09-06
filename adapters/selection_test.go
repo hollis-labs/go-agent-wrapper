@@ -44,7 +44,7 @@ func TestSelectRuntimeMatrix(t *testing.T) {
 		{
 			name:      "codex subprocess per turn",
 			selection: Selection{Provider: ProviderCodex, LaunchMode: LaunchSubprocessPerTurn},
-			wantArgs:  []string{"exec", "prompt", "--json"},
+			wantArgs:  []string{"exec", "prompt", "--json", "--skip-git-repo-check"},
 		},
 		{
 			name:         "opencode default preserves serve http",
@@ -96,7 +96,7 @@ func TestSelectBinaryAndExtraArgsStayStructured(t *testing.T) {
 	}
 	args := cli.BuildArgs("prompt with spaces; still one arg", "", "")
 	want := []string{
-		"exec", "prompt with spaces; still one arg", "--json",
+		"exec", "prompt with spaces; still one arg", "--json", "--skip-git-repo-check",
 		"--label", "a value with spaces", "$(touch /tmp/never)", "'quoted' && false",
 	}
 	if !reflect.DeepEqual(args, want) {

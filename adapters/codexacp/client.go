@@ -96,15 +96,16 @@ type Client struct {
 	events       chan runtimeevents.Event
 	eventsClosed bool
 
-	waitDone     chan struct{}
-	waitErr      error
-	termination  *acp.TransportTermination
-	terminated   chan struct{}
-	lifetimeCtx  context.Context
-	lifetimeStop context.CancelFunc
-	permissions  *acp.BestEffortPermissionRequests
-	diagnosticMu sync.Mutex
-	diagnostic   func(acp.Diagnostic)
+	waitDone       chan struct{}
+	waitErr        error
+	sandboxCleanup func()
+	termination    *acp.TransportTermination
+	terminated     chan struct{}
+	lifetimeCtx    context.Context
+	lifetimeStop   context.CancelFunc
+	permissions    *acp.BestEffortPermissionRequests
+	diagnosticMu   sync.Mutex
+	diagnostic     func(acp.Diagnostic)
 }
 
 // ClientOption mutates a [Client] during [NewClient]. Distinct from
@@ -291,16 +292,23 @@ func executableInEnvironmentPath(name string, env []string) string {
 }
 
 // buildEnv assembles the environment the bridge subprocess runs with:
-// paramsEnv (or the current process environment, when paramsEnv is empty) plus
+// paramsEnv (or the current process environment, when paramsEnv is nil) plus
 // an explicit CODEX_PATH entry resolved only from that resulting environment.
 // When it already sets CODEX_PATH, the caller's choice is respected unmodified.
 func (c *Client) buildEnv(paramsEnv []string) []string {
 	return c.buildEnvForOS(paramsEnv, runtime.GOOS)
 }
 
+func (c *Client) launchEnv(params acp.LaunchParams) []string {
+	if params.Command != nil {
+		return append([]string(nil), params.Env...)
+	}
+	return c.buildEnv(params.Env)
+}
+
 func (c *Client) buildEnvForOS(paramsEnv []string, goos string) []string {
 	env := append([]string(nil), paramsEnv...)
-	if len(env) == 0 {
+	if paramsEnv == nil {
 		env = os.Environ()
 	}
 	for _, kv := range env {
@@ -329,12 +337,16 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	c.launched = true
 	c.mu.Unlock()
 
-	binary, args := c.resolveBridgeCommand()
+	defaultBinary, defaultArgs := c.resolveBridgeCommand()
+	binary, args, err := acp.ResolveLaunchCommand(params, defaultBinary, defaultArgs)
+	if err != nil {
+		return fmt.Errorf("codexacp: launch command: %w", err)
+	}
 	cmd := exec.Command(binary, args...) //nolint:gosec // G204: operator-controlled binary/args
 	if params.Cwd != "" {
 		cmd.Dir = params.Cwd
 	}
-	cmd.Env = c.buildEnv(params.Env)
+	cmd.Env = c.launchEnv(params)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -352,14 +364,22 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 		return fmt.Errorf("codexacp: stderr pipe: %w", err)
 	}
 
+	sandboxOutcome, sandboxCleanup, err := acp.PrepareLaunchSandbox(cmd, params)
+	if err != nil {
+		return fmt.Errorf("codexacp: sandbox: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
+		sandboxCleanup()
+		acp.ReportLaunchSandboxStartFailed(params, sandboxOutcome, err)
 		return fmt.Errorf("codexacp: start %q: %w", binary, err)
 	}
+	acp.ReportLaunchSandboxStarted(params, sandboxOutcome)
 
 	c.mu.Lock()
 	c.cmd = cmd
 	c.stdin = stdin
 	c.waitDone = make(chan struct{})
+	c.sandboxCleanup = sandboxCleanup
 	c.terminated = make(chan struct{})
 	c.termination = acp.NewTransportTermination(true)
 	c.lifetimeCtx, c.lifetimeStop = context.WithCancel(context.Background())
@@ -769,6 +789,9 @@ func (c *Client) waitProcess() {
 	waitDone := c.waitDone
 	c.mu.Unlock()
 	err := cmd.Wait()
+	if c.sandboxCleanup != nil {
+		c.sandboxCleanup()
+	}
 	c.mu.Lock()
 	c.waitErr = err
 	termination := c.termination

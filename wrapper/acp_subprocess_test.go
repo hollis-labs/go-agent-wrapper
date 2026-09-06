@@ -9,9 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hollis-labs/agentkit/agentlaunch"
 
 	"github.com/hollis-labs/go-agent-wrapper/acp"
 	"github.com/hollis-labs/go-agent-wrapper/activity"
@@ -23,6 +26,7 @@ import (
 	"github.com/hollis-labs/go-agent-wrapper/adapters/piacp"
 	"github.com/hollis-labs/go-agent-wrapper/policy"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
+	sandboxprofile "github.com/hollis-labs/go-sandbox/sandbox"
 )
 
 func TestACPWrapperRealSubprocessLifecycleAllAdapters(t *testing.T) {
@@ -631,6 +635,238 @@ func firstKind(events []runtimeevents.Event, kind runtimeevents.EventKind) (runt
 		}
 	}
 	return runtimeevents.Event{}, false
+}
+
+func TestACPWrapperPreparedLocalStdioSandboxDeniesReadWrite(t *testing.T) {
+	dir := t.TempDir()
+	fixturePath := filepath.Join(dir, "acpfixture")
+	build := exec.Command("go", "build", "-o", fixturePath, "./testdata/acpfixture")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build ACP fixture: %v\n%s", err, output)
+	}
+	tracePath := filepath.Join(dir, "trace.log")
+	secretDir := filepath.Join(dir, "secrets")
+	secretPath := filepath.Join(secretDir, "secret.txt")
+	writeDeniedPath := filepath.Join(secretDir, "write-denied.txt")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(writeDeniedPath, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prepared := &agentlaunch.PreparedExecution{
+		InputKind: agentlaunch.PrepareInputArtifacts,
+		Bindings: agentlaunch.ExecutionBindings{
+			Argv: []string{fixturePath},
+			Env: map[string]agentlaunch.EnvVar{
+				"ACP_FIXTURE_TRACE": {Value: tracePath},
+				"ACP_DENIED_READ":   {Value: secretPath},
+				"ACP_DENIED_WRITE":  {Value: writeDeniedPath},
+			},
+			CWD: dir,
+		},
+		Roots: agentlaunch.ExecutionRoots{ProjectRoot: dir, CWD: dir},
+		Access: agentlaunch.AccessRequirements{
+			Mode:  agentlaunch.AccessRequired,
+			Host:  agentlaunch.ExecutionHostLocal,
+			Roots: agentlaunch.ExecutionRoots{ProjectRoot: dir, CWD: dir},
+			Filesystem: []agentlaunch.AccessPath{
+				{Mode: agentlaunch.AccessRead, Root: agentlaunch.RootProject, Path: "."},
+				{Mode: agentlaunch.AccessWrite, Root: agentlaunch.RootProject, Path: "."},
+				{Mode: agentlaunch.AccessDeny, Root: agentlaunch.RootProject, Path: "secrets"},
+			},
+			Network:    agentlaunch.NetworkAccess{Disabled: true},
+			Subprocess: agentlaunch.SubprocessAccess{Allowed: true},
+		},
+	}
+	manager := acp.NewManager()
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App:               "acp-prepared-sandbox",
+		Adapter:           opencodeacp.New(opencodeacp.WithBinary("/bin/false")),
+		Activity:          activity.NewBridge(sink),
+		Workdir:           filepath.Join(dir, "wrong"),
+		PreparedExecution: prepared,
+		SessionID:         "wrapper-acp-sandbox",
+		ACPManager:        manager,
+		ACPAuthMethodID:   "fixture-auth",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- w.Run(ctx) }()
+	readyDeadline := time.After(10 * time.Second)
+	for !manager.IsLive(w.SessionID()) {
+		select {
+		case err := <-runErrCh:
+			t.Fatalf("Run returned before ACP ready: %v", err)
+		case <-readyDeadline:
+			t.Fatalf("ACP session %q was not registered", w.SessionID())
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	sink.waitFor(t, runtimeevents.KindSandboxApplied, 5*time.Second)
+	if err := w.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := <-runErrCh; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	traceBytes, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trace := string(traceBytes)
+	if !strings.Contains(trace, "probe-read-denied") || !strings.Contains(trace, "probe-write-denied") {
+		t.Fatalf("missing denied probes in trace:\n%s", trace)
+	}
+	if strings.Contains(trace, "probe-read-allowed") || strings.Contains(trace, "probe-write-allowed") {
+		t.Fatalf("sandbox allowed denied probe:\n%s", trace)
+	}
+	if got, err := os.ReadFile(writeDeniedPath); err != nil || string(got) != "original" {
+		t.Fatalf("write denied path = %q err=%v, want original content", got, err)
+	}
+	event, ok := firstKind(sink.snapshot(), runtimeevents.KindSandboxApplied)
+	if !ok {
+		t.Fatal("missing sandbox.applied")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatalf("decode sandbox.applied: %v", err)
+	}
+	if payload["enforced"] != true || payload["applied"] != true || payload["state"] != "applied" {
+		t.Fatalf("sandbox payload = %#v", payload)
+	}
+}
+
+func TestACPWrapperPreparedLocalTCPSandboxCapabilityResult(t *testing.T) {
+	dir := t.TempDir()
+	fixturePath := filepath.Join(dir, "acpfixture")
+	build := exec.Command("go", "build", "-o", fixturePath, "./testdata/acpfixture")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build ACP fixture: %v\n%s", err, output)
+	}
+	tracePath := filepath.Join(dir, "trace.log")
+	port := reserveTCPPort(t)
+	prepared := &agentlaunch.PreparedExecution{
+		InputKind: agentlaunch.PrepareInputArtifacts,
+		Bindings: agentlaunch.ExecutionBindings{
+			Argv: []string{fixturePath, "--acp", "--port", fmt.Sprint(port)},
+			Env: map[string]agentlaunch.EnvVar{
+				"ACP_FIXTURE_TRACE": {Value: tracePath},
+			},
+			CWD: dir,
+		},
+		Roots: agentlaunch.ExecutionRoots{ProjectRoot: dir, CWD: dir},
+		Access: agentlaunch.AccessRequirements{
+			Mode:  agentlaunch.AccessRequired,
+			Host:  agentlaunch.ExecutionHostLocal,
+			Roots: agentlaunch.ExecutionRoots{ProjectRoot: dir, CWD: dir},
+			Filesystem: []agentlaunch.AccessPath{
+				{Mode: agentlaunch.AccessRead, Root: agentlaunch.RootProject, Path: "."},
+				{Mode: agentlaunch.AccessWrite, Root: agentlaunch.RootProject, Path: "."},
+			},
+			Network:    agentlaunch.NetworkAccess{Loopback: true},
+			Subprocess: agentlaunch.SubprocessAccess{Allowed: true},
+		},
+	}
+	manager := acp.NewManager()
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App:               "acp-prepared-tcp-sandbox",
+		Adapter:           copilotacp.New(copilotacp.WithAdapterTransport(adapters.TransportTCP), copilotacp.WithAdapterPort(port), copilotacp.WithAdapterBinary("/bin/false")),
+		Activity:          activity.NewBridge(sink),
+		Workdir:           dir,
+		PreparedExecution: prepared,
+		SessionID:         "wrapper-acp-tcp-sandbox",
+		SessionIDPreset:   "resume-tcp",
+		ACPManager:        manager,
+		ACPAuthMethodID:   "fixture-auth",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- w.Run(ctx) }()
+	if runtime.GOOS == "linux" {
+		select {
+		case err := <-runErrCh:
+			if !errors.Is(err, sandboxprofile.ErrUnsupportedPolicy) {
+				t.Fatalf("Run err = %v, want unsupported Linux TCP sandbox", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Run did not reject unsupported Linux TCP sandbox")
+		}
+		event, ok := firstKind(sink.snapshot(), runtimeevents.KindSandboxApplied)
+		if !ok {
+			t.Fatal("missing sandbox.applied unsupported event")
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode sandbox.applied: %v", err)
+		}
+		if payload["unsupported"] == nil || payload["state"] != "unsupported" || payload["enforced"] != false {
+			t.Fatalf("linux TCP sandbox payload = %#v", payload)
+		}
+		return
+	}
+	waitForACPReady(t, manager, w.SessionID())
+	if err := w.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := <-runErrCh; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	event, ok := firstKind(sink.snapshot(), runtimeevents.KindSandboxApplied)
+	if !ok {
+		t.Fatal("missing sandbox.applied")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		t.Fatalf("decode sandbox.applied: %v", err)
+	}
+	if payload["enforced"] != true || payload["applied"] != true || payload["state"] != "applied" {
+		t.Fatalf("sandbox payload = %#v", payload)
+	}
+	traceBytes, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(traceBytes), `"method":"initialize"`) {
+		t.Fatalf("fixture did not initialize; trace:\n%s", string(traceBytes))
+	}
+}
+
+func TestACPRemoteDialOnlyRejectsRequiredSandboxAndReportsDisabled(t *testing.T) {
+	required := &sandboxprofile.ResolvedAccessPolicy{ID: "required", Mode: sandboxprofile.ConfinementRequired}
+	var requiredOut []sandboxprofile.EnforcementOutcome
+	err := acp.CheckRemoteSandbox(acp.LaunchParams{SandboxPolicy: required, SandboxOutcomeCallback: func(out sandboxprofile.EnforcementOutcome) {
+		requiredOut = append(requiredOut, out)
+	}})
+	if !errors.Is(err, acp.ErrRemoteSandboxUnsupported) {
+		t.Fatalf("required remote err = %v, want ErrRemoteSandboxUnsupported", err)
+	}
+	if len(requiredOut) != 1 || requiredOut[0].State != sandboxprofile.EnforcementUnsupported {
+		t.Fatalf("required outcome = %+v", requiredOut)
+	}
+	disabled := &sandboxprofile.ResolvedAccessPolicy{ID: "disabled", Mode: sandboxprofile.ConfinementDisabled}
+	var disabledOut []sandboxprofile.EnforcementOutcome
+	if err := acp.CheckRemoteSandbox(acp.LaunchParams{SandboxPolicy: disabled, SandboxOutcomeCallback: func(out sandboxprofile.EnforcementOutcome) {
+		disabledOut = append(disabledOut, out)
+	}}); err != nil {
+		t.Fatalf("disabled remote: %v", err)
+	}
+	if len(disabledOut) != 1 || disabledOut[0].State != sandboxprofile.EnforcementDisabled || !disabledOut[0].Disabled {
+		t.Fatalf("disabled outcome = %+v", disabledOut)
+	}
 }
 
 func TestACPWrapperCopilotTCPRealSubprocessLifecycle(t *testing.T) {

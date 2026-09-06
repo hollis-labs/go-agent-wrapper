@@ -8,6 +8,7 @@ import (
 
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
+	"github.com/hollis-labs/go-sandbox/sandbox"
 )
 
 // InitializeResult is the validated subset of ACP's initialize response that
@@ -167,8 +168,23 @@ type LaunchParams struct {
 
 	// Env is the environment to launch a spawned subprocess with
 	// (native ACP implementations). Bridge-mediated implementations
-	// that don't own subprocess spawning ignore this.
+	// that don't own subprocess spawning ignore this. Nil inherits the parent
+	// process environment; a non-nil empty slice means an empty environment.
 	Env []string
+
+	// Command, when non-nil, is the exact argv for locally spawned ACP clients.
+	// It is used by prepared execution handoffs; remote/pre-existing endpoint
+	// clients ignore it unless they spawn a local process.
+	Command *LaunchCommand
+
+	// SandboxPolicy is a resolved local OS sandbox policy for ACP clients that
+	// spawn a subprocess. Remote/pre-existing endpoints reject required
+	// confinement because this library cannot verify their host guarantee.
+	SandboxPolicy *sandbox.ResolvedAccessPolicy
+
+	// SandboxOutcomeCallback receives sanitized process-confinement outcomes.
+	// The callback carries no argv or environment values.
+	SandboxOutcomeCallback func(sandbox.EnforcementOutcome)
 
 	// SystemPrompt, when non-empty, is prepended to the first ACP prompt. ACP
 	// v1 has no dedicated client-supplied system-prompt field in session/new.

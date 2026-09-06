@@ -78,15 +78,16 @@ type Client struct {
 	events       chan runtimeevents.Event
 	eventsClosed bool
 
-	waitDone     chan struct{}
-	waitErr      error
-	termination  *acp.TransportTermination
-	terminated   chan struct{}
-	lifetimeCtx  context.Context
-	lifetimeStop context.CancelFunc
-	permissions  *acp.BestEffortPermissionRequests
-	diagnosticMu sync.Mutex
-	diagnostic   func(acp.Diagnostic)
+	waitDone       chan struct{}
+	waitErr        error
+	sandboxCleanup func()
+	termination    *acp.TransportTermination
+	terminated     chan struct{}
+	lifetimeCtx    context.Context
+	lifetimeStop   context.CancelFunc
+	permissions    *acp.BestEffortPermissionRequests
+	diagnosticMu   sync.Mutex
+	diagnostic     func(acp.Diagnostic)
 }
 
 // ClientOption mutates a [Client] during [NewClient]. Distinct from
@@ -204,12 +205,16 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 	c.launched = true
 	c.mu.Unlock()
 
-	binary, args := c.resolveCommand()
+	defaultBinary, defaultArgs := c.resolveCommand()
+	binary, args, err := acp.ResolveLaunchCommand(params, defaultBinary, defaultArgs)
+	if err != nil {
+		return fmt.Errorf("piacp: launch command: %w", err)
+	}
 	cmd := exec.Command(binary, args...) //nolint:gosec // G204: operator-controlled binary/args
 	if params.Cwd != "" {
 		cmd.Dir = params.Cwd
 	}
-	if len(params.Env) > 0 {
+	if params.Env != nil {
 		cmd.Env = params.Env
 	}
 
@@ -229,14 +234,22 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 		return fmt.Errorf("piacp: stderr pipe: %w", err)
 	}
 
+	sandboxOutcome, sandboxCleanup, err := acp.PrepareLaunchSandbox(cmd, params)
+	if err != nil {
+		return fmt.Errorf("piacp: sandbox: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
+		sandboxCleanup()
+		acp.ReportLaunchSandboxStartFailed(params, sandboxOutcome, err)
 		return fmt.Errorf("piacp: start %q: %w", binary, err)
 	}
+	acp.ReportLaunchSandboxStarted(params, sandboxOutcome)
 
 	c.mu.Lock()
 	c.cmd = cmd
 	c.stdin = stdin
 	c.waitDone = make(chan struct{})
+	c.sandboxCleanup = sandboxCleanup
 	c.terminated = make(chan struct{})
 	c.termination = acp.NewTransportTermination(true)
 	c.lifetimeCtx, c.lifetimeStop = context.WithCancel(context.Background())
@@ -654,6 +667,9 @@ func (c *Client) waitProcess() {
 	waitDone := c.waitDone
 	c.mu.Unlock()
 	err := cmd.Wait()
+	if c.sandboxCleanup != nil {
+		c.sandboxCleanup()
+	}
 	c.mu.Lock()
 	c.waitErr = err
 	termination := c.termination

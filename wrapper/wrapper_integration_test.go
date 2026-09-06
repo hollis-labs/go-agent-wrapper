@@ -7,12 +7,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/hollis-labs/agentkit/agentlaunch"
+	"github.com/hollis-labs/agentkit/artifact"
+	"github.com/hollis-labs/agentkit/materialize"
 	llmtypes "github.com/hollis-labs/go-llm-types"
 	"github.com/hollis-labs/go-providers/provider"
 
@@ -25,6 +29,7 @@ import (
 	"github.com/hollis-labs/go-agent-wrapper/sandbox"
 	"github.com/hollis-labs/go-harness-filters/classify"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
+	sandboxprofile "github.com/hollis-labs/go-sandbox/sandbox"
 )
 
 // ---------------------------------------------------------------------
@@ -76,12 +81,17 @@ func (f *fakeCLI) Detect() (string, bool) { return f.script, f.script != "" }
 // fakeRuntimeAdapter implements the wrapper's adapters.RuntimeAdapter
 // by wrapping a fakeCLI.
 type fakeRuntimeAdapter struct {
-	cli *fakeCLI
+	cli     *fakeCLI
+	desc    adapters.Descriptor
+	hasDesc bool
 }
 
 func (a *fakeRuntimeAdapter) Name() string { return a.cli.name }
 
 func (a *fakeRuntimeAdapter) Describe() adapters.Descriptor {
+	if a.hasDesc {
+		return a.desc
+	}
 	return adapters.Descriptor{
 		Provider: a.cli.name,
 		// Protocol/Transport intentionally left unset — subprocess-
@@ -278,6 +288,60 @@ func writeFakeScript(t *testing.T, dir string, lines []string) string {
 	return writeShellFixtureLauncher(t, dir, "fake-cli", []byte(body))
 }
 
+func writePreparedProbeScript(t *testing.T, dir string) string {
+	t.Helper()
+	body := `#!/bin/sh
+set -eu
+if [ "$(pwd)" != "$EXPECTED_CWD" ]; then
+  printf 'delta:bad-cwd:%s\n' "$(pwd)"
+  exit 20
+fi
+if [ "${PREPARED_VALUE:-}" != "$2" ]; then
+  printf 'delta:bad-env\n'
+  exit 21
+fi
+printf '%s' "$2" > "$1"
+printf 'delta:prepared-ok\n'
+printf 'done\n'
+`
+	return shellFixtureScriptPath(writeShellFixtureLauncher(t, dir, "prepared-probe", []byte(body)))
+}
+
+func preparedProbeExecution(t *testing.T, dir, script, marker string) *agentlaunch.PreparedExecution {
+	t.Helper()
+	return &agentlaunch.PreparedExecution{
+		InputKind: agentlaunch.PrepareInputArtifacts,
+		Bindings: agentlaunch.ExecutionBindings{
+			Argv: []string{"/bin/sh", script, marker, "prepared"},
+			Env: map[string]agentlaunch.EnvVar{
+				"EXPECTED_CWD":   {Value: canonicalPathForTest(t, dir)},
+				"PREPARED_VALUE": {Value: "prepared"},
+			},
+			CWD: dir,
+		},
+		Roots:  agentlaunch.ExecutionRoots{ProjectRoot: dir, CWD: dir},
+		Access: agentlaunch.AccessRequirements{Mode: agentlaunch.AccessDisabled, Host: agentlaunch.ExecutionHostLocal},
+	}
+}
+
+func canonicalPathForTest(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("EvalSymlinks %s: %v", path, err)
+	}
+	return resolved
+}
+
+func mustReadWrapperFile(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return b
+}
+
 // ---------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------
@@ -460,6 +524,490 @@ func TestRunCtxCancelStopsSession(t *testing.T) {
 
 	if !hasKind(sink.snapshot(), runtimeevents.KindProcessExited) {
 		t.Error("expected process.exited event after ctx cancel")
+	}
+}
+
+func TestRunPreparedExecutionUsesExactBindingsAndSkipsAdapterResolve(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "prepared-marker.txt")
+	script := writePreparedProbeScript(t, dir)
+	prepared := preparedProbeExecution(t, dir, script, marker)
+
+	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: "/bin/false"}}
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App:               "test-prepared",
+		Adapter:           adapter,
+		Activity:          activity.NewBridge(sink),
+		Workdir:           filepath.Join(dir, "wrong"),
+		Environment:       ChildEnvironment{Mode: EnvironmentReplace, Set: []string{"PREPARED_VALUE=wrong"}},
+		PreparedExecution: prepared,
+		AutoFireFirstTurn: true,
+		FirstTurnPayload:  "ignored",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- w.Run(ctx) }()
+
+	sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)
+	if got := string(mustReadWrapperFile(t, marker)); got != "prepared" {
+		t.Fatalf("marker = %q, want prepared", got)
+	}
+	_ = w.Stop(context.Background())
+	<-runErrCh
+}
+
+func TestRunPrepareRequestConvenienceMaterializesAndRunsPreparedExecution(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "convenience-marker.txt")
+	script := writePreparedProbeScript(t, dir)
+	bootDir := filepath.Join(dir, "boot")
+	req := agentlaunch.PrepareRequest{
+		Kind: agentlaunch.PrepareInputArtifacts,
+		Artifacts: &artifact.Tree{Entries: []artifact.Entry{
+			{Path: "bin/tool.sh", Kind: artifact.EntryFile, Mode: 0o755, Bytes: []byte("#!/bin/sh\nexit 0\n"), Ownership: artifact.Ownership{EntryID: "tool", GroupID: "tooling"}},
+		}},
+		Roots: agentlaunch.ExecutionRoots{ProjectRoot: dir, CWD: dir, BootRoot: bootDir},
+		Projection: agentlaunch.ProviderProjection{Bindings: agentlaunch.ExecutionBindings{
+			Argv: []string{"/bin/sh", script, marker, "prepared"},
+			Env: map[string]agentlaunch.EnvVar{
+				"EXPECTED_CWD":   {Value: canonicalPathForTest(t, dir)},
+				"PREPARED_VALUE": {Value: "prepared"},
+			},
+			CWD: dir,
+		}},
+		Access: agentlaunch.AccessRequirements{Mode: agentlaunch.AccessDisabled, Host: agentlaunch.ExecutionHostLocal},
+	}
+
+	adapter := &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: "/bin/false"}}
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App:               "test-prepare-request",
+		Adapter:           adapter,
+		Activity:          activity.NewBridge(sink),
+		Workdir:           dir,
+		BootDir:           bootDir,
+		PrepareRequest:    &req,
+		AutoFireFirstTurn: true,
+		FirstTurnPayload:  "ignored",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- w.Run(ctx) }()
+
+	sink.waitFor(t, runtimeevents.KindPlantCompleted, 5*time.Second)
+	sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)
+	if _, err := os.Stat(filepath.Join(bootDir, "bin/tool.sh")); err != nil {
+		t.Fatalf("prepared artifact not materialized: %v", err)
+	}
+	if got := string(mustReadWrapperFile(t, marker)); got != "prepared" {
+		t.Fatalf("marker = %q, want prepared", got)
+	}
+	evs := sink.snapshot()
+	idxPlant := indexOfKind(evs, runtimeevents.KindPlantCompleted)
+	idxReady := indexOfKind(evs, runtimeevents.KindSessionReady)
+	if idxPlant < 0 || idxReady < 0 || idxPlant >= idxReady {
+		t.Fatalf("plant/session ordering plant=%d ready=%d", idxPlant, idxReady)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(evs[idxPlant].Payload, &payload); err != nil {
+		t.Fatalf("decode plant.completed: %v", err)
+	}
+	if payload["operation"] != string(materialize.OperationReconcile) || payload["complete"] != true {
+		t.Fatalf("plant payload = %#v", payload)
+	}
+	_ = w.Stop(context.Background())
+	<-runErrCh
+}
+
+func TestRunSharedPlanterCreateDoesNotPrecreateTarget(t *testing.T) {
+	dir := t.TempDir()
+	bootDir := filepath.Join(dir, "boot-parent", "session-boot")
+	script := writeFakeScript(t, dir, []string{"done"})
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App:      "test-shared-planter-create",
+		Adapter:  &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: script}},
+		Activity: activity.NewBridge(sink),
+		Workdir:  dir,
+		BootDir:  bootDir,
+		Planter:  plant.SharedPlanter{},
+		PlantSpec: plant.Spec{
+			Operation: materialize.OperationCreate,
+			Artifacts: artifact.Tree{Entries: []artifact.Entry{
+				{Path: "bin/run.sh", Kind: artifact.EntryFile, Mode: 0o755, Bytes: []byte("#!/bin/sh\nexit 0\n"), Ownership: artifact.Ownership{EntryID: "modern:bin", GroupID: "modern"}},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- w.Run(ctx) }()
+
+	sink.waitFor(t, runtimeevents.KindSessionReady, 5*time.Second)
+	if err := w.SendInput(context.Background(), []byte("ignored")); err != nil {
+		t.Fatalf("SendInput: %v", err)
+	}
+	sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)
+	_ = w.Stop(context.Background())
+	<-runErrCh
+
+	info, err := os.Stat(filepath.Join(bootDir, "bin/run.sh"))
+	if err != nil {
+		t.Fatalf("stat planted executable: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("planted executable mode = %o, want 755", got)
+	}
+	evs := sink.snapshot()
+	idxPlant := indexOfKind(evs, runtimeevents.KindPlantCompleted)
+	idxReady := indexOfKind(evs, runtimeevents.KindSessionReady)
+	if idxPlant < 0 || idxReady < 0 || idxPlant >= idxReady {
+		t.Fatalf("plant/session ordering plant=%d ready=%d", idxPlant, idxReady)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(evs[idxPlant].Payload, &payload); err != nil {
+		t.Fatalf("decode plant.completed: %v", err)
+	}
+	if payload["operation"] != string(materialize.OperationCreate) || payload["complete"] != true {
+		t.Fatalf("plant payload = %#v", payload)
+	}
+}
+
+func TestRunPreparedEmptyEnvironmentAndDisabledSandboxEvent(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "empty-env-clean")
+	t.Setenv("WRAPPER_PREPARED_EMPTY_SHOULD_NOT_LEAK", "parent-value")
+	script := shellFixtureScriptPath(writeShellFixtureLauncher(t, dir, "empty-env-probe", []byte(`#!/bin/sh
+set -eu
+if [ "${WRAPPER_PREPARED_EMPTY_SHOULD_NOT_LEAK+x}" = x ]; then
+  printf 'delta:leaked-env\n'
+  exit 31
+fi
+printf 'clean' > "$1"
+printf 'done\n'
+`)))
+	prepared := &agentlaunch.PreparedExecution{
+		InputKind: agentlaunch.PrepareInputArtifacts,
+		Bindings: agentlaunch.ExecutionBindings{
+			Argv: []string{"/bin/sh", script, marker},
+			Env:  map[string]agentlaunch.EnvVar{},
+			CWD:  dir,
+		},
+		Roots:  agentlaunch.ExecutionRoots{ProjectRoot: dir, CWD: dir},
+		Access: agentlaunch.AccessRequirements{Mode: agentlaunch.AccessDisabled, Host: agentlaunch.ExecutionHostLocal},
+	}
+	adapter := &fakeRuntimeAdapter{
+		cli:     &fakeCLI{name: "fakecli", script: "/bin/false"},
+		desc:    adapters.Descriptor{Provider: "fakecli", Protocol: adapters.ProtocolClaudeStreamJSON, Transport: adapters.TransportStdio, Interrupt: adapters.InterruptProcess},
+		hasDesc: true,
+	}
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App:               "test-prepared-empty-env",
+		Adapter:           adapter,
+		Activity:          activity.NewBridge(sink),
+		Workdir:           dir,
+		PreparedExecution: prepared,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- w.Run(ctx) }()
+
+	sink.waitFor(t, runtimeevents.KindSandboxApplied, 5*time.Second)
+	sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)
+	if got := string(mustReadWrapperFile(t, marker)); got != "clean" {
+		t.Fatalf("marker = %q, want clean", got)
+	}
+	select {
+	case err := <-runErrCh:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after prepared script exit")
+	}
+
+	evs := sink.snapshot()
+	idxSandbox := indexOfKind(evs, runtimeevents.KindSandboxApplied)
+	idxReady := indexOfKind(evs, runtimeevents.KindSessionReady)
+	if idxSandbox < 0 || idxReady < 0 || idxSandbox >= idxReady {
+		t.Fatalf("sandbox/session ordering sandbox=%d ready=%d", idxSandbox, idxReady)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(evs[idxSandbox].Payload, &payload); err != nil {
+		t.Fatalf("decode sandbox.applied: %v", err)
+	}
+	if payload["disabled"] != true || payload["enforced"] != false || payload["applied"] != false || payload["state"] != "disabled" {
+		t.Fatalf("sandbox payload = %#v", payload)
+	}
+}
+
+func TestRunPreparedPerTurnSandboxEventFiresAtChildSpawn(t *testing.T) {
+	dir := t.TempDir()
+	markerFile := filepath.Join(dir, "per-turn-marker.txt")
+	prepared := preparedProbeExecution(t, dir, writePreparedProbeScript(t, dir), markerFile)
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App:               "test-prepared-per-turn-sandbox",
+		Adapter:           &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: "/bin/false"}},
+		Activity:          activity.NewBridge(sink),
+		Workdir:           dir,
+		PreparedExecution: prepared,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- w.Run(ctx) }()
+
+	sink.waitFor(t, runtimeevents.KindSessionReady, 5*time.Second)
+	if hasKind(sink.snapshot(), runtimeevents.KindSandboxApplied) {
+		t.Fatalf("sandbox.applied emitted before subprocess-per-turn child spawn")
+	}
+	if err := w.SendInput(context.Background(), []byte("ignored")); err != nil {
+		t.Fatalf("SendInput: %v", err)
+	}
+	sink.waitFor(t, runtimeevents.KindSandboxApplied, 5*time.Second)
+	sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)
+	if got := string(mustReadWrapperFile(t, markerFile)); got != "prepared" {
+		t.Fatalf("marker = %q, want prepared", got)
+	}
+
+	evs := sink.snapshot()
+	idxReady := indexOfKind(evs, runtimeevents.KindSessionReady)
+	idxSandbox := indexOfKind(evs, runtimeevents.KindSandboxApplied)
+	idxDone := indexOfKind(evs, runtimeevents.KindTurnCompleted)
+	if idxReady < 0 || idxSandbox < 0 || idxDone < 0 || idxReady >= idxSandbox || idxSandbox >= idxDone {
+		t.Fatalf("event ordering ready=%d sandbox=%d done=%d kinds=%v", idxReady, idxSandbox, idxDone, kindList(evs))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(evs[idxSandbox].Payload, &payload); err != nil {
+		t.Fatalf("decode sandbox.applied: %v", err)
+	}
+	if payload["disabled"] != true || payload["applied"] != false || payload["state"] != "disabled" {
+		t.Fatalf("sandbox payload = %#v", payload)
+	}
+	_ = w.Stop(context.Background())
+	<-runErrCh
+}
+
+func TestRunPreparedMaterializationRejectsLegacyPlanter(t *testing.T) {
+	dir := t.TempDir()
+	prepared := preparedProbeExecution(t, dir, writePreparedProbeScript(t, dir), filepath.Join(dir, "marker"))
+	prepared.Materialization = &materialize.Handle{TargetRoot: filepath.Join(dir, "boot")}
+	planter := &recordingPlanter{}
+	w, err := New(Config{
+		App:               "test-prepared-planter-conflict",
+		Adapter:           &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: "/bin/false"}},
+		Activity:          activity.NewBridge(newCapturingSink()),
+		Workdir:           dir,
+		PreparedExecution: prepared,
+		Planter:           planter,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	err = w.Run(context.Background())
+	if !errors.Is(err, ErrPreparedPlantConflict) {
+		t.Fatalf("Run err = %v, want ErrPreparedPlantConflict", err)
+	}
+	planter.mu.Lock()
+	defer planter.mu.Unlock()
+	if planter.calls != 0 {
+		t.Fatalf("planter calls = %d, want 0", planter.calls)
+	}
+}
+
+func TestRunRejectsAmbiguousResolvedAndLegacySandboxInputs(t *testing.T) {
+	dir := t.TempDir()
+	w, err := New(Config{
+		App:      "test-sandbox-conflict",
+		Adapter:  &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: writeFakeScript(t, dir, []string{"done"})}},
+		Activity: activity.NewBridge(newCapturingSink()),
+		Workdir:  dir,
+		SandboxPolicy: &sandboxprofile.ResolvedAccessPolicy{
+			ID:   "disabled",
+			Mode: sandboxprofile.ConfinementDisabled,
+		},
+		SandboxProfile: sandboxprofile.Profile{ID: "legacy"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	err = w.Run(context.Background())
+	if !errors.Is(err, ErrPreparedExecutionConflict) {
+		t.Fatalf("Run err = %v, want ErrPreparedExecutionConflict", err)
+	}
+}
+
+func TestRunRejectsPreparedAndDirectSandboxBeforeMaterializationEvent(t *testing.T) {
+	dir := t.TempDir()
+	prepared := preparedProbeExecution(t, dir, writePreparedProbeScript(t, dir), filepath.Join(dir, "marker"))
+	prepared.Materialization = &materialize.Handle{TargetRoot: filepath.Join(dir, "boot")}
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App:               "test-prepared-sandbox-conflict",
+		Adapter:           &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli", script: writeFakeScript(t, dir, []string{"done"})}},
+		Activity:          activity.NewBridge(sink),
+		Workdir:           dir,
+		PreparedExecution: prepared,
+		SandboxPolicy: &sandboxprofile.ResolvedAccessPolicy{
+			ID:   "disabled",
+			Mode: sandboxprofile.ConfinementDisabled,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	err = w.Run(context.Background())
+	if !errors.Is(err, ErrPreparedExecutionConflict) {
+		t.Fatalf("Run err = %v, want ErrPreparedExecutionConflict", err)
+	}
+	if hasKind(sink.snapshot(), runtimeevents.KindPlantCompleted) {
+		t.Fatalf("plant.completed emitted before prepared/direct sandbox conflict")
+	}
+}
+
+func TestRunACPRejectsLegacySandboxProfile(t *testing.T) {
+	dir := t.TempDir()
+	client := newFakeACPClient(adapters.InterruptTurn)
+	adapter := &fakeACPRuntimeAdapter{client: client, cli: &fakeACPCLIAdapter{client: client, script: writeFakeScript(t, dir, []string{"done"})}}
+	w, err := New(Config{
+		App:            "test-acp-legacy-profile-reject",
+		Adapter:        adapter,
+		Activity:       activity.NewBridge(newCapturingSink()),
+		Workdir:        dir,
+		SandboxProfile: sandboxprofile.Profile{ID: "legacy"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	err = w.Run(context.Background())
+	if !errors.Is(err, ErrACPSandboxProfileUnsupported) {
+		t.Fatalf("Run err = %v, want ErrACPSandboxProfileUnsupported", err)
+	}
+	if client.wasLaunched() {
+		t.Fatal("ACP client launched despite unsupported legacy profile")
+	}
+}
+
+func TestRunACPPreparedExecutionPassesExactLaunchParams(t *testing.T) {
+	dir := t.TempDir()
+	prepared := preparedProbeExecution(t, dir, writePreparedProbeScript(t, dir), filepath.Join(dir, "marker"))
+	client := newFakeACPClient(adapters.InterruptTurn)
+	adapter := &fakeACPRuntimeAdapter{client: client, cli: &fakeACPCLIAdapter{client: client, script: "/bin/false"}}
+	w, err := New(Config{
+		App:               "test-acp-prepared-launch",
+		Adapter:           adapter,
+		Activity:          activity.NewBridge(newCapturingSink()),
+		Workdir:           filepath.Join(dir, "wrong"),
+		Environment:       ChildEnvironment{Mode: EnvironmentReplace, Set: []string{"PREPARED_VALUE=wrong"}},
+		PreparedExecution: prepared,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErrCh := make(chan error, 1)
+	go func() { runErrCh <- w.Run(ctx) }()
+	for i := 0; i < 50 && !client.wasLaunched(); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !client.wasLaunched() {
+		t.Fatal("ACP client was not launched")
+	}
+	launch := client.snapshotLaunch()
+	if launch.Cwd != dir {
+		t.Fatalf("launch.Cwd = %q, want %q", launch.Cwd, dir)
+	}
+	if launch.Command == nil || launch.Command.Binary != "/bin/sh" || !reflect.DeepEqual(launch.Command.Args, prepared.Bindings.Argv[1:]) {
+		t.Fatalf("launch.Command = %#v, want prepared argv", launch.Command)
+	}
+	wantEnv := []string{"EXPECTED_CWD=" + canonicalPathForTest(t, dir), "PREPARED_VALUE=prepared"}
+	if !reflect.DeepEqual(launch.Env, wantEnv) {
+		t.Fatalf("launch.Env = %#v, want %#v", launch.Env, wantEnv)
+	}
+	if launch.SandboxPolicy == nil || launch.SandboxPolicy.Mode != sandboxprofile.ConfinementDisabled {
+		t.Fatalf("launch.SandboxPolicy = %#v, want disabled prepared policy", launch.SandboxPolicy)
+	}
+	_ = w.Stop(context.Background())
+	select {
+	case <-runErrCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after Stop")
+	}
+}
+
+func TestRunDirectNativeSandboxFailureEmitsTruthfulEventAndDoesNotStart(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "started")
+	script := writeShellFixtureLauncher(t, dir, "streaming-start", []byte("#!/bin/sh\nprintf started > \""+marker+"\"\ncat >/dev/null\n"))
+	adapter := &fakeRuntimeAdapter{
+		cli:     &fakeCLI{name: "fakecli", script: script},
+		desc:    adapters.Descriptor{Provider: "fakecli", Protocol: adapters.ProtocolClaudeStreamJSON, Transport: adapters.TransportStdio, Interrupt: adapters.InterruptProcess},
+		hasDesc: true,
+	}
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App:      "test-native-sandbox-failure",
+		Adapter:  adapter,
+		Activity: activity.NewBridge(sink),
+		Workdir:  dir,
+		SandboxPolicy: &sandboxprofile.ResolvedAccessPolicy{
+			ID:      "required-none",
+			Mode:    sandboxprofile.ConfinementRequired,
+			Backend: sandboxprofile.BackendNone,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	err = w.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "sandbox") {
+		t.Fatalf("Run err = %v, want sandbox start failure", err)
+	}
+	if _, statErr := os.Stat(marker); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("marker stat = %v, child appears to have started", statErr)
+	}
+	evs := sink.snapshot()
+	idxSandbox := indexOfKind(evs, runtimeevents.KindSandboxApplied)
+	idxReady := indexOfKind(evs, runtimeevents.KindSessionReady)
+	if idxSandbox < 0 {
+		t.Fatalf("missing sandbox event; saw %v", sink.kinds())
+	}
+	if idxReady >= 0 {
+		t.Fatalf("session.ready emitted despite sandbox setup failure")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(evs[idxSandbox].Payload, &payload); err != nil {
+		t.Fatalf("decode sandbox event: %v", err)
+	}
+	if payload["enforced"] != false || payload["applied"] != false || payload["state"] == "" {
+		t.Fatalf("sandbox payload = %#v", payload)
 	}
 }
 

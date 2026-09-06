@@ -11,6 +11,7 @@ import (
 	"github.com/hollis-labs/go-agent-wrapper/acp"
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
+	sandboxprofile "github.com/hollis-labs/go-sandbox/sandbox"
 )
 
 func (w *Wrapper) runACP(
@@ -25,24 +26,12 @@ func (w *Wrapper) runACP(
 	if desc.Transport != adapters.TransportStdio && desc.Transport != adapters.TransportTCP {
 		return fmt.Errorf("%w: protocol=%q transport=%q", ErrUnknownRuntime, desc.Protocol, desc.Transport)
 	}
+	if w.cfg.SandboxProfile.ID != "" {
+		return ErrACPSandboxProfileUnsupported
+	}
 	adapter, ok := w.cfg.Adapter.(acp.ClientAdapter)
 	if !ok {
 		return fmt.Errorf("%w: adapter %q", ErrAdapterNotACPClient, w.cfg.Adapter.Name())
-	}
-	spec, err := w.cfg.Adapter.Resolve(adapters.ResolveContext{
-		BootDir: w.cfg.BootDir,
-		Cwd:     w.cfg.Workdir,
-		Env:     baseEnv,
-	})
-	if err != nil {
-		return fmt.Errorf("wrapper: adapter Resolve: %w", err)
-	}
-	childEnv, adapterEnvironmentExplicit, err := resolvedSpecEnvironment(baseEnv, spec.Env)
-	if err != nil {
-		return fmt.Errorf("wrapper: adapter Resolve environment: %w", err)
-	}
-	if len(childEnv) == 0 && (environmentExplicit || adapterEnvironmentExplicit) {
-		childEnv = []string{nonInheritingEmptyEnvironment}
 	}
 
 	w.cfg.Activity.Bind(w.cfg.App, w.sessionID, runtimeevents.Process{
@@ -61,13 +50,61 @@ func (w *Wrapper) runACP(
 	w.acpManager = manager
 	w.sessMu.Unlock()
 
-	if err := w.runPlanter(ctx, source); err != nil {
+	bootDir := w.defaultBootDir()
+	prepared, err := w.resolvePreparedExecution(ctx, bootDir)
+	if err != nil {
+		return err
+	}
+	if prepared != nil && w.cfg.SandboxPolicy != nil {
+		return fmt.Errorf("%w: Config.PreparedExecution/PrepareRequest and Config.SandboxPolicy are mutually exclusive", ErrPreparedExecutionConflict)
+	}
+	if prepared != nil && prepared.Materialization != nil && w.cfg.Planter != nil {
+		return ErrPreparedPlantConflict
+	}
+
+	launchCWD := w.cfg.Workdir
+	childEnv := baseEnv
+	var command *acp.LaunchCommand
+	var sandboxPolicy *sandboxprofile.ResolvedAccessPolicy
+	if prepared != nil {
+		launchCWD = prepared.Bindings.CWD
+		childEnv = preparedEnvSlice(prepared)
+		command = preparedLaunchCommand(prepared)
+		policy, err := acpSandboxPolicyFromPrepared(prepared, launchCWD)
+		if err != nil {
+			return fmt.Errorf("wrapper: ACP prepared sandbox policy: %w", err)
+		}
+		sandboxPolicy = policy
+	} else {
+		spec, err := w.cfg.Adapter.Resolve(adapters.ResolveContext{
+			BootDir: bootDir,
+			Cwd:     w.cfg.Workdir,
+			Env:     baseEnv,
+		})
+		if err != nil {
+			return fmt.Errorf("wrapper: adapter Resolve: %w", err)
+		}
+		var adapterEnvironmentExplicit bool
+		childEnv, adapterEnvironmentExplicit, err = resolvedSpecEnvironment(baseEnv, spec.Env)
+		if err != nil {
+			return fmt.Errorf("wrapper: adapter Resolve environment: %w", err)
+		}
+		if len(childEnv) == 0 && (environmentExplicit || adapterEnvironmentExplicit) {
+			childEnv = []string{nonInheritingEmptyEnvironment}
+		}
+		sandboxPolicy = w.cfg.SandboxPolicy
+	}
+
+	if prepared != nil && prepared.Materialization != nil {
+		emitPreparedMaterialization(ctx, w.cfg.Activity, source, prepared.Materialization)
+	} else if err := w.runPlanter(ctx, source); err != nil {
 		return err
 	}
 
 	launch := acp.LaunchParams{
-		Cwd:                                  w.cfg.Workdir,
+		Cwd:                                  launchCWD,
 		Env:                                  childEnv,
+		Command:                              command,
 		SystemPrompt:                         w.cfg.SystemPrompt,
 		SessionIDPreset:                      w.cfg.SessionIDPreset,
 		AuthMethodID:                         w.cfg.ACPAuthMethodID,
@@ -75,7 +112,11 @@ func (w *Wrapper) runACP(
 		SessionConfig:                        cloneSessionConfig(w.cfg.ACPSessionConfig),
 		OnDiagnostic:                         w.cfg.OnACPDiagnostic,
 		BestEffortPermissionRequestResponder: w.cfg.ACPBestEffortPermissionRequestResponder,
+		SandboxOutcomeCallback: func(out sandboxprofile.EnforcementOutcome) {
+			emitACPSandboxOutcome(ctx, w.cfg.Activity, source, out)
+		},
 	}
+	launch.SandboxPolicy = sandboxPolicy
 	session, err := manager.Launch(ctx, acp.SessionConfig{
 		ID: w.sessionID, Client: adapter.ACPClient(), Launch: launch,
 		Commit: func(session *acp.Session) error {

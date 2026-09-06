@@ -23,6 +23,7 @@ func main() {
 		_, _ = fmt.Fprintln(trace, "fixture-cleanup")
 		_ = trace.Close()
 	}()
+	runAccessProbes(trace)
 
 	port := 0
 	for i, arg := range os.Args[1:] {
@@ -45,6 +46,23 @@ func main() {
 	}
 	defer conn.Close()
 	serve(conn, conn, trace)
+}
+
+func runAccessProbes(trace io.Writer) {
+	if path := os.Getenv("ACP_DENIED_READ"); path != "" {
+		if _, err := os.ReadFile(path); err == nil {
+			_, _ = fmt.Fprintln(trace, "probe-read-allowed")
+		} else {
+			_, _ = fmt.Fprintln(trace, "probe-read-denied")
+		}
+	}
+	if path := os.Getenv("ACP_DENIED_WRITE"); path != "" {
+		if err := os.WriteFile(path, []byte("blocked"), 0o600); err == nil {
+			_, _ = fmt.Fprintln(trace, "probe-write-allowed")
+		} else {
+			_, _ = fmt.Fprintln(trace, "probe-write-denied")
+		}
+	}
 }
 
 func serve(r io.Reader, w io.Writer, trace io.Writer) {

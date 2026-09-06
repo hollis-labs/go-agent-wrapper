@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hollis-labs/agentkit/agentlaunch"
 	"github.com/hollis-labs/agentkit/agentsessions"
+	"github.com/hollis-labs/agentkit/materialize"
 	llmtypes "github.com/hollis-labs/go-llm-types"
 	pevents "github.com/hollis-labs/go-providers/provider/events"
 	sandboxprofile "github.com/hollis-labs/go-sandbox/sandbox"
@@ -90,11 +92,34 @@ type Config struct {
 	// [agentsessions.StartOptions.AutoPlantBootDir] — both can run for
 	// the same session, with adapter-specific semantics deciding which
 	// files the spawned process actually consumes.
+	//
+	// When PreparedExecution carries a materialized handle, wrapper planting is
+	// rejected instead of running a competing writer.
 	Planter plant.Planter
 
 	// PlantSpec describes what Planter should lay down. Ignored when
 	// Planter is nil.
 	PlantSpec plant.Spec
+
+	// PreparedExecution is an already resolved/materialized agentkit handoff.
+	// Native wrapper runtimes consume its exact argv/env/cwd and access policy
+	// without resolving provider projection or planting again.
+	PreparedExecution *agentlaunch.PreparedExecution
+
+	// PrepareRequest is the convenience path for callers that want the wrapper
+	// to invoke agentkit.ResolvePreparation before launch. It is mutually
+	// exclusive with PreparedExecution. Empty ProjectRoot/CWD/BootRoot fields
+	// default from Config.Workdir and the wrapper boot dir.
+	PrepareRequest *agentlaunch.PrepareRequest
+
+	// MaterializationEngine optionally overrides the shared engine used for
+	// PrepareRequest. Nil uses agentkit's default engine.
+	MaterializationEngine materialize.Engine
+
+	// SandboxPolicy is the resolved go-sandbox policy for pre-start
+	// enforcement. It is forwarded to agentsessions.StartOptions.SandboxPolicy
+	// and is mutually exclusive with SandboxProfile.
+	SandboxPolicy *sandboxprofile.ResolvedAccessPolicy
 
 	// Sandbox, when set, runs [sandbox.Applier.Apply] against the
 	// session's child PID after [Runtime.Start] returns and emits a
@@ -340,6 +365,9 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if w.cfg.SandboxPolicy != nil && w.cfg.SandboxProfile.ID != "" {
+		return fmt.Errorf("%w: Config.SandboxPolicy and Config.SandboxProfile are mutually exclusive", ErrPreparedExecutionConflict)
+	}
 
 	w.cfg.Activity.Bind(w.cfg.App, w.sessionID, runtimeevents.Process{
 		Provider: desc.Provider,
@@ -358,35 +386,59 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	w.rawSource = rawSource
 	w.sessMu.Unlock()
 
-	// Resolve the wrapper-level Spec to validate the adapter's exec-shape
-	// contract and surface PTY/no-PTY mismatches early. The agentkit runtime
-	// constructs its own binary and argv via CLIAdapter, while Spec.Env is an
-	// honored final replacement for the Config-derived base environment.
-	spec, err := w.cfg.Adapter.Resolve(adapters.ResolveContext{
-		BootDir: w.cfg.BootDir,
-		Cwd:     w.cfg.Workdir,
-		Env:     baseEnv,
-		PTY:     caps.PTY,
-	})
+	bootDir := w.defaultBootDir()
+	prepared, err := w.resolvePreparedExecution(ctx, bootDir)
 	if err != nil {
-		return fmt.Errorf("wrapper: adapter Resolve: %w", err)
+		return err
 	}
-	childEnv, adapterEnvironmentExplicit, err := resolvedSpecEnvironment(baseEnv, spec.Env)
-	if err != nil {
-		return fmt.Errorf("wrapper: adapter Resolve environment: %w", err)
+	if prepared != nil && w.cfg.SandboxPolicy != nil {
+		return fmt.Errorf("%w: Config.PreparedExecution/PrepareRequest and Config.SandboxPolicy are mutually exclusive", ErrPreparedExecutionConflict)
 	}
-	if len(childEnv) == 0 && (environmentExplicit || adapterEnvironmentExplicit) && capsUsesLongLivedProcess(caps) {
-		childEnv = []string{nonInheritingEmptyEnvironment}
+	if prepared != nil && prepared.Materialization != nil && w.cfg.Planter != nil {
+		return ErrPreparedPlantConflict
 	}
 
-	if err := w.runPlanter(ctx, source); err != nil {
+	childEnv := baseEnv
+	if prepared == nil {
+		// Resolve the wrapper-level Spec to validate the adapter's exec-shape
+		// contract and surface PTY/no-PTY mismatches early. The agentkit runtime
+		// constructs its own binary and argv via CLIAdapter, while Spec.Env is an
+		// honored final replacement for the Config-derived base environment.
+		spec, err := w.cfg.Adapter.Resolve(adapters.ResolveContext{
+			BootDir: bootDir,
+			Cwd:     w.cfg.Workdir,
+			Env:     baseEnv,
+			PTY:     caps.PTY,
+		})
+		if err != nil {
+			return fmt.Errorf("wrapper: adapter Resolve: %w", err)
+		}
+		var adapterEnvironmentExplicit bool
+		childEnv, adapterEnvironmentExplicit, err = resolvedSpecEnvironment(baseEnv, spec.Env)
+		if err != nil {
+			return fmt.Errorf("wrapper: adapter Resolve environment: %w", err)
+		}
+		if len(childEnv) == 0 && (environmentExplicit || adapterEnvironmentExplicit) && capsUsesLongLivedProcess(caps) {
+			childEnv = []string{nonInheritingEmptyEnvironment}
+		}
+	}
+
+	if prepared != nil && prepared.Materialization != nil {
+		emitPreparedMaterialization(ctx, w.cfg.Activity, source, prepared.Materialization)
+	} else if err := w.runPlanter(ctx, source); err != nil {
 		return err
+	}
+
+	cliAdapter := ra.CLIAdapter()
+	cliAdapter, err = preparedCLIAdapter(cliAdapter, prepared)
+	if err != nil {
+		return fmt.Errorf("wrapper: prepared adapter: %w", err)
 	}
 
 	runtime, err := agentsessions.NewFromAdapter(agentsessions.AdapterRuntimeConfig{
 		ID:      "wrapper-" + w.cfg.Adapter.Name(),
 		Kind:    "cli",
-		Adapter: ra.CLIAdapter(),
+		Adapter: cliAdapter,
 		Caps:    caps,
 	})
 	if err != nil {
@@ -491,6 +543,8 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		EventFanout:       fanout,
 		Fanout:            stdoutStream,
 		Stderr:            stderrStream,
+		PreparedExecution: prepared,
+		SandboxPolicy:     w.cfg.SandboxPolicy,
 		Profile:           w.cfg.SandboxProfile,
 		SessionIDPreset:   w.cfg.SessionIDPreset,
 		AutoFireFirstTurn: w.cfg.AutoFireFirstTurn,
@@ -509,6 +563,9 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			if w.cfg.OnSessionID != nil {
 				w.cfg.OnSessionID(id)
 			}
+		},
+		SandboxOutcomeCallback: func(out agentsessions.SandboxOutcome) {
+			emitSandboxOutcome(ctx, w.cfg.Activity, source, out)
 		},
 		TypedEventCallback: func(ev pevents.Event) {
 			kind, payload, mapped := translateProviderEvent(ev)
@@ -545,6 +602,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		},
 	})
 	if err != nil {
+		emitRuntimeStartSandboxError(ctx, w.cfg.Activity, source, err)
 		return fmt.Errorf("wrapper: runtime.Start: %w", err)
 	}
 	w.sessMu.Lock()
@@ -817,11 +875,12 @@ func (w *Wrapper) runPlanter(ctx context.Context, source runtimeevents.Source) e
 	if w.cfg.Planter == nil {
 		return nil
 	}
-	bootDir := w.cfg.BootDir
-	if bootDir == "" {
-		bootDir = filepath.Join(w.cfg.Workdir, ".wrapper-boot", w.sessionID)
+	bootDir := w.defaultBootDir()
+	ensureDir := bootDir
+	if w.cfg.PlantSpec.Operation == materialize.OperationCreate {
+		ensureDir = filepath.Dir(bootDir)
 	}
-	if err := os.MkdirAll(bootDir, 0o750); err != nil {
+	if err := os.MkdirAll(ensureDir, 0o750); err != nil {
 		return fmt.Errorf("wrapper: ensure boot dir %q: %w", bootDir, err)
 	}
 
@@ -837,8 +896,14 @@ func (w *Wrapper) runPlanter(ctx context.Context, source runtimeevents.Source) e
 	result, plantErr := w.cfg.Planter.Plant(ctx, bootDir, w.cfg.PlantSpec)
 
 	donePayload := map[string]any{
-		"boot_dir":      bootDir,
-		"planted_files": result.PlantedFiles,
+		"boot_dir":        bootDir,
+		"planted_files":   result.PlantedFiles,
+		"planned_files":   result.PlannedFiles,
+		"written_files":   result.WrittenFiles,
+		"unchanged_files": result.UnchangedFiles,
+		"conflict_files":  result.ConflictFiles,
+		"operation":       string(result.Operation),
+		"complete":        result.Complete,
 	}
 	if plantErr != nil {
 		donePayload["error"] = plantErr.Error()

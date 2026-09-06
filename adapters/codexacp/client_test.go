@@ -489,6 +489,23 @@ func TestClientResolveBridgeCommandDefaultsToPinnedVersion(t *testing.T) {
 	}
 }
 
+func TestClientPreparedCommandEnvIsExact(t *testing.T) {
+	c := NewClient(WithClientCodexBinary("/must/not/be/appended"))
+	params := acp.LaunchParams{
+		Command: &acp.LaunchCommand{Binary: "/bin/sh", Args: []string{"-c", "exit 0"}},
+		Env:     []string{},
+	}
+	if got := c.launchEnv(params); len(got) != 0 {
+		t.Fatalf("prepared empty launch env = %#v, want empty", got)
+	}
+
+	params.Env = []string{"FOO=bar", "PATH=/safe"}
+	want := []string{"FOO=bar", "PATH=/safe"}
+	if got := c.launchEnv(params); !reflect.DeepEqual(got, want) {
+		t.Fatalf("prepared launch env = %#v, want %#v", got, want)
+	}
+}
+
 func TestClientBuildEnvRespectsExplicitCodexPath(t *testing.T) {
 	c := NewClient(WithClientCodexBinary("/should/not/be/used"))
 	env := c.buildEnv([]string{"CODEX_PATH=/explicit/override", "FOO=bar"})

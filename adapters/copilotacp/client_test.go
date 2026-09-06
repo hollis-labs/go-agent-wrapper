@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/hollis-labs/go-agent-wrapper/acp"
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
+	"github.com/hollis-labs/go-sandbox/sandbox"
 )
 
 // ---------------------------------------------------------------------
@@ -468,6 +470,27 @@ func fakeACPListener(t *testing.T, fn func(t *testing.T, conn net.Conn)) (host s
 		fn(t, conn)
 	}()
 	return addr.IP.String(), addr.Port
+}
+
+func TestClientTCP_DialOnlyRejectsRequiredSandboxBeforeDial(t *testing.T) {
+	c := NewClient(adapters.TransportTCP, WithDialOnly("127.0.0.1", 1))
+	var outcomes []sandbox.EnforcementOutcome
+	err := c.Launch(context.Background(), acp.LaunchParams{
+		Cwd: t.TempDir(),
+		SandboxPolicy: &sandbox.ResolvedAccessPolicy{
+			ID:   "required-remote",
+			Mode: sandbox.ConfinementRequired,
+		},
+		SandboxOutcomeCallback: func(out sandbox.EnforcementOutcome) {
+			outcomes = append(outcomes, out)
+		},
+	})
+	if !errors.Is(err, acp.ErrRemoteSandboxUnsupported) {
+		t.Fatalf("Launch err = %v, want ErrRemoteSandboxUnsupported", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].State != sandbox.EnforcementUnsupported {
+		t.Fatalf("outcomes = %+v, want one unsupported outcome", outcomes)
+	}
 }
 
 func TestClientTCP_LaunchPromptEvents(t *testing.T) {

@@ -1,0 +1,140 @@
+{
+  "task_id": "CW-20260906-0019",
+  "rows": [
+    {
+      "id": "consumer-cairn",
+      "acceptance": "four-consumer-examples",
+      "guarantee": "Cairn-shaped authored composition, copied filesystem tree, fresh boot root and managed JSON/TOML install run through shared APIs.",
+      "package": "github.com/hollis-labs/go-agent-wrapper/examples/shared-conformance",
+      "tests": ["TestSharedConformanceScenariosRun", "TestSharedConformanceProgramRuns"],
+      "commands": ["go test ./examples/shared-conformance -count=1"],
+      "files": ["examples/shared-conformance/main.go", "examples/shared-conformance/main_test.go"]
+    },
+    {
+      "id": "consumer-nanite",
+      "acceptance": "four-consumer-examples",
+      "guarantee": "Nanite-shaped immutable blob skill package resolves by digest and refresh removes owned omitted content while preserving explicit directories.",
+      "package": "github.com/hollis-labs/go-agent-wrapper/examples/shared-conformance",
+      "tests": ["TestSharedConformanceScenariosRun", "TestSharedConformanceProgramRuns"],
+      "commands": ["go test ./examples/shared-conformance -count=1"],
+      "files": ["examples/shared-conformance/main.go", "examples/shared-conformance/main_test.go"]
+    },
+    {
+      "id": "consumer-torque",
+      "acceptance": "four-consumer-examples",
+      "guarantee": "Torque-shaped generated task tree and copied directory carry a required local loopback runtime effect and access requirement.",
+      "package": "github.com/hollis-labs/go-agent-wrapper/examples/shared-conformance",
+      "tests": ["TestSharedConformanceScenariosRun", "TestSharedConformanceProgramRuns"],
+      "commands": ["go test ./examples/shared-conformance -count=1"],
+      "files": ["examples/shared-conformance/main.go", "examples/shared-conformance/main_test.go"]
+    },
+    {
+      "id": "consumer-tether",
+      "acceptance": "four-consumer-examples",
+      "guarantee": "Tether-shaped multiple task bundles, copied trees and Claude/Codex provider overlays run through wrapper SharedPlanter.",
+      "package": "github.com/hollis-labs/go-agent-wrapper/examples/shared-conformance",
+      "tests": ["TestSharedConformanceScenariosRun", "TestSharedConformanceProgramRuns"],
+      "commands": ["go test ./examples/shared-conformance -count=1"],
+      "files": ["examples/shared-conformance/main.go", "examples/shared-conformance/main_test.go", "plant/plant_test.go"]
+    },
+    {
+      "id": "entrypoints",
+      "acceptance": "matrix",
+      "guarantee": "Direct artifacts, resolved compositions and authored recipes are independent shared preparation entry points.",
+      "package": "github.com/hollis-labs/agentkit/agentlaunch",
+      "tests": ["TestSharedMaterializationContractsCoverEntrypoints", "TestResolvePreparation_ResolvedCompositionInstallsDocumentsAndArtifacts", "TestResolvePreparation_AuthoredRecipeAndRawArtifactsUseSameMaterializer"],
+      "commands": ["cd ../agentkit && go test ./agentlaunch -count=1"],
+      "files": ["../agentkit/agentlaunch/shared_contract_examples_test.go", "../agentkit/agentlaunch/shared_preparation_test.go"]
+    },
+    {
+      "id": "artifact-safety",
+      "acceptance": "matrix",
+      "guarantee": "Filesystem, generated and immutable artifact sources preserve modes/binary/empty directories and reject collisions, traversal, limits and unsafe symlinks.",
+      "package": "github.com/hollis-labs/agentkit/artifact",
+      "tests": ["TestResolversProduceEquivalentDeterministicArtifacts", "TestResolverPreservesBinaryModesNestedFilesAndEmptyDirectories", "TestResolverRejectsImmutableMissingAndChanged", "TestResolverRejectsLimitsCancellationCollisionsAndTraversal"],
+      "commands": ["cd ../agentkit && go test ./artifact -count=1"],
+      "files": ["../agentkit/artifact/resolver_test.go"]
+    },
+    {
+      "id": "materialize-ownership",
+      "acceptance": "matrix",
+      "guarantee": "Create, reconcile and refresh preserve ownership, protect unowned content, report conflicts and keep partial failures incomplete.",
+      "package": "github.com/hollis-labs/agentkit/materialize",
+      "tests": ["TestCreatePublishesCompleteTreeWithManifestAndReport", "TestReconcileRefreshAndOwnedRemovalReportsAndManifests", "TestReconcileConflictsAndPartialRecovery", "TestReconcilePreservesUnownedContentAndDocumentKeys"],
+      "commands": ["cd ../agentkit && go test ./materialize -count=1"],
+      "files": ["../agentkit/materialize/engine_test.go", "../agentkit/materialize/reconcile_test.go"]
+    },
+    {
+      "id": "provider-projection",
+      "acceptance": "matrix",
+      "guarantee": "Provider projection is pure, version/capability-aware and reports unsupported or explicit-effect features instead of silently writing host state.",
+      "package": "github.com/hollis-labs/go-providers/provider",
+      "tests": ["TestProviderCapabilityMatrix_M06", "TestProviderProjection_GoldenLayoutsWithSkillTrees", "TestProviderProjection_PureSyntheticHome", "TestProviderProjection_ResolveLaunchStructuredRootsAndEnvPrecedence", "TestProviderProjection_UnsupportedFeatureDiagnostics", "TestProviderProjection_SkillPackageValidation"],
+      "commands": ["cd <go-providers worktree> && go test ./provider -count=1"],
+      "files": ["provider/projection_test.go", "provider/preparation_test.go"]
+    },
+    {
+      "id": "prepared-bindings",
+      "acceptance": "matrix",
+      "guarantee": "Prepared execution preserves exact argv/env/cwd, empty environment, roots and no-double-plant behavior through agentkit and wrapper seams.",
+      "package": "github.com/hollis-labs/go-agent-wrapper/wrapper",
+      "tests": ["TestRunPreparedExecutionUsesExactBindingsAndSkipsAdapterResolve", "TestRunPreparedEmptyEnvironmentAndDisabledSandboxEvent", "TestRunPreparedPerTurnSandboxEventFiresAtChildSpawn", "TestClientPreparedCommandEnvIsExact"],
+      "commands": ["go test ./wrapper ./adapters/codexacp -count=1"],
+      "files": ["wrapper/wrapper_integration_test.go", "adapters/codexacp/client_test.go"]
+    },
+    {
+      "id": "macos-denial",
+      "acceptance": "os-denial",
+      "guarantee": "macOS seatbelt enforces filesystem/network requirements or reports unsupported combinations before start.",
+      "package": "github.com/hollis-labs/go-sandbox/sandbox",
+      "tests": ["TestApplyResolvedPolicyParity_FilesystemAllowlist", "TestApplyResolvedDarwin_NetworkDenied", "TestApplyResolvedDarwin_SubprocessDenyFailsExplicitly", "TestApplyResolvedDarwin_LoopbackForwardFailsExplicitly"],
+      "commands": ["cd <go-sandbox worktree> && go test ./sandbox -run 'TestApplyResolvedPolicyParity_FilesystemAllowlist|TestApplyResolvedDarwin_NetworkDenied|TestApplyResolvedDarwin_SubprocessDenyFailsExplicitly|TestApplyResolvedDarwin_LoopbackForwardFailsExplicitly' -count=1 -v"],
+      "files": ["sandbox/resolved_policy_integration_test.go", "sandbox/integration_test.go"]
+    },
+    {
+      "id": "linux-denial",
+      "acceptance": "os-denial",
+      "guarantee": "Linux bwrap enforces filesystem/network requirements with real children; missing bwrap/kernel support is explicit unsupported evidence.",
+      "package": "github.com/hollis-labs/go-sandbox/sandbox",
+      "tests": ["TestApplyResolvedPolicyParity_FilesystemAllowlist", "TestApplyResolvedLinux_NetworkDenied", "TestApplyResolvedLinux_LoopbackAndForwarding"],
+      "commands": ["docker run --rm --privileged ... go test ./sandbox -run 'TestApplyResolvedPolicyParity_FilesystemAllowlist|TestApplyResolvedLinux_NetworkDenied|TestApplyResolvedLinux_LoopbackAndForwarding' -count=1 -v"],
+      "files": ["sandbox/resolved_policy_integration_test.go", "sandbox/integration_test.go"]
+    },
+    {
+      "id": "runner-restart-denial",
+      "acceptance": "os-denial",
+      "guarantee": "go-runner applies resolved sandbox policy before every initial/restarted child and real backend denial holds on restart.",
+      "package": "github.com/hollis-labs/go-runner/runner",
+      "tests": ["TestSandboxPolicyAppliedBeforeEveryStartAndRestart", "TestRunResolvedSandboxRealBackendDeniesAccess", "TestRunResolvedSandboxRealBackendDeniesAccessOnRestart", "TestSandboxPolicySetupFailurePreventsStart"],
+      "commands": ["cd <go-runner worktree> && go test ./runner -run 'TestRunResolvedSandboxRealBackendDeniesAccess|TestRunResolvedSandboxRealBackendDeniesAccessOnRestart|TestSandboxPolicyAppliedBeforeEveryStartAndRestart|TestSandboxPolicySetupFailurePreventsStart' -count=1 -v"],
+      "files": ["runner/sandbox_policy_test.go"]
+    },
+    {
+      "id": "agentkit-session-denial",
+      "acceptance": "os-denial",
+      "guarantee": "agentkit sessions consume prepared sandbox policy before subprocess-per-turn and persistent/restart launch boundaries.",
+      "package": "github.com/hollis-labs/agentkit/agentsessions",
+      "tests": ["TestPrepareSandboxForCommand_RequiredUnsupportedPreventsStart", "TestAdapterRuntime_PreparedExecutionBindingsAndSandbox", "TestPTYRuntime_PreparedExecutionBindingsSurviveRestartAndSkipAutoPlant"],
+      "commands": ["cd ../agentkit && go test ./agentsessions -run 'TestPrepareSandboxForCommand_RequiredUnsupportedPreventsStart|TestAdapterRuntime_PreparedExecutionBindingsAndSandbox|TestPTYRuntime_PreparedExecutionBindingsSurviveRestartAndSkipAutoPlant' -count=1 -v"],
+      "files": ["../agentkit/agentsessions/prepared_sandbox_test.go"]
+    },
+    {
+      "id": "wrapper-acp-denial",
+      "acceptance": "os-denial",
+      "guarantee": "wrapper native and ACP local children enforce or report sandbox outcomes truthfully, and remote dial-only endpoints reject required confinement.",
+      "package": "github.com/hollis-labs/go-agent-wrapper/wrapper",
+      "tests": ["TestRunDirectNativeSandboxFailureEmitsTruthfulEventAndDoesNotStart", "TestACPWrapperPreparedLocalStdioSandboxDeniesReadWrite", "TestACPWrapperPreparedLocalTCPSandboxCapabilityResult", "TestACPRemoteDialOnlyRejectsRequiredSandboxAndReportsDisabled"],
+      "commands": ["go test ./wrapper -run 'TestRunDirectNativeSandboxFailureEmitsTruthfulEventAndDoesNotStart|TestACPWrapperPreparedLocalStdioSandboxDeniesReadWrite|TestACPWrapperPreparedLocalTCPSandboxCapabilityResult|TestACPRemoteDialOnlyRejectsRequiredSandboxAndReportsDisabled' -count=1 -v"],
+      "files": ["wrapper/wrapper_integration_test.go", "wrapper/acp_subprocess_test.go"]
+    },
+    {
+      "id": "changed-library-validation",
+      "acceptance": "validation",
+      "guarantee": "Changed shared libraries pass unit/integration/vet/tidy/diff checks with known local-catalog parity drift excluded explicitly.",
+      "package": "shared-go-libraries",
+      "tests": ["go test ./..."],
+      "commands": ["go test ./... -count=1", "go mod tidy -diff", "go vet ./...", "git diff --check"],
+      "files": ["docs/shared-materialization-conformance.md"]
+    }
+  ]
+}

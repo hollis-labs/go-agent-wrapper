@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strconv"
 	"sync"
@@ -21,6 +21,7 @@ import (
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	"github.com/hollis-labs/go-agent-wrapper/internal/closegate"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
+	"github.com/hollis-labs/go-sandbox/sandbox"
 )
 
 // Errors returned by [Client]'s methods. Use [errors.Is] to detect.
@@ -159,17 +160,18 @@ type Client struct {
 	// this race during implementation.
 	turnWG sync.WaitGroup
 
-	events       chan runtimeevents.Event
-	eventsMu     sync.Mutex // serializes pushEvent's send against closeEvents' close — see pushEvent's doc comment
-	eventsClosed bool
-	eventsOnce   sync.Once
-	closeOnce    sync.Once
-	readerDone   chan struct{}
-	waitDone     chan struct{}
-	waitErr      error
-	termination  *acp.TransportTermination
-	terminated   chan struct{}
-	closeErr     error
+	events         chan runtimeevents.Event
+	eventsMu       sync.Mutex // serializes pushEvent's send against closeEvents' close — see pushEvent's doc comment
+	eventsClosed   bool
+	eventsOnce     sync.Once
+	closeOnce      sync.Once
+	readerDone     chan struct{}
+	waitDone       chan struct{}
+	waitErr        error
+	sandboxCleanup func()
+	termination    *acp.TransportTermination
+	terminated     chan struct{}
+	closeErr       error
 }
 
 type pendingWireResponse struct {
@@ -376,18 +378,20 @@ func (c *Client) configureSession(ctx context.Context, params acp.LaunchParams) 
 }
 
 func (c *Client) startStdio(params acp.LaunchParams) (io.Reader, error) {
-	binary := c.binary
-	if binary == "" {
-		binary = "copilot"
+	defaultBinary := c.binary
+	if defaultBinary == "" {
+		defaultBinary = "copilot"
 	}
-	args := append([]string{"--acp"}, c.extraArgs...)
+	defaultArgs := append([]string{"--acp"}, c.extraArgs...)
+	binary, args, err := acp.ResolveLaunchCommand(params, defaultBinary, defaultArgs)
+	if err != nil {
+		return nil, fmt.Errorf("copilotacp: launch command: %w", err)
+	}
 
 	cmd := exec.Command(binary, args...) //nolint:gosec // G204: binary/args are caller-configured, mirroring every other adapter in this repo.
 	cmd.Dir = params.Cwd
-	if len(params.Env) > 0 {
+	if params.Env != nil {
 		cmd.Env = params.Env
-	} else {
-		cmd.Env = os.Environ()
 	}
 	if c.stderr != nil {
 		cmd.Stderr = c.stderr
@@ -409,15 +413,23 @@ func (c *Client) startStdio(params acp.LaunchParams) (io.Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("copilotacp: stdout pipe: %w", err)
 	}
+	sandboxOutcome, sandboxCleanup, err := acp.PrepareLaunchSandbox(cmd, params)
+	if err != nil {
+		return nil, fmt.Errorf("copilotacp: sandbox: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
+		sandboxCleanup()
+		acp.ReportLaunchSandboxStartFailed(params, sandboxOutcome, err)
 		return nil, fmt.Errorf("copilotacp: start %s --acp: %w", binary, err)
 	}
+	acp.ReportLaunchSandboxStarted(params, sandboxOutcome)
 	if stderrPipe != nil {
 		go c.drainStderr(stderrPipe)
 	}
 
 	c.mu.Lock()
 	c.cmd = cmd
+	c.sandboxCleanup = sandboxCleanup
 	c.stdin = stdin
 	c.writer = stdin
 	c.mu.Unlock()
@@ -433,6 +445,12 @@ func (c *Client) startTCP(ctx context.Context, params acp.LaunchParams) (io.Read
 	c.mu.Unlock()
 
 	var cmd *exec.Cmd
+	var sandboxCleanup func()
+	if dialOnly {
+		if err := acp.CheckRemoteSandbox(params); err != nil {
+			return nil, err
+		}
+	}
 	if !dialOnly {
 		if port == 0 {
 			p, err := freeTCPPort()
@@ -441,19 +459,24 @@ func (c *Client) startTCP(ctx context.Context, params acp.LaunchParams) (io.Read
 			}
 			port = p
 		}
-
-		binary := c.binary
-		if binary == "" {
-			binary = "copilot"
+		if err := rejectUnsupportedLinuxTCPSandbox(params); err != nil {
+			return nil, err
 		}
-		args := append([]string{"--acp", "--port", strconv.Itoa(port)}, c.extraArgs...)
+
+		defaultBinary := c.binary
+		if defaultBinary == "" {
+			defaultBinary = "copilot"
+		}
+		defaultArgs := append([]string{"--acp", "--port", strconv.Itoa(port)}, c.extraArgs...)
+		binary, args, err := acp.ResolveLaunchCommand(params, defaultBinary, defaultArgs)
+		if err != nil {
+			return nil, fmt.Errorf("copilotacp: launch command: %w", err)
+		}
 
 		cmd = exec.Command(binary, args...) //nolint:gosec // G204: see startStdio.
 		cmd.Dir = params.Cwd
-		if len(params.Env) > 0 {
+		if params.Env != nil {
 			cmd.Env = params.Env
-		} else {
-			cmd.Env = os.Environ()
 		}
 		if c.stderr != nil {
 			cmd.Stderr = c.stderr
@@ -466,9 +489,17 @@ func (c *Client) startTCP(ctx context.Context, params acp.LaunchParams) (io.Read
 				return nil, fmt.Errorf("copilotacp: stderr pipe: %w", pipeErr)
 			}
 		}
+		sandboxOutcome, cleanup, err := acp.PrepareLaunchSandbox(cmd, params)
+		if err != nil {
+			return nil, fmt.Errorf("copilotacp: sandbox: %w", err)
+		}
+		sandboxCleanup = cleanup
 		if err := cmd.Start(); err != nil {
+			sandboxCleanup()
+			acp.ReportLaunchSandboxStartFailed(params, sandboxOutcome, err)
 			return nil, fmt.Errorf("copilotacp: start %s --acp --port %d: %w", binary, port, err)
 		}
+		acp.ReportLaunchSandboxStarted(params, sandboxOutcome)
 		if stderrPipe != nil {
 			go c.drainStderr(stderrPipe)
 		}
@@ -481,11 +512,15 @@ func (c *Client) startTCP(ctx context.Context, params acp.LaunchParams) (io.Read
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 		}
+		if sandboxCleanup != nil {
+			sandboxCleanup()
+		}
 		return nil, fmt.Errorf("copilotacp: connect to %s: %w", addr, err)
 	}
 
 	c.mu.Lock()
 	c.cmd = cmd
+	c.sandboxCleanup = sandboxCleanup
 	c.conn = conn
 	c.writer = conn
 	c.port = port
@@ -517,6 +552,28 @@ func dialWithRetry(ctx context.Context, addr string, timeout time.Duration) (net
 		lastErr = fmt.Errorf("timed out after %s", timeout)
 	}
 	return nil, lastErr
+}
+
+func rejectUnsupportedLinuxTCPSandbox(params acp.LaunchParams) error {
+	if runtime.GOOS != "linux" || params.SandboxPolicy == nil || params.SandboxPolicy.Mode != sandbox.ConfinementRequired {
+		return nil
+	}
+	if params.SandboxPolicy.Network.Mode == sandbox.NetworkFull {
+		return nil
+	}
+	out := sandbox.EnforcementOutcome{
+		PolicyID:    params.SandboxPolicy.ID,
+		Mode:        params.SandboxPolicy.Mode,
+		Backend:     params.SandboxPolicy.Backend,
+		State:       sandbox.EnforcementUnsupported,
+		Unsupported: []sandbox.Capability{sandbox.CapLoopback},
+		Diagnostics: []string{"copilotacp: Linux bwrap cannot expose a sandboxed local TCP ACP server to the parent while preserving private-network loopback/deny semantics"},
+		BackendGOOS: runtime.GOOS,
+	}
+	if params.SandboxOutcomeCallback != nil {
+		params.SandboxOutcomeCallback(out)
+	}
+	return fmt.Errorf("copilotacp: sandbox: %w: local TCP ACP requires parent-to-child loopback on Linux", sandbox.ErrUnsupportedPolicy)
 }
 
 func freeTCPPort() (int, error) {
@@ -922,6 +979,9 @@ func (c *Client) waitProcess() {
 	waitDone := c.waitDone
 	c.mu.Unlock()
 	err := cmd.Wait()
+	if c.sandboxCleanup != nil {
+		c.sandboxCleanup()
+	}
 	c.mu.Lock()
 	c.waitErr = err
 	termination := c.termination
