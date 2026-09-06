@@ -6,6 +6,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## v0.10.1 — 2026-09-06
+
+- Update agentkit to v0.6.1 to preserve streaming terminal events when a
+  prepared child exits before its stdout reader runs.
+- Install and probe bubblewrap in Linux CI so required prepared-execution
+  sandbox enforcement is exercised rather than failing on a missing backend.
+
 ## v0.10.0 — 2026-09-06
 
 ### Added

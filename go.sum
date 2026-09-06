@@ -1,7 +1,7 @@
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
 github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
-github.com/hollis-labs/agentkit v0.6.0 h1:iI9uy1xRszQQp+HM+pAXS9a5OQrdPUPr+ocbYrs92eM=
-github.com/hollis-labs/agentkit v0.6.0/go.mod h1:uhzTQL0shQAh+CTpFakZi1Mxu464Wun2zTzVGCdEU8o=
+github.com/hollis-labs/agentkit v0.6.1 h1:AgdBc7rJIwN3r6spGI69L72ylbw78G4BnUOfi0rfDT0=
+github.com/hollis-labs/agentkit v0.6.1/go.mod h1:uhzTQL0shQAh+CTpFakZi1Mxu464Wun2zTzVGCdEU8o=
 github.com/hollis-labs/go-harness-filters v0.1.1 h1:uTAF+ejKhje+rXMEOwTHsO7ig2fCAQnkANXgZBAyYZA=
 github.com/hollis-labs/go-harness-filters v0.1.1/go.mod h1:84dThT2Ro93bk7Lzpr9KNsRDY4hUcIvYoBtmIB6IEzM=
 github.com/hollis-labs/go-llm-contracts v0.3.0 h1:qVKulEixvxf5iJmUMzDfRoL00gfS6/r0TmAJ1zNX0Dc=

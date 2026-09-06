@@ -15,6 +15,12 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install Linux sandbox backend
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap iproute2
+          bwrap --ro-bind / / --unshare-net -- /bin/true
+
       - name: go fmt (verify)
         run: |
           out=$(gofmt -l .)

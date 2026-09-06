@@ -3,7 +3,7 @@ module github.com/hollis-labs/go-agent-wrapper
 go 1.26.6
 
 require (
-	github.com/hollis-labs/agentkit v0.6.0
+	github.com/hollis-labs/agentkit v0.6.1
 	github.com/hollis-labs/go-harness-filters v0.1.1
 	github.com/hollis-labs/go-llm-types v0.3.0
 	github.com/hollis-labs/go-providers v0.26.0
