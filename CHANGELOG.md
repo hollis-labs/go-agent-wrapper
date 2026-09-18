@@ -6,6 +6,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Changed
+
+- Update agentkit to pick up its cutover to
+  [`go-materialize`](https://github.com/hollis-labs/go-materialize)
+  (CW-20260918-0036): `artifact`/`materialize` moved out of agentkit into
+  their own module. `plant/plant.go`, `wrapper/prepared.go`,
+  `wrapper/wrapper.go` and the shared-conformance example now import
+  `go-materialize/artifact` and `go-materialize/materialize` directly
+  instead of `agentkit/artifact`/`agentkit/materialize`.
+
 ## v0.10.1 — 2026-09-06
 
 - Update agentkit to v0.6.1 to preserve streaming terminal events when a

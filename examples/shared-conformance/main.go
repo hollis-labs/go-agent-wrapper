@@ -13,9 +13,9 @@ import (
 
 	"github.com/hollis-labs/agentkit/agentcontext"
 	"github.com/hollis-labs/agentkit/agentlaunch"
-	"github.com/hollis-labs/agentkit/artifact"
-	"github.com/hollis-labs/agentkit/materialize"
 	"github.com/hollis-labs/go-agent-wrapper/plant"
+	"github.com/hollis-labs/go-materialize/artifact"
+	"github.com/hollis-labs/go-materialize/materialize"
 )
 
 type scenarioResult struct {

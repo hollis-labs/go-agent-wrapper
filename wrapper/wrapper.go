@@ -12,8 +12,8 @@ import (
 
 	"github.com/hollis-labs/agentkit/agentlaunch"
 	"github.com/hollis-labs/agentkit/agentsessions"
-	"github.com/hollis-labs/agentkit/materialize"
 	llmtypes "github.com/hollis-labs/go-llm-types"
+	"github.com/hollis-labs/go-materialize/materialize"
 	pevents "github.com/hollis-labs/go-providers/provider/events"
 	sandboxprofile "github.com/hollis-labs/go-sandbox/sandbox"
 

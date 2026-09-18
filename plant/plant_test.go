@@ -8,8 +8,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/hollis-labs/agentkit/artifact"
-	"github.com/hollis-labs/agentkit/materialize"
+	"github.com/hollis-labs/go-materialize/artifact"
+	"github.com/hollis-labs/go-materialize/materialize"
 )
 
 func TestNoOpPlanter(t *testing.T) {

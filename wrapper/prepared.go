@@ -9,7 +9,7 @@ import (
 
 	"github.com/hollis-labs/agentkit/agentlaunch"
 	"github.com/hollis-labs/agentkit/agentsessions"
-	"github.com/hollis-labs/agentkit/materialize"
+	"github.com/hollis-labs/go-materialize/materialize"
 
 	"github.com/hollis-labs/go-agent-wrapper/acp"
 	llmtypes "github.com/hollis-labs/go-llm-types"

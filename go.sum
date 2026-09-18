@@ -1,13 +1,15 @@
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
 github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
-github.com/hollis-labs/agentkit v0.6.1 h1:AgdBc7rJIwN3r6spGI69L72ylbw78G4BnUOfi0rfDT0=
-github.com/hollis-labs/agentkit v0.6.1/go.mod h1:uhzTQL0shQAh+CTpFakZi1Mxu464Wun2zTzVGCdEU8o=
+github.com/hollis-labs/agentkit v0.6.2-0.20260918204023-04514ae53f45 h1:E3mqZawVYiKxaNwwL83JlFNY5DwvwTaTfhjF24YbyvY=
+github.com/hollis-labs/agentkit v0.6.2-0.20260918204023-04514ae53f45/go.mod h1:/7H8qZhCkY8j8cxClj0B5Oeqsyi7wrsjxyy7wMNshSM=
 github.com/hollis-labs/go-harness-filters v0.1.1 h1:uTAF+ejKhje+rXMEOwTHsO7ig2fCAQnkANXgZBAyYZA=
 github.com/hollis-labs/go-harness-filters v0.1.1/go.mod h1:84dThT2Ro93bk7Lzpr9KNsRDY4hUcIvYoBtmIB6IEzM=
 github.com/hollis-labs/go-llm-contracts v0.3.0 h1:qVKulEixvxf5iJmUMzDfRoL00gfS6/r0TmAJ1zNX0Dc=
 github.com/hollis-labs/go-llm-contracts v0.3.0/go.mod h1:VIbzjZk7U+NCYuHdfa++ZwcaYI09om5xVxYTGd6cuw8=
 github.com/hollis-labs/go-llm-types v0.3.0 h1:QR4RX0F1zX0fYBh7sDVxnsFxmQ/vjlvc7bC6FWx+8s0=
 github.com/hollis-labs/go-llm-types v0.3.0/go.mod h1:BP8FMqmTWvi2vQ7dNybTGJ+FFzXS4gMMhAjyTHlNq84=
+github.com/hollis-labs/go-materialize v0.0.0-20260918203624-4190b433a343 h1:A5oItZgQNcXFwibRoOyEMfAZ59W/VLumT8Lh564Vlho=
+github.com/hollis-labs/go-materialize v0.0.0-20260918203624-4190b433a343/go.mod h1:kruujE9juXWTgF3NnDTVw48K5KdikmPCOcaJRF+7n60=
 github.com/hollis-labs/go-providers v0.26.0 h1:zXCu8CBkzjcVjlsucD3lEYWqyl7DCtx+XW2uBNnhUe4=
 github.com/hollis-labs/go-providers v0.26.0/go.mod h1:Y0WQHyW7gIj0ooxyvq2uDqnEHAyOOqVhB2miNiajZ2Q=
 github.com/hollis-labs/go-runner v0.7.0 h1:nJIDnZHBVn1Ii8hITTxLsGMVaEI9AWipar85qo8QkY8=
