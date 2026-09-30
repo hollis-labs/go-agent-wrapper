@@ -1,6 +1,6 @@
 # go-agent-wrapper Roadmap
 
-Status as of v0.9.0 (2026-09-05). See
+Status as of v0.11.0 (2026-09-30). See
 [CHANGELOG.md](./CHANGELOG.md) for what landed.
 
 ## Publish blockers
@@ -15,7 +15,7 @@ a deliberate manual operation after independent review.
 
 - **PTY adapter** — `Wrapper.Run` dispatches the `pty` runtime token to
   `Capabilities.PTY=true`, but no PTY-shaped concrete adapter ships in
-  v0.9.0. Claude has `provider.NewClaudeAdapterPTY()`, Codex has a PTY
+  v0.11.0. Claude has `provider.NewClaudeAdapterPTY()`, Codex has a PTY
   shape too — both are mechanical follow-ons to the existing
   streaming-stdio / jsonrpc-stdio adapters.
 

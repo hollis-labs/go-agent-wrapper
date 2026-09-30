@@ -55,10 +55,9 @@ const (
 	// ProtocolOpenCodeNative is OpenCode's native HTTP+SSE wire format.
 	ProtocolOpenCodeNative Protocol = "opencode-native"
 	// ProtocolACP is the Agent Client Protocol
-	// (agentclientprotocol.com), JSON-RPC 2.0 over stdio or TCP. No
-	// shipped Adapter uses this yet — reserved for the ACP-as-client
-	// adapter work (docs/engineering/architecture/17-acp.md in the
-	// Nanite repo).
+	// (agentclientprotocol.com), JSON-RPC 2.0 over stdio or TCP. The
+	// claudeacp, codexacp, copilotacp, opencodeacp and piacp adapters use
+	// it; Wrapper.Run drives them through the wrapper-owned acp.Manager.
 	ProtocolACP Protocol = "acp"
 	// ProtocolPTYRaw is a placeholder Protocol for the [TransportPTY]
 	// pairing: the PTY transport carries no structured wire protocol
@@ -72,9 +71,9 @@ const (
 	// stdin/stdout pipes, framed per the declared Protocol (NDJSON,
 	// JSON-RPC, or raw PTY bytes).
 	TransportStdio Transport = "stdio"
-	// TransportTCP carries bytes over a TCP socket. No shipped Adapter
-	// uses this yet — reserved for TCP-mode ACP agents (e.g. GitHub
-	// Copilot CLI's `--acp` daemon mode).
+	// TransportTCP carries bytes over a TCP socket. The copilotacp adapter
+	// uses it for Copilot CLI's `--acp` daemon mode (the wrapper dispatches
+	// it as RuntimeACPTCP).
 	TransportTCP Transport = "tcp"
 	// TransportHTTPSSE carries bytes over HTTP request/response plus a
 	// Server-Sent-Events stream for the async half.

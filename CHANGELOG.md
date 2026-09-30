@@ -4,6 +4,17 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.11.1 — 2026-09-30
+
+Docs and comments only; no code change.
+
+### Changed
+
+- README and ROADMAP status now read v0.11.0, `go get` names the current tag, and the dependency list matches `go.mod`.
+- The `ProtocolACP` and `TransportTCP` comments no longer say no shipped adapter uses them: five ACP adapters exist and `copilotacp` uses TCP. The `RuntimeACPTCP` dispatch comment now describes the wrapper-owned `acp.Manager` path instead of saying TCP has no case.
+- `adapters/opencode` docs point at `LaunchSubprocessPerTurn` for run mode.
+- The README states that `LaunchDefault` (Codex app-server, OpenCode serve-http) is this library's default and differs from agentkit's `runtimebind` default (subprocess-per-turn), so hosts should request a mode explicitly.
+
 ## v0.11.0 — 2026-09-30
 
 ### Added

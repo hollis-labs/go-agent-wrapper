@@ -13,7 +13,7 @@ This is the "sibling agent in parallel" path identified by the
 `agentkit-wrapper-alignment-review-2026-05-26.md` rollout (step 9):
 filters / plant / sandbox composition + Tachyon `cmd/agent-wrap`.
 
-## Status (v0.9.0, 2026-09-05)
+## Status (v0.11.0, 2026-09-30)
 
 End-to-end launch path is wired:
 
@@ -73,7 +73,7 @@ Module path: `github.com/hollis-labs/go-agent-wrapper`
 ## Install
 
 ```sh
-go get github.com/hollis-labs/go-agent-wrapper@v0.9.0
+go get github.com/hollis-labs/go-agent-wrapper@v0.11.0
 ```
 
 The module requires Go 1.26.6. Its dependency graph contains no local
@@ -176,7 +176,11 @@ current runtime dependencies' empty-slice fallback from restoring the ambient
 environment. Subprocess-per-turn launches preserve a genuinely empty slice.
 
 `adapters.LaunchDefault` intentionally retains existing behavior: Claude uses
-streaming stdio, Codex uses app-server, and OpenCode uses serve-http. Hosts that
+streaming stdio, Codex uses app-server, and OpenCode uses serve-http. This is
+this library's default, set in `adapters.Select`; agentkit's `runtimebind`
+package, when a host resolves a runtime through it instead, defaults Codex and
+OpenCode to subprocess-per-turn. The two layers therefore differ for an unset
+mode, so a host that cares should request the mode explicitly. Hosts that
 need the Nanite-compatible native shapes request `LaunchStreamingStdio` for
 Claude and `LaunchSubprocessPerTurn` for Codex/OpenCode. `DeveloperMode` is
 defined only for factory-created Claude adapters. A host with a previously
@@ -357,15 +361,15 @@ responder. Remove any consumer-side replacements for `go-harness-filters` and
 
 ## Dependencies
 
-- `github.com/hollis-labs/agentkit` (v0.5.0) — sessions, launch,
+- `github.com/hollis-labs/agentkit` (see `go.mod` for the pinned revision) — sessions, launch,
   runtime, context, broker.
 - `github.com/hollis-labs/go-runtime-events` (v0.1.2) —
   runtime activity event envelope.
 - `github.com/hollis-labs/go-harness-filters` (v0.1.1) —
   classify + directive + repair (used via `classifybridge/`).
-- `github.com/hollis-labs/go-sandbox` (v0.2.1) — sandbox profiles.
-- `github.com/hollis-labs/go-runner` (v0.5.0, indirect) — process supervision.
-- `github.com/hollis-labs/go-providers` (v0.23.0) — provider adapters.
+- `github.com/hollis-labs/go-sandbox` (v0.3.0) — sandbox profiles.
+- `github.com/hollis-labs/go-runner` (v0.7.0, indirect) — process supervision.
+- `github.com/hollis-labs/go-providers` (v0.26.0) — provider adapters.
 
 All requirements are released versions fetched through the public Go module
 proxy; `go.mod` contains no `replace` directive.

@@ -67,11 +67,10 @@ func runtimeCaps(protocol adapters.Protocol, transport adapters.Transport) (agen
 		// adapter's [adapters.RuntimeAdapter.CLIAdapter] implementation
 		// supplies (TASKS/agent-host-acp/09, 10, Phase 4 — the Nanite
 		// repo). TCP-transport ACP (e.g. Copilot CLI's `--acp` daemon
-		// mode) has no case here yet — agentkit has no TCP-session
-		// runtime kind to select, and adding one is out of scope for
-		// this dispatch-table wiring task; falls to the default
-		// [ErrUnknownRuntime] case below until a concrete TCP-based ACP
-		// adapter needs it.
+		// mode) is not dispatched to an agentkit capability: agentkit has
+		// no TCP-session runtime kind, so it has its own runtime token,
+		// RuntimeACPTCP, and is driven by the wrapper-owned acp.Manager
+		// rather than an agentkit lifecycle.
 		return agentsessions.Capabilities{JsonRpcStdio: true, BinaryRequired: true}, nil
 	case protocol == "" && transport == "":
 		// Empty Protocol/Transport: subprocess-per-turn fallback, no
