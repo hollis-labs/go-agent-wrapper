@@ -4,6 +4,17 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.13.0 — 2026-09-30
+
+Dependency convergence: go-agent-wrapper now builds against released tags instead
+of an agentkit pseudo-version.
+
+### Changed
+
+- Requires `agentkit` v0.9.0 (was the `04514ae` pseudo-version), `go-providers` v0.30.0 (was v0.26.0) and `go-materialize` v0.1.0 (was a pseudo-version). The agentkit and go-providers pair moves together.
+- OpenCode's per-turn run now goes through `opencode run --format json`, so `Select` returns argv `run --format json --agent <name> <prompt>` and the wrapper normalizes OpenCode's typed JSON output into events. A host that pinned the old plain-text argv must update.
+- Tests: the OpenCode argv pin and the fake `opencode` in the subprocess-per-turn integration test now use the JSON output shape.
+
 ## v0.12.0 — 2026-09-30
 
 ### Changed

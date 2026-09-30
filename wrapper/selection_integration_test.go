@@ -220,7 +220,7 @@ func TestSelectedSubprocessPerTurnEnvironmentArgsEventsAndCleanup(t *testing.T) 
 		{
 			name:       "opencode",
 			provider:   adapters.ProviderOpenCode,
-			scriptLine: `printf '%s\n' 'selected opencode'`,
+			scriptLine: `printf '%s\n' '{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start"}}' '{"type":"text","sessionID":"ses_fixture","part":{"type":"text","text":"selected opencode"}}' '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","reason":"stop","tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}'`,
 		},
 	}
 

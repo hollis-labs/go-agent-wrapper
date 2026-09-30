@@ -13,7 +13,7 @@ This is the "sibling agent in parallel" path identified by the
 `agentkit-wrapper-alignment-review-2026-05-26.md` rollout (step 9):
 filters / plant / sandbox composition + Tachyon `cmd/agent-wrap`.
 
-## Status (v0.11.0, 2026-09-30)
+## Status (v0.13.0, 2026-09-30)
 
 End-to-end launch path is wired:
 
@@ -73,7 +73,7 @@ Module path: `github.com/hollis-labs/go-agent-wrapper`
 ## Install
 
 ```sh
-go get github.com/hollis-labs/go-agent-wrapper@v0.11.0
+go get github.com/hollis-labs/go-agent-wrapper@v0.13.0
 ```
 
 The module requires Go 1.26.6. Its dependency graph contains no local
@@ -363,7 +363,7 @@ responder. Remove any consumer-side replacements for `go-harness-filters` and
 
 ## Dependencies
 
-- `github.com/hollis-labs/agentkit` (see `go.mod` for the pinned revision) — sessions, launch,
+- `github.com/hollis-labs/agentkit` (v0.9.0) — sessions, launch,
   runtime, context, broker.
 - `github.com/hollis-labs/go-runtime-events` (v0.1.2) —
   runtime activity event envelope.
@@ -371,7 +371,7 @@ responder. Remove any consumer-side replacements for `go-harness-filters` and
   classify + directive + repair (used via `classifybridge/`).
 - `github.com/hollis-labs/go-sandbox` (v0.3.0) — sandbox profiles.
 - `github.com/hollis-labs/go-runner` (v0.7.0, indirect) — process supervision.
-- `github.com/hollis-labs/go-providers` (v0.26.0) — provider adapters.
+- `github.com/hollis-labs/go-providers` (v0.30.0) — provider adapters.
 
 All requirements are released versions fetched through the public Go module
 proxy; `go.mod` contains no `replace` directive.

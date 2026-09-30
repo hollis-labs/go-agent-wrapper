@@ -49,7 +49,7 @@ func TestSelectRuntimeMatrix(t *testing.T) {
 		{
 			name:      "opencode default is subprocess per turn",
 			selection: Selection{Provider: ProviderOpenCode},
-			wantArgs:  []string{"run", "--agent", "", "prompt"},
+			wantArgs:  []string{"run", "--format", "json", "--agent", "", "prompt"},
 		},
 		{
 			name:         "opencode serve http is explicit",
@@ -60,7 +60,7 @@ func TestSelectRuntimeMatrix(t *testing.T) {
 		{
 			name:      "opencode subprocess per turn",
 			selection: Selection{Provider: ProviderOpenCode, LaunchMode: LaunchSubprocessPerTurn},
-			wantArgs:  []string{"run", "--agent", "", "prompt"},
+			wantArgs:  []string{"run", "--format", "json", "--agent", "", "prompt"},
 		},
 	}
 

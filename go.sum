@@ -1,7 +1,7 @@
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
 github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
-github.com/hollis-labs/agentkit v0.8.0 h1:wRph0ga6bVYaXRmsaR5TQBmPYul0psudHQm3rK9dbpw=
-github.com/hollis-labs/agentkit v0.8.0/go.mod h1:mkH/IRbljEfmHOb88X+to1aD/4a3RB63rbsHKysmTZw=
+github.com/hollis-labs/agentkit v0.9.0 h1:Do/m8S323s4PGZZiZRQJoSuCTvkPcrrSGNftmOu8ubc=
+github.com/hollis-labs/agentkit v0.9.0/go.mod h1:mkH/IRbljEfmHOb88X+to1aD/4a3RB63rbsHKysmTZw=
 github.com/hollis-labs/go-harness-filters v0.1.1 h1:uTAF+ejKhje+rXMEOwTHsO7ig2fCAQnkANXgZBAyYZA=
 github.com/hollis-labs/go-harness-filters v0.1.1/go.mod h1:84dThT2Ro93bk7Lzpr9KNsRDY4hUcIvYoBtmIB6IEzM=
 github.com/hollis-labs/go-llm-contracts v0.3.0 h1:qVKulEixvxf5iJmUMzDfRoL00gfS6/r0TmAJ1zNX0Dc=
@@ -10,8 +10,8 @@ github.com/hollis-labs/go-llm-types v0.3.0 h1:QR4RX0F1zX0fYBh7sDVxnsFxmQ/vjlvc7b
 github.com/hollis-labs/go-llm-types v0.3.0/go.mod h1:BP8FMqmTWvi2vQ7dNybTGJ+FFzXS4gMMhAjyTHlNq84=
 github.com/hollis-labs/go-materialize v0.1.0 h1:JQ7nKIlKIaWvuiN1yPpad0dQaJTLocuQQdfynY9n9nY=
 github.com/hollis-labs/go-materialize v0.1.0/go.mod h1:ubDxYOfG+hCX0PXQaVm8ssmJoc6ZCDh8iSO46pj0PK0=
-github.com/hollis-labs/go-providers v0.29.0 h1:LDXBb7QMj2J4Bnyldn2YuHXV++F9AuUUI+hRUAYpCw8=
-github.com/hollis-labs/go-providers v0.29.0/go.mod h1:5R5edyANZAxU2f+y+vpjwQJuN6KM0nNwbRUDmH2yQJ8=
+github.com/hollis-labs/go-providers v0.30.0 h1:ClqU2WG3cJr9uhygUGftDNkS+T83J6kwvJcnOioVWYI=
+github.com/hollis-labs/go-providers v0.30.0/go.mod h1:5R5edyANZAxU2f+y+vpjwQJuN6KM0nNwbRUDmH2yQJ8=
 github.com/hollis-labs/go-runner v0.7.0 h1:nJIDnZHBVn1Ii8hITTxLsGMVaEI9AWipar85qo8QkY8=
 github.com/hollis-labs/go-runner v0.7.0/go.mod h1:+PgCa0CxAImd63sZgLb8Zw0uasyDWyHRdcE2sH8Zc7Q=
 github.com/hollis-labs/go-runtime-events v0.1.2 h1:ChyjCVidjeAVf+dUJjiJTdX/LYujkJILKuLi+cTDNJM=
