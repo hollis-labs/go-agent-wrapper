@@ -4,6 +4,13 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.12.0 — 2026-09-30
+
+### Changed
+
+- **Behavior change: `adapters.Select` now resolves OpenCode's unset launch mode to `LaunchSubprocessPerTurn`** (`opencode run`), not `LaunchServeHTTP`. OpenCode's serve-http runtime is deferred until its SSE and permission behavior is probed, so it should not have been the default. `LaunchServeHTTP` still works when requested explicitly. A host that relied on the unset mode getting serve-http must now pass `LaunchMode: LaunchServeHTTP`. Claude (streaming stdio) and Codex (app-server) defaults are unchanged.
+- README: the `LaunchDefault` description matches; the Codex difference from agentkit's `runtimebind` default remains documented as open.
+
 ## v0.11.1 — 2026-09-30
 
 Docs and comments only; no code change.

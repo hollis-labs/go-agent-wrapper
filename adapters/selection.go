@@ -36,7 +36,8 @@ type LaunchMode string
 
 const (
 	// LaunchDefault preserves each shipped adapter package's historical
-	// default: Claude streaming stdio, Codex app-server, OpenCode serve-http.
+	// default: Claude streaming stdio, Codex app-server, OpenCode
+	// subprocess-per-turn (serve-http is deferred, not the default).
 	LaunchDefault LaunchMode = ""
 
 	// LaunchStreamingStdio selects one long-lived native streaming-stdio
@@ -137,7 +138,9 @@ func Select(cfg Selection) (RuntimeAdapter, error) {
 		case ProviderCodex:
 			mode = LaunchAppServer
 		case ProviderOpenCode:
-			mode = LaunchServeHTTP
+			// OpenCode stays on `run --format json --session`; the serve-http
+			// runtime is deferred until its SSE and permission behavior is probed.
+			mode = LaunchSubprocessPerTurn
 		}
 	}
 

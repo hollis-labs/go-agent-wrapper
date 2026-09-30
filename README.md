@@ -50,7 +50,7 @@ End-to-end launch path is wired:
 - `adapters.Select` chooses a native adapter from provider, Runtime kind, and
   launch mode. It covers Claude streaming-stdio (including the explicit
   developer-mode variant) and Codex/OpenCode subprocess-per-turn while
-  preserving the shipped packages' existing app-server/serve-http defaults.
+  keeping Claude on streaming-stdio and Codex on app-server by default; OpenCode defaults to subprocess-per-turn.
 - ACP adapters run through a wrapper-owned `acp.Manager`: `Wrapper.Run`
   validates ACP v1 negotiation, performs optional agent authentication,
   capability-gated create-or-resume, deterministic mode/config application,
@@ -175,12 +175,14 @@ reserved `GO_AGENT_WRAPPER_EMPTY_ENVIRONMENT=1` marker; this prevents the
 current runtime dependencies' empty-slice fallback from restoring the ambient
 environment. Subprocess-per-turn launches preserve a genuinely empty slice.
 
-`adapters.LaunchDefault` intentionally retains existing behavior: Claude uses
-streaming stdio, Codex uses app-server, and OpenCode uses serve-http. This is
-this library's default, set in `adapters.Select`; agentkit's `runtimebind`
-package, when a host resolves a runtime through it instead, defaults Codex and
-OpenCode to subprocess-per-turn. The two layers therefore differ for an unset
-mode, so a host that cares should request the mode explicitly. Hosts that
+`adapters.LaunchDefault` (an unset mode) resolves to streaming stdio for Claude,
+app-server for Codex and subprocess-per-turn for OpenCode. OpenCode's serve-http
+runtime is deferred until its SSE and permission behavior is probed, so it is
+available only by requesting `LaunchServeHTTP` explicitly; it is not the default.
+Codex is an open difference between layers: agentkit's `runtimebind` package,
+when a host resolves a runtime through it instead, defaults Codex to
+subprocess-per-turn, so a host that cares should request the Codex mode
+explicitly. Hosts that
 need the Nanite-compatible native shapes request `LaunchStreamingStdio` for
 Claude and `LaunchSubprocessPerTurn` for Codex/OpenCode. `DeveloperMode` is
 defined only for factory-created Claude adapters. A host with a previously

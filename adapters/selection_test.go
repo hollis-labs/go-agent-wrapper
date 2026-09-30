@@ -47,8 +47,13 @@ func TestSelectRuntimeMatrix(t *testing.T) {
 			wantArgs:  []string{"exec", "prompt", "--json", "--skip-git-repo-check"},
 		},
 		{
-			name:         "opencode default preserves serve http",
-			selection:    Selection{Provider: ProviderOpenCode},
+			name:      "opencode default is subprocess per turn",
+			selection: Selection{Provider: ProviderOpenCode},
+			wantArgs:  []string{"run", "--agent", "", "prompt"},
+		},
+		{
+			name:         "opencode serve http is explicit",
+			selection:    Selection{Provider: ProviderOpenCode, LaunchMode: LaunchServeHTTP},
 			wantProtocol: ProtocolOpenCodeNative, wantTransport: TransportHTTPSSE,
 			wantArgs: []string{"serve", "--port", "0", "--hostname", "127.0.0.1"},
 		},
