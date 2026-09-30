@@ -40,6 +40,17 @@
 // (wrapper/event_translator.go's (kind, payload) pattern) rather than
 // inventing a parallel event shape.
 //
+// NDJSONBridgeClient is the shared Client implementation behind
+// adapters/claudeacp, adapters/codexacp, adapters/opencodeacp and
+// adapters/piacp: one newline-delimited JSON-RPC 2.0 client over a spawned
+// subprocess's stdin/stdout. Each adapter supplies only an
+// NDJSONBridgeConfig — how to resolve the command, how to translate that
+// agent's session/update notifications — and inherits the handshake, turn
+// lifecycle, termination coordination and permission dispatch. A response
+// whose id is not an integer is reported as a protocol diagnostic and counted
+// as malformed input, matching adapters/copilotacp, which has its own dual
+// stdio/TCP client and does not use this type.
+//
 // LaunchParams.BestEffortPermissionRequestResponder is the shared optional
 // answer path for agent-initiated session/request_permission calls. It selects
 // only exact option IDs offered by the agent, fails closed on invalid input or

@@ -15,13 +15,13 @@ import (
 // tool_call/tool_call_update → agent.tool_use/agent.tool_result,
 // permission requests → agent.permission_requested/resolved" — the last
 // of those is a server-initiated REQUEST, not a notification, and is
-// handled by [Client.handleServerRequest] instead.
+// handled by the shared [acp.NDJSONBridgeClient]'s server-request handler instead.
 //
 // `session/cancel` is the only other notification method ACP defines,
 // and it flows client→agent (this Client sends it; it never receives
 // one) — so the only inbound notification method observed or expected
 // here is `session/update`.
-func (c *Client) handleNotification(method string, params json.RawMessage) {
+func handleNotification(c *acp.NDJSONBridgeClient, method string, params json.RawMessage) {
 	if method != "session/update" {
 		return
 	}
@@ -44,9 +44,7 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 	if err := json.Unmarshal(envelope.Update, &kindProbe); err != nil {
 		return
 	}
-	c.turnMu.Lock()
-	turnID := c.currentTurnID
-	c.turnMu.Unlock()
+	turnID := c.CurrentTurnID()
 
 	switch kindProbe.SessionUpdate {
 	case "agent_message_chunk":
@@ -59,7 +57,7 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 		if err := json.Unmarshal(envelope.Update, &v); err != nil {
 			return
 		}
-		c.emit(runtimeevents.Event{
+		c.Emit(runtimeevents.Event{
 			Kind:   runtimeevents.KindAgentDelta,
 			TurnID: turnID,
 			Payload: mustMarshal(map[string]any{
@@ -86,7 +84,7 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 		if err := json.Unmarshal(envelope.Update, &v); err != nil {
 			return
 		}
-		c.emit(runtimeevents.Event{
+		c.Emit(runtimeevents.Event{
 			Kind:   runtimeevents.KindAgentDelta,
 			TurnID: turnID,
 			Payload: mustMarshal(map[string]any{
@@ -128,7 +126,7 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 				payload["raw_input"] = rawInput
 			}
 		}
-		c.emit(runtimeevents.Event{
+		c.Emit(runtimeevents.Event{
 			Kind:    runtimeevents.KindAgentToolUse,
 			TurnID:  turnID,
 			Payload: mustMarshal(payload),
@@ -186,7 +184,7 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 			}
 			payload["terminal_exit"] = exit
 		}
-		c.emit(runtimeevents.Event{
+		c.Emit(runtimeevents.Event{
 			Kind:    runtimeevents.KindAgentToolResult,
 			TurnID:  turnID,
 			Payload: mustMarshal(payload),
@@ -202,95 +200,4 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 		// ill-fitting Kind — matches go-providers' own EventParser
 		// convention and opencodeacp's/copilotacp's identical precedent.
 	}
-}
-
-// handleServerRequest answers a server-initiated JSON-RPC request (a
-// frame carrying both `method` and `id`) from pi-acp. Per JSON-RPC 2.0,
-// every such request requires a response — without one, pi-acp (and,
-// transitively, the `pi` process it owns) blocks waiting for it.
-//
-// `session/request_permission` maps onto
-// agent.permission_requested/resolved per 17-acp.md's explicit mapping
-// (Nanite repo). A configured best-effort responder selects one exact
-// provider-offered option; without one, the Client retains its established
-// "cancelled" outcome. Both paths emit a correlated request/resolved pair.
-// The callback is defensive rather than comprehensive because Pi normally
-// executes tools locally without issuing this request.
-//
-// Other server-initiated methods this Client's declared
-// clientCapabilities (fs: false, terminal: false — see Launch) tell
-// pi-acp not to expect (`fs/read_text_file`, `fs/write_text_file`,
-// `terminal/*`) get a generic "not supported" JSON-RPC error if pi-acp
-// sends one anyway. Unlike opencodeacp's equivalent finding (empirically
-// confirmed for exactly one tool-call shape), pi-acp's own README
-// documents this as a PERMANENT design choice — "No ACP filesystem
-// delegation (fs/*) and no ACP terminal delegation (terminal/*). pi
-// reads/writes and executes locally." — not merely an untested unknown;
-// this handler still exists defensively in case a future pi-acp release
-// changes that.
-func (c *Client) handleServerRequest(frame rpcFrame) {
-	if frame.Method != "session/request_permission" {
-		_ = c.respondToServerRequest(frame.ID, nil, &rpcError{
-			Code:    -32601,
-			Message: "piacp: no handler configured for server-initiated method " + frame.Method,
-		})
-		return
-	}
-
-	// Correlate the requested/resolved pair via ACP's OWN JSON-RPC
-	// request id (a stable, protocol-native correlator) rather than a
-	// synthesized runtimeevents ID/ParentID pair: [acp.Client.Events]'s
-	// documented contract leaves Event.ID zero for the caller's own
-	// Emitter/activity.Bridge to assign, so this Client must not invent
-	// one just to self-correlate two of its own events.
-	acpRequestID := append(json.RawMessage(nil), frame.ID...)
-	requestID := append(json.RawMessage(nil), frame.ID...)
-	configured := c.permissions.Configured()
-	var turnID string
-	c.permissions.DispatchTurnRequest(frame.Params, func(admission acp.PermissionDispatchAdmission) {
-		if !admission.ActiveTurn {
-			return
-		}
-		c.turnMu.Lock()
-		turnID = c.currentTurnID
-		c.turnMu.Unlock()
-		c.emit(runtimeevents.Event{
-			Kind:   runtimeevents.KindAgentPermissionRequested,
-			TurnID: turnID,
-			Payload: mustMarshal(map[string]any{
-				"request_id": acpRequestID,
-				"method":     frame.Method,
-				"params":     frame.Params,
-			}),
-		})
-	}, func(admission acp.PermissionDispatchAdmission, resolution acp.PermissionResolution) error {
-		err := c.respondToServerRequest(requestID, resolution.Result(), nil)
-		if !admission.ActiveTurn {
-			return err
-		}
-		payload := resolution.ResolvedEventPayload(acpRequestID)
-		if !configured {
-			payload = map[string]any{
-				"request_id": acpRequestID,
-				"allowed":    false,
-				"reason":     "piacp: no approval handler configured",
-			}
-		}
-		if err != nil {
-			payload = resolution.DeliveryFailureEventPayload(acpRequestID)
-		}
-		c.emit(runtimeevents.Event{
-			Kind:    runtimeevents.KindAgentPermissionResolved,
-			TurnID:  turnID,
-			Payload: mustMarshal(payload),
-		})
-		return err
-	}, func(resolution acp.PermissionResolution) {
-		if resolution.ResponseError() != nil {
-			c.abortPermissionTransport()
-		}
-		if diagnostic, ok := resolution.Diagnostic(); ok {
-			c.reportDiagnostic(diagnostic)
-		}
-	})
 }
