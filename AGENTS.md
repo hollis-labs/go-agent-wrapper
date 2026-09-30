@@ -36,8 +36,8 @@ CLI.
 
 This module tracks published `agentkit` and `go-sandbox` releases through
 ordinary `go.mod` pins. Never add a local `replace` directive to pick up
-unreleased work — `agentkit/docs/shared-materialization-handoff.md` forbids it
-and prescribes a temporary `go.work` outside the repositories instead.
+unreleased work; use a temporary `go.work` kept outside the repository
+instead.
 
 ## Boundaries
 
