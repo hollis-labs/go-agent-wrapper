@@ -6,7 +6,30 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+- `acp.NDJSONBridgeClient`, `acp.NDJSONBridgeConfig` and `acp.RPCError`: one
+  shared newline-delimited JSON-RPC ACP client (handshake, turn lifecycle,
+  termination coordination, permission dispatch) parameterized by command
+  resolution, notification translation and an optional launch-environment hook.
+  `CurrentTurnID` and `Emit` let a translator stamp and emit events.
+
+### Fixed
+
+- `claudeacp`, `codexacp`, `opencodeacp` and `piacp` now report a JSON-RPC
+  response with a non-numeric id as a protocol diagnostic and count it as
+  malformed input for the termination coordinator, as `copilotacp` already did.
+  They previously dropped it silently.
+
 ### Changed
+
+- `claudeacp`, `codexacp`, `opencodeacp` and `piacp` delegate their client
+  implementation to `acp.NDJSONBridgeClient`; each keeps its exported `Client`
+  type, options and behavior, and shrinks to command resolution plus its own
+  notification translator.
+- A JSON-RPC error returned by `codexacp` and `opencodeacp` now reads
+  `codexacp: jsonrpc error …` / `opencodeacp: jsonrpc error …` instead of the
+  unprefixed `acp: jsonrpc error …`, matching `claudeacp` and `piacp`.
 
 - Update agentkit to pick up its cutover to
   [`go-materialize`](https://github.com/hollis-labs/go-materialize)
