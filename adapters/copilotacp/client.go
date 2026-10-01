@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
 	"runtime"
 	"sort"
@@ -19,7 +20,9 @@ import (
 
 	"github.com/hollis-labs/go-agent-wrapper/acp"
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
+	"github.com/hollis-labs/go-agent-wrapper/internal/childoutput"
 	"github.com/hollis-labs/go-agent-wrapper/internal/closegate"
+	llmtypes "github.com/hollis-labs/go-llm-types"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 	"github.com/hollis-labs/go-sandbox/sandbox"
 )
@@ -172,6 +175,15 @@ type Client struct {
 	termination    *acp.TransportTermination
 	terminated     chan struct{}
 	closeErr       error
+
+	// The child's stdout (stdio transport) and stderr (when piped to the
+	// diagnostic sink) read ends, owned here rather than by exec.Cmd so Wait
+	// cannot close them under the readers; waitProcess drains them (see
+	// internal/childoutput). readerDone and stderrDone close when readLoop
+	// and drainStderr finish.
+	stdoutPipe *os.File
+	stderrPipe *os.File
+	stderrDone chan struct{}
 }
 
 type pendingWireResponse struct {
@@ -393,48 +405,87 @@ func (c *Client) startStdio(params acp.LaunchParams) (io.Reader, error) {
 	if params.Env != nil {
 		cmd.Env = params.Env
 	}
-	if c.stderr != nil {
-		cmd.Stderr = c.stderr
-	}
-	var stderrPipe io.ReadCloser
-	if c.stderr == nil && c.diagnostic != nil {
-		var pipeErr error
-		stderrPipe, pipeErr = cmd.StderrPipe()
-		if pipeErr != nil {
-			return nil, fmt.Errorf("copilotacp: stderr pipe: %w", pipeErr)
-		}
+	stderr, err := c.pipeStderr(cmd)
+	if err != nil {
+		return nil, err
 	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		stderr.Close()
 		return nil, fmt.Errorf("copilotacp: stdin pipe: %w", err)
 	}
-	stdout, err := cmd.StdoutPipe()
+	// Own stdout rather than using cmd.StdoutPipe: Wait closes that as soon
+	// as the child exits, racing readLoop and discarding a reply the child
+	// wrote just before exiting (CW-20261001-0039).
+	stdout, err := childoutput.NewPipe()
 	if err != nil {
+		stderr.Close()
 		return nil, fmt.Errorf("copilotacp: stdout pipe: %w", err)
 	}
+	cmd.Stdout = stdout.W
 	sandboxOutcome, sandboxCleanup, err := acp.PrepareLaunchSandbox(cmd, params)
 	if err != nil {
+		stdout.Close()
+		stderr.Close()
 		return nil, fmt.Errorf("copilotacp: sandbox: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
+		stdout.Close()
+		stderr.Close()
 		sandboxCleanup()
 		acp.ReportLaunchSandboxStartFailed(params, sandboxOutcome, err)
 		return nil, fmt.Errorf("copilotacp: start %s --acp: %w", binary, err)
 	}
+	stdout.Started()
 	acp.ReportLaunchSandboxStarted(params, sandboxOutcome)
-	if stderrPipe != nil {
-		go c.drainStderr(stderrPipe)
-	}
+	c.startStderr(stderr)
 
 	c.mu.Lock()
 	c.cmd = cmd
 	c.sandboxCleanup = sandboxCleanup
 	c.stdin = stdin
 	c.writer = stdin
+	c.stdoutPipe = stdout.R
 	c.mu.Unlock()
 
-	return stdout, nil
+	return stdout.R, nil
+}
+
+// pipeStderr routes the child's stderr: to the configured writer, else to an
+// owned pipe when a diagnostic sink wants its lines, else nowhere. The pipe
+// is owned rather than cmd.StderrPipe for the same reason as stdout.
+func (c *Client) pipeStderr(cmd *exec.Cmd) (childoutput.Pipe, error) {
+	if c.stderr != nil {
+		cmd.Stderr = c.stderr
+		return childoutput.Pipe{}, nil
+	}
+	if c.diagnostic == nil {
+		return childoutput.Pipe{}, nil
+	}
+	p, err := childoutput.NewPipe()
+	if err != nil {
+		return childoutput.Pipe{}, fmt.Errorf("copilotacp: stderr pipe: %w", err)
+	}
+	cmd.Stderr = p.W
+	return p, nil
+}
+
+// startStderr starts reading a stderr pipe from [Client.pipeStderr] once the
+// child has started; a zero Pipe (stderr not piped) is a no-op.
+func (c *Client) startStderr(p childoutput.Pipe) {
+	p.Started()
+	if p.R == nil {
+		return
+	}
+	done := make(chan struct{})
+	c.mu.Lock()
+	c.stderrPipe, c.stderrDone = p.R, done
+	c.mu.Unlock()
+	go func() {
+		defer close(done)
+		c.drainStderr(p.R)
+	}()
 }
 
 func (c *Client) startTCP(ctx context.Context, params acp.LaunchParams) (io.Reader, error) {
@@ -478,31 +529,24 @@ func (c *Client) startTCP(ctx context.Context, params acp.LaunchParams) (io.Read
 		if params.Env != nil {
 			cmd.Env = params.Env
 		}
-		if c.stderr != nil {
-			cmd.Stderr = c.stderr
-		}
-		var stderrPipe io.ReadCloser
-		if c.stderr == nil && c.diagnostic != nil {
-			var pipeErr error
-			stderrPipe, pipeErr = cmd.StderrPipe()
-			if pipeErr != nil {
-				return nil, fmt.Errorf("copilotacp: stderr pipe: %w", pipeErr)
-			}
+		stderr, err := c.pipeStderr(cmd)
+		if err != nil {
+			return nil, err
 		}
 		sandboxOutcome, cleanup, err := acp.PrepareLaunchSandbox(cmd, params)
 		if err != nil {
+			stderr.Close()
 			return nil, fmt.Errorf("copilotacp: sandbox: %w", err)
 		}
 		sandboxCleanup = cleanup
 		if err := cmd.Start(); err != nil {
+			stderr.Close()
 			sandboxCleanup()
 			acp.ReportLaunchSandboxStartFailed(params, sandboxOutcome, err)
 			return nil, fmt.Errorf("copilotacp: start %s --acp --port %d: %w", binary, port, err)
 		}
 		acp.ReportLaunchSandboxStarted(params, sandboxOutcome)
-		if stderrPipe != nil {
-			go c.drainStderr(stderrPipe)
-		}
+		c.startStderr(stderr)
 	}
 
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
@@ -511,6 +555,10 @@ func (c *Client) startTCP(ctx context.Context, params acp.LaunchParams) (io.Read
 		if cmd != nil && cmd.Process != nil {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
+			c.mu.Lock()
+			stderr, stderrDone := c.stderrPipe, c.stderrDone
+			c.mu.Unlock()
+			childoutput.Drain(stderr, stderrDone, time.Now().Add(childoutput.DrainTimeout))
 		}
 		if sandboxCleanup != nil {
 			sandboxCleanup()
@@ -820,15 +868,15 @@ func (c *Client) awaitPromptResult(turnID string, ch chan wireFrame) {
 	f, ok := <-ch
 	var event runtimeevents.Event
 	if !ok {
-		payload, _ := json.Marshal(map[string]any{"error": "connection closed before session/prompt response"})
+		payload, _ := json.Marshal(map[string]any{"error": "connection closed before session/prompt response", "stop_reason": llmtypes.StopReasonError})
 		event = runtimeevents.Event{Kind: runtimeevents.KindTurnFailed, TurnID: turnID, Payload: payload}
 	} else if f.Error != nil {
-		payload, _ := json.Marshal(map[string]any{"error": f.Error.Message})
+		payload, _ := json.Marshal(map[string]any{"error": f.Error.Message, "stop_reason": llmtypes.StopReasonError})
 		event = runtimeevents.Event{Kind: runtimeevents.KindTurnFailed, TurnID: turnID, Payload: payload}
 	} else {
 		var res sessionPromptResult
 		_ = json.Unmarshal(f.Result, &res)
-		payload, _ := json.Marshal(map[string]any{"stop_reason": res.StopReason})
+		payload, _ := json.Marshal(map[string]any{"stop_reason": llmtypes.NormalizeStopReason(res.StopReason)})
 		event = runtimeevents.Event{Kind: runtimeevents.KindTurnCompleted, TurnID: turnID, Payload: payload}
 	}
 	c.endTurn()
@@ -977,8 +1025,18 @@ func (c *Client) waitProcess() {
 	c.mu.Lock()
 	cmd := c.cmd
 	waitDone := c.waitDone
+	stdout, stderr, stderrDone := c.stdoutPipe, c.stderrPipe, c.stderrDone
 	c.mu.Unlock()
 	err := cmd.Wait()
+	// Let the readers see everything the child wrote before its exit is
+	// reported: the last frame is often the reply a pending call awaits.
+	deadline := time.Now().Add(childoutput.DrainTimeout)
+	if stdout != nil {
+		childoutput.Drain(stdout, c.readerDone, deadline)
+	}
+	if stderr != nil {
+		childoutput.Drain(stderr, stderrDone, deadline)
+	}
 	if c.sandboxCleanup != nil {
 		c.sandboxCleanup()
 	}

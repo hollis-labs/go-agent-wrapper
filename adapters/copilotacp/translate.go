@@ -5,6 +5,8 @@ import (
 
 	llmtypes "github.com/hollis-labs/go-llm-types"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
+
+	"github.com/hollis-labs/go-agent-wrapper/acp"
 )
 
 // acpUpdate is the normalized, output-agnostic result of parsing one
@@ -22,6 +24,9 @@ type acpUpdate struct {
 	toolName   string
 	toolKind   string
 	toolStatus string
+	// blockID is the update's messageId (or thoughtId), carried to the
+	// delta payload as block_id.
+	blockID string
 }
 
 type acpUpdateKind int
@@ -64,14 +69,14 @@ func parseSessionUpdate(raw json.RawMessage) (acpUpdate, bool) {
 		if err := json.Unmarshal(raw, &u); err != nil || u.Content.Text == "" {
 			return acpUpdate{}, false
 		}
-		return acpUpdate{kind: acpUpdateDelta, text: u.Content.Text}, true
+		return acpUpdate{kind: acpUpdateDelta, text: u.Content.Text, blockID: u.MessageID}, true
 
 	case "agent_thought_chunk":
 		var u agentThoughtChunkUpdate
 		if err := json.Unmarshal(raw, &u); err != nil || u.Content.Text == "" {
 			return acpUpdate{}, false
 		}
-		return acpUpdate{kind: acpUpdateThinking, text: u.Content.Text}, true
+		return acpUpdate{kind: acpUpdateThinking, text: u.Content.Text, blockID: u.ThoughtID}, true
 
 	case "tool_call":
 		var u toolCallUpdate
@@ -120,10 +125,10 @@ func acpUpdateToRuntimeEvent(u acpUpdate, turnID string) (runtimeevents.Event, b
 	switch u.kind {
 	case acpUpdateDelta:
 		kind = runtimeevents.KindAgentDelta
-		payload = map[string]any{"content": u.text}
+		payload = acp.WithBlockID(map[string]any{"content": u.text, "phase": "message"}, u.blockID)
 	case acpUpdateThinking:
 		kind = runtimeevents.KindAgentDelta
-		payload = map[string]any{"content": u.text, "thinking": true}
+		payload = acp.WithBlockID(map[string]any{"content": u.text, "thinking": true, "phase": "thought"}, u.blockID)
 	case acpUpdateToolUse:
 		kind = runtimeevents.KindAgentToolUse
 		payload = map[string]any{"tool_use": map[string]any{
@@ -160,11 +165,13 @@ func acpUpdateToRuntimeEvent(u acpUpdate, turnID string) (runtimeevents.Event, b
 func acpUpdateToStreamEvent(u acpUpdate) (llmtypes.StreamEvent, bool) {
 	switch u.kind {
 	case acpUpdateDelta:
-		return llmtypes.StreamEvent{Type: llmtypes.EventDelta, Content: u.text}, true
+		return llmtypes.StreamEvent{Type: llmtypes.EventDelta, Content: u.text, BlockID: u.blockID}, true
 	case acpUpdateThinking:
 		return llmtypes.StreamEvent{
 			Type:          llmtypes.EventThinking,
 			ThinkingBlock: &llmtypes.ThinkingBlock{Thinking: u.text},
+			BlockID:       u.blockID,
+			Phase:         llmtypes.PhaseThinking,
 		}, true
 	case acpUpdateToolUse:
 		return llmtypes.StreamEvent{

@@ -49,7 +49,8 @@ func handleNotification(c *acp.NDJSONBridgeClient, method string, params json.Ra
 	switch kindProbe.SessionUpdate {
 	case "agent_message_chunk":
 		var v struct {
-			Content struct {
+			MessageID string `json:"messageId"`
+			Content   struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
@@ -60,10 +61,10 @@ func handleNotification(c *acp.NDJSONBridgeClient, method string, params json.Ra
 		c.Emit(runtimeevents.Event{
 			Kind:   runtimeevents.KindAgentDelta,
 			TurnID: turnID,
-			Payload: mustMarshal(map[string]any{
+			Payload: mustMarshal(acp.WithBlockID(map[string]any{
 				"content": v.Content.Text,
 				"phase":   "message",
-			}),
+			}, v.MessageID)),
 		})
 
 	case "agent_thought_chunk":
@@ -76,7 +77,8 @@ func handleNotification(c *acp.NDJSONBridgeClient, method string, params json.Ra
 		// release adds it — dead code today, kept for forward
 		// compatibility rather than silently dropping the update kind.
 		var v struct {
-			Content struct {
+			MessageID string `json:"messageId"`
+			Content   struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
@@ -87,10 +89,10 @@ func handleNotification(c *acp.NDJSONBridgeClient, method string, params json.Ra
 		c.Emit(runtimeevents.Event{
 			Kind:   runtimeevents.KindAgentDelta,
 			TurnID: turnID,
-			Payload: mustMarshal(map[string]any{
+			Payload: mustMarshal(acp.WithBlockID(map[string]any{
 				"content": v.Content.Text,
 				"phase":   "thought",
-			}),
+			}, v.MessageID)),
 		})
 
 	case "tool_call":

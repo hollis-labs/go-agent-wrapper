@@ -157,6 +157,13 @@ while IFS= read -r line; do :; done
 	if got := terminalUsage(t, done); got != want {
 		t.Errorf("turn.completed usage = %+v, want %+v", got, want)
 	}
+	var p struct {
+		StopReason string `json:"stop_reason"`
+	}
+	_ = json.Unmarshal(done.Payload, &p)
+	if p.StopReason != llmtypes.StopReasonEndTurn {
+		t.Errorf("turn.completed stop_reason = %q, want end_turn", p.StopReason)
+	}
 }
 
 // Claude, streaming stdio, a turn that ends in error: one tagged turn.failed,
@@ -216,7 +223,8 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":20,"cached_input
 	})
 
 	done := assertOneTurn(t, evs, runtimeevents.KindTurnCompleted)
-	want := llmtypes.Usage{InputTokens: 20, OutputTokens: 9, CacheReadTokens: 5}
+	// go-providers v0.35.0: codex exec reports end_turn for a completed turn.
+	want := llmtypes.Usage{InputTokens: 20, OutputTokens: 9, CacheReadTokens: 5, StopReason: llmtypes.StopReasonEndTurn}
 	if got := terminalUsage(t, done); got != want {
 		t.Errorf("turn.completed usage = %+v, want %+v", got, want)
 	}
@@ -353,5 +361,48 @@ exit 3
 	}
 	if got, want := terminalUsage(t, failed), (llmtypes.Usage{InputTokens: 8, OutputTokens: 1}); got != want {
 		t.Errorf("turn.failed usage = %+v, want %+v", got, want)
+	}
+}
+
+// authCLI is a subprocess-per-turn CLI whose auth classifier detects a
+// sign-in prompt on stderr.
+type authCLI struct{ script string }
+
+func (c authCLI) Name() string                                       { return "authcli" }
+func (c authCLI) BuildArgs(_, _, _ string) []string                  { return nil }
+func (c authCLI) Detect() (string, bool)                             { return c.script, true }
+func (c authCLI) ParseLine(_ []byte) ([]llmtypes.StreamEvent, error) { return nil, nil }
+func (c authCLI) IsNotAuthenticated(stderrTail []byte) bool {
+	return strings.Contains(string(stderrTail), "Please sign in")
+}
+
+type authAdapter struct{ cli authCLI }
+
+func (a authAdapter) Name() string { return "authcli" }
+func (a authAdapter) Describe() adapters.Descriptor {
+	return adapters.Descriptor{Provider: "authcli", Interrupt: adapters.InterruptProcess, Channels: []runtimeevents.SourceChannel{runtimeevents.ChannelStdio}}
+}
+func (a authAdapter) Resolve(rc adapters.ResolveContext) (adapters.Spec, error) {
+	return adapters.Spec{Binary: a.cli.script, Cwd: rc.Cwd}, nil
+}
+func (a authAdapter) CLIAdapter() provider.CLIAdapter { return a.cli }
+
+// A turn that fails sign-in reaches apps as session.auth_failed, not only as
+// a turn error (CW-20260930-0137).
+func TestRunEmitsSessionAuthFailed(t *testing.T) {
+	skipUnlessSh(t)
+	dir := t.TempDir()
+	script := writeShellFixtureLauncher(t, dir, "fake-auth", []byte(`#!/bin/sh
+printf 'Please sign in to continue\n' 1>&2
+exit 1
+`))
+	evs := runToExit(t, Config{App: "test-auth", Adapter: authAdapter{cli: authCLI{script: script}}, Workdir: dir}, func(w *Wrapper, sink *capturingSink) {
+		sink.waitFor(t, runtimeevents.KindSessionReady, 5*time.Second)
+		_ = w.SendInput(context.Background(), []byte("hi"))
+		sink.waitFor(t, runtimeevents.KindSessionAuthFailed, 5*time.Second)
+		_ = w.Stop(context.Background())
+	})
+	if !hasKind(evs, runtimeevents.KindSessionAuthFailed) {
+		t.Fatalf("no session.auth_failed in %v", kindList(evs))
 	}
 }

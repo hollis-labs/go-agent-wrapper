@@ -24,6 +24,72 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   only over ACP (copilot, pi), is now an error. Before, plant fell back to
   `.config/<name>/settings`.
 
+## v0.17.1 — 2026-10-01
+
+Takes agentkit v0.14.2 (was v0.14.0). It brings two fixes to the wrapper's
+native runtimes. In agentkit v0.14.1 (CW-20261001-0086), a child output line
+over 1 MiB no longer stops the session reader. In v0.14.2 (CW-20261001-0102),
+`ExtraArgs` and Claude's `--add-dir` go before `--` on non-template launches,
+not after it, where the agent read them as prompt text.
+
+### Fixed
+
+- **ACP transports no longer lose the child's last frame at exit**
+  (CW-20261001-0039).
+  - **Symptom:** a session/close reply written just before the child exited
+    could be discarded. The pending call then failed with "protocol stream
+    closed before response" (`acp.NDJSONBridgeClient`: claudeacp, codexacp,
+    opencodeacp, piacp) or "connection closed waiting for session/close
+    response" (copilotacp stdio).
+  - **Cause:** both read the child's stdout from `cmd.StdoutPipe()` while
+    `cmd.Wait()` ran concurrently, and Wait closes that pipe as soon as the
+    child exits. It is the same race agentkit fixed in CW-20261001-0046.
+  - **Fix:** the transports own the stdout pipe, and the stderr pipe when it
+    is read, via `os.Pipe`. After Wait, the reader drains to EOF, bounded by
+    one second, before the process exit is reported. The new
+    `internal/childoutput` package holds this logic.
+  - **Evidence:** the formerly flaky
+    `TestBestEffortPermissionResponderMayCallPromptAndCloseAllACPSubprocesses`
+    passes at `-race -count=100`. On main it failed 11 of 50 runs: 12
+    Close subtests, spread across all five clients.
+
+## v0.17.0 — 2026-10-01
+
+One event vocabulary at the wrapper (CW-20260930-0137 event half; the wrapper
+side of CW-20260930-0228 and CW-20260930-0222). Additive payload fields; three
+new event kinds.
+
+### Added
+
+- **Block boundaries on `agent.delta`.** `block_id` (stable within one content
+  block, different for the next) and `phase` come from go-llm-types'
+  `StreamEvent.BlockID` / `Phase`, which go-providers v0.35.0 sets: Claude's
+  event uuid, codex exec's `item.id`, opencode's part id. Native thinking
+  deltas now carry `phase: "thought"`, the value ACP already emits. Apps
+  separate blocks without per-provider guessing.
+- **ACP `messageId` becomes `block_id`** in every ACP translator (claude,
+  codex, opencode, pi, copilot; copilot's thought chunks use `thoughtId`).
+  Copilot deltas gain `phase` (`message` / `thought`) like the others.
+- **A normalised `stop_reason` on terminal events**, from the turn's usage
+  through `llmtypes.NormalizeStopReason`: `end_turn`, `max_tokens`,
+  `tool_use`, `turn_limit`, `refusal`, `cancelled`, `error`, or the
+  provider's own word. `turn.failed` carries `error`. ACP's top-level
+  `stop_reason` is normalised the same way (`max_turn_requests` →
+  `turn_limit`).
+- **Cost.** `mergeTurnUsage` sums `Usage.CostUSD` (a per-event delta), so
+  each turn's terminal event carries the turn's cost under `usage`.
+- **Three new kinds, for every runtime that reports them** (go-runtime-events
+  v0.2.0):
+  - `session.lost` from `events.SessionLost`
+  - `agent.permission_denied` from `events.PermissionDenied`
+  - `session.auth_failed` from `events.AuthFailed` (agentkit v0.14.0 emits it
+    when the auth classifier matches)
+
+### Changed
+
+- Requires agentkit v0.14.0, go-providers v0.36.0, go-llm-types v0.5.1 and
+  go-runtime-events v0.2.1 (was v0.13.0 / v0.34.1 / v0.3.0 / v0.1.2).
+
 ## v0.16.0 — 2026-10-01
 
 Prepared launches run each turn with its own argv (CW-20260930-0135, the
