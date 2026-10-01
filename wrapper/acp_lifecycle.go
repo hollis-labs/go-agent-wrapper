@@ -215,7 +215,7 @@ func (w *Wrapper) runACP(
 
 	stopWatcher := make(chan struct{})
 	stopWatcherDone := make(chan struct{})
-	go func() {
+	go func() { //nolint:gosec // G118: this runs because ctx was canceled, so the interrupt needs a context that is not
 		defer close(stopWatcherDone)
 		select {
 		case <-ctx.Done():

@@ -384,7 +384,7 @@ func (sg *ShadowGit) restoreOne(ctx context.Context, gitDir string, rs RootSnaps
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil { //nolint:gosec // G301: restores into the caller's own working tree, whose directories are normally 0755
 		return fmt.Errorf("mkdir for %q: %w", full, err)
 	}
 	if mode == "120000" {
@@ -566,7 +566,7 @@ func (sg *ShadowGit) ensureShadowRepo(ctx context.Context, targetID string) (str
 }
 
 func (sg *ShadowGit) verifyMeta(metaPath, targetID string) error {
-	b, err := os.ReadFile(metaPath)
+	b, err := os.ReadFile(metaPath) //nolint:gosec // G304: metaPath is <store>/<sha256 of the target id>/meta.json
 	if err != nil {
 		return fmt.Errorf("shadow store present but meta.json unreadable: %w", err)
 	}
@@ -738,7 +738,7 @@ func (sg *ShadowGit) currentBlobHash(root, relPath string) (hash string, exists 
 	case fi.IsDir():
 		return "", false, fmt.Errorf("%q is a directory, not a file", full)
 	default:
-		content, err = os.ReadFile(full)
+		content, err = os.ReadFile(full) //nolint:gosec // G304: full is the root plus a relPath that validateRestorePath has cleaned of ".." and absolute forms
 		if err != nil {
 			return "", false, fmt.Errorf("read %q: %w", full, err)
 		}
@@ -775,7 +775,7 @@ func (sg *ShadowGit) runGit(ctx context.Context, gitDir, workTree string, extraE
 // repository, e.g. if this package is ever invoked from inside a git hook
 // context).
 func (sg *ShadowGit) runGitRaw(ctx context.Context, cwd string, extraEnv []string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, sg.gitBin, args...)
+	cmd := exec.CommandContext(ctx, sg.gitBin, args...) //nolint:gosec // G204: gitBin is the git binary checked at construction, and this package builds args
 	cmd.Dir = cwd
 	cmd.Env = isolatedEnv(extraEnv)
 	var stdout, stderr bytes.Buffer
