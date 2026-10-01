@@ -9,7 +9,7 @@ require (
 	github.com/hollis-labs/go-llm-types v0.5.1
 	github.com/hollis-labs/go-materialize v0.1.0
 	github.com/hollis-labs/go-permission v0.1.0
-	github.com/hollis-labs/go-providers v0.36.0
+	github.com/hollis-labs/go-providers v0.37.0
 	github.com/hollis-labs/go-runtime-events v0.2.1
 	github.com/hollis-labs/go-sandbox v0.4.1
 )
