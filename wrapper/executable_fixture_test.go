@@ -27,6 +27,13 @@ func TestMain(m *testing.M) {
 		}
 		panic("execShellFixture returned without an error")
 	}
+	if record := os.Getenv(liveMCPServeEnv); record != "" {
+		if err := serveLiveMCPStdio(os.Stdin, os.Stdout, record); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "live MCP stdio server: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	os.Exit(m.Run())
 }
 
