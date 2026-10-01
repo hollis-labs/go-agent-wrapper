@@ -25,6 +25,10 @@ var (
 	ErrPreparedExecutionConflict    = errors.New("wrapper: prepared execution inputs conflict")
 	ErrPreparedPlantConflict        = errors.New("wrapper: prepared materialization conflicts with wrapper planter")
 	ErrACPSandboxProfileUnsupported = errors.New("wrapper: ACP adapters require resolved SandboxPolicy; legacy SandboxProfile is unsupported")
+	// ErrProtectedPathsUnsupported means Config.ProtectedPaths was set on a
+	// launch path that cannot write-protect them, so the launch is refused
+	// rather than run with the control plane writable.
+	ErrProtectedPathsUnsupported = errors.New("wrapper: Config.ProtectedPaths cannot be enforced")
 )
 
 func (w *Wrapper) defaultBootDir() string {
