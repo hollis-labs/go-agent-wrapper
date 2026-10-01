@@ -1,0 +1,39 @@
+{
+  "antigravity": {
+    "args": [
+      "--output-format",
+      "stream-json",
+      "-p=say hi"
+    ],
+    "env": {}
+  },
+  "claude": {
+    "args": [
+      "-p",
+      "--input-format",
+      "stream-json",
+      "--output-format",
+      "stream-json",
+      "--verbose"
+    ],
+    "env": {}
+  },
+  "codex": {
+    "args": [
+      "app-server"
+    ],
+    "env": {}
+  },
+  "opencode": {
+    "args": [
+      "run",
+      "--format",
+      "json",
+      "--agent",
+      "",
+      "--",
+      "say hi"
+    ],
+    "env": {}
+  }
+}

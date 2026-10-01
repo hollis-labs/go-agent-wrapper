@@ -4,6 +4,53 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.21.0 — 2026-10-01
+
+`Config.PermissionPosture` is the launch's posture, not only the Codex
+responder's (CW-20260930-0138, D-72). Requires agentkit v0.17.0 and
+go-providers v0.37.0.
+
+### Changed
+
+- **A native launch that is not prepared carries an explicit
+  `PermissionPosture`.** The go-providers registry maps the Mode onto the
+  runtime's own flags or environment:
+
+  | posture | claude | codex | opencode | agy |
+  |---|---|---|---|---|
+  | `default` | `--permission-mode default` | `-c sandbox_mode="read-only" -c approval_policy="on-request"` | `OPENCODE_PERMISSION={"edit":"ask","bash":"ask"}` | none |
+  | `accept-edits` | `acceptEdits` | `workspace-write`, `on-request` | `{"edit":"allow","bash":"ask"}` | `--mode accept-edits` |
+  | `plan` | `plan` | `read-only`, `never` | `{"edit":"deny","bash":"ask"}` | `--mode plan` |
+  | `yolo` | `bypassPermissions` | `danger-full-access`, `never` | every permission allowed | `--dangerously-skip-permissions` |
+
+  The flags lead the adapter's `ExtraArgs`, on a copy of the adapter, so they
+  sit at the launch convention's extra-argument slot, before `--` and before
+  the caller's own `Selection.ExtraArgs`. That needs a go-providers adapter:
+  `Run` returns an error for another adapter type, as `launch.Select` does for
+  `Binary` and `ExtraArgs`.
+- **Prepared launch.** The plan owns the flags (agentkit's
+  `Provider.Permission`). The Codex approval responder now answers from
+  `PreparedExecution.Posture` when `PermissionPosture` is empty. When both are
+  set and differ, `Run` returns `ErrPostureConflict`.
+
+### Behaviour change to check
+
+- **An explicit `PermissionPosture: default` now makes a native Codex launch
+  read-only, asking on every write.** Headless, the responder declines those
+  requests, so the agent cannot write. This is go-permission's `default`, the
+  same thing Claude does headless. To keep the old behaviour (the planted
+  `never` / `workspace-write` with the responder in default), leave
+  `PermissionPosture` empty, or use `accept-edits` for writes in the
+  workspace.
+
+### Unchanged
+
+- **An empty `PermissionPosture` sets no flags and no environment.**
+  `TestNativeEmptyPostureMatchesV0_20_0` compares the empty-posture launch
+  for claude, codex, opencode and agy against a golden generated from
+  v0.20.0. The responder still answers as `default`.
+- ACP sessions keep `ACPBestEffortPermissionRequestResponder`.
+
 ## v0.20.0 — 2026-10-01
 
 ### Added
