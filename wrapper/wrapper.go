@@ -200,6 +200,15 @@ type Config struct {
 	// by initialize. Empty uses the ACP agent's existing authenticated state.
 	ACPAuthMethodID string
 
+	// ACPMCPServers are the MCP servers an ACP session connects to, stdio or
+	// HTTP (with headers), sent as session/new and session/load
+	// "mcpServers". An agent that does not advertise mcpCapabilities.http is
+	// not sent the HTTP ones, and OnACPDiagnostic names them. Native runtimes
+	// take MCP servers from the launch plan's MCPSpec through agentkit's
+	// prepared plant instead. Pi (pi-acp) does not wire session MCP servers
+	// at all, so they do not reach Pi.
+	ACPMCPServers []acp.MCPServer
+
 	// ACPSessionModeID and ACPSessionConfig are applied after session/new or
 	// session/load and before the first prompt.
 	ACPSessionModeID string
