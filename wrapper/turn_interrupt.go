@@ -2,6 +2,7 @@ package wrapper
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 
@@ -116,4 +117,22 @@ func (a *interruptiblePreparedAdapter) InterruptRequest(id string) []byte {
 
 func (a *interruptiblePreparedAdapter) InterruptResponse(line []byte) (string, bool, error) {
 	return a.interrupter.InterruptResponse(line)
+}
+
+// rpcInterruptiblePreparedAdapter is a preparedAdapter whose inner adapter
+// can interrupt a JSON-RPC turn (Codex app-server). Like TurnInterrupter, it
+// is claimed only when the adapter it wraps has it.
+type rpcInterruptiblePreparedAdapter struct {
+	*preparedAdapter
+	interrupter provider.RPCTurnInterrupter
+}
+
+var _ provider.RPCTurnInterrupter = (*rpcInterruptiblePreparedAdapter)(nil)
+
+func (a *rpcInterruptiblePreparedAdapter) TurnNotification(method string, params json.RawMessage) (json.RawMessage, bool, bool) {
+	return a.interrupter.TurnNotification(method, params)
+}
+
+func (a *rpcInterruptiblePreparedAdapter) InterruptCall(handle json.RawMessage) (string, json.RawMessage) {
+	return a.interrupter.InterruptCall(handle)
 }
