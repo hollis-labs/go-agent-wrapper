@@ -845,7 +845,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	// watcher emits the interrupt event pair around session.Stop so
 	// downstream consumers can see why the session ended.
 	stopWatcher := make(chan struct{})
-	go func() {
+	go func() { //nolint:gosec // G118: this runs because ctx was canceled, so the interrupt needs a context that is not
 		select {
 		case <-ctx.Done():
 			_ = w.requestInterrupt(context.Background(), source, session, "ctx_cancel")

@@ -47,7 +47,7 @@ func TestSharedPlanterCreatePreservesModernArtifacts(t *testing.T) {
 	assertMode(t, filepath.Join(bootDir, "bin/run.sh"), 0o755)
 	assertMode(t, filepath.Join(bootDir, "data/blob.bin"), 0o600)
 	assertMode(t, filepath.Join(bootDir, "empty"), 0o750)
-	blob, err := os.ReadFile(filepath.Join(bootDir, "data/blob.bin"))
+	blob, err := os.ReadFile(filepath.Join(bootDir, "data/blob.bin")) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatalf("read blob: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestSharedPlanterCreatePreservesModernArtifacts(t *testing.T) {
 
 func TestSharedPlanterCreateRefusesPreexistingAndReconcileUpdates(t *testing.T) {
 	bootDir := filepath.Join(t.TempDir(), "boot")
-	if err := os.MkdirAll(bootDir, 0o755); err != nil {
+	if err := os.MkdirAll(bootDir, 0o755); err != nil { //nolint:gosec // G301: a fixture directory in t.TempDir
 		t.Fatalf("mkdir boot: %v", err)
 	}
 	p := SharedPlanter{}
@@ -137,7 +137,7 @@ func assertMode(t *testing.T, path string, want os.FileMode) {
 
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G304: a test helper; callers pass paths under t.TempDir
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}

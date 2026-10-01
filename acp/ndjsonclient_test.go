@@ -339,7 +339,7 @@ done
 
 func readLog(t *testing.T, path string) []string {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: a test helper; callers pass paths under t.TempDir
 	if err != nil {
 		t.Fatalf("read request log: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestNDJSONBridgeClient_LaunchEnv(t *testing.T) {
 				t.Fatalf("Launch: %v", err)
 			}
 			defer func() { _ = c.Close(context.Background()) }()
-			got, err := os.ReadFile(envPath)
+			got, err := os.ReadFile(envPath) //nolint:gosec // G304: the test's own temp file
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -594,7 +594,7 @@ func TestNDJSONBridgeClient_PermissionRequestDefaultsToCancelledAndUnblocksChild
 		}
 		events := drainEvents(t, c, 5*time.Second)
 
-		response, err := os.ReadFile(marker)
+		response, err := os.ReadFile(marker) //nolint:gosec // G304: the test's own temp file
 		if err != nil {
 			t.Fatalf("read recorded permission response: %v", err)
 		}
@@ -664,7 +664,7 @@ func TestNDJSONBridgeClient_UnknownServerRequestIsAnsweredWithMethodNotFound(t *
 			t.Fatal(err)
 		}
 		drainEvents(t, c, 5*time.Second)
-		reply, err := os.ReadFile(marker)
+		reply, err := os.ReadFile(marker) //nolint:gosec // G304: the test's own temp file
 		if err != nil {
 			t.Fatal(err)
 		}
