@@ -4,10 +4,12 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.25.6 — 2026-10-01
+## Unreleased
 
 The Copilot ACP client's request writes honor the caller's ctx
-(CW-20261001-0238). Provisional number: it follows v0.25.5.
+(CW-20261001-0238). Parked and unreleased: it was built against v0.25.5 and
+merged with v0.25.6; it still needs CW-20261001-0261's hardening of the
+shared helper before it ships.
 
 ### Fixed
 
@@ -49,6 +51,43 @@ The Copilot ACP client's request writes honor the caller's ctx
   `Prompt`. The tests end the ctx only after the write has begun, because under
   `-race` on a loaded host building the frame can outlast a short ctx. With the
   unbounded write restored they all fail.
+
+## v0.25.6 — 2026-10-01
+
+A host no longer panics when an ACP agent exits during a `Prompt`
+(CW-20261001-0262).
+
+### Fixed
+
+- **`Prompt` racing the agent's own exit could panic the host process** with
+  `sync: WaitGroup is reused before previous Wait has returned`. Under `-race`
+  the same window is a reported data race. It affects the claude, codex,
+  opencode and pi clients (the NDJSON client) and the Copilot client alike.
+  - **Cause:** `Prompt` registers its turn with `turnWG.Add` while the
+    transport's exit path, `closeEvents`, waits on `turnWG`. Only `Close`
+    sealed admission before the wait. When the agent exited by itself, a
+    `Prompt` admitted after `closeEvents` began waiting added to the
+    WaitGroup concurrently with the `Wait`, which `sync.WaitGroup` forbids.
+    This predates v0.25.4. A host that retries `Prompt` straight away after a
+    failed turn, such as one that reacts to the partial-frame transport close
+    v0.25.4 added, is the likeliest to hit it.
+  - **Fix:** `closeEvents` now marks the client as closing, under the lock
+    `Prompt` adds under, before it waits. A `Prompt` either added before the
+    mark, so the wait is ordered after it, or finds the mark and is refused.
+    No `Add` can run against the `Wait`.
+  - **One visible change:** a `Prompt` after the agent's transport has ended
+    now returns `<component>: the agent's transport has ended` and starts no
+    turn, as one after `Close` already returned `client is closed`. Before, it
+    was admitted, emitted `turn.started`, and failed on the write.
+  - **Not changed:** `wrapper.Wrapper`'s `inputWG` and `acp.Session`'s
+    `diagnosticWG` already add under their own mutex and close admission
+    before they wait.
+- **Tested** against a real child that exits on its first prompt, with
+  further `Prompt`s spinning through the exit, then a `Prompt` after it.
+  The NDJSON client runs it on all four components, and the Copilot client
+  over stdio. Run on the unfixed base with `-race -count=50`, they fail on
+  the first iteration with the data race and the production panic. With the
+  fix, 100 iterations pass in each package.
 
 ## v0.25.5 — 2026-10-01
 
