@@ -17,6 +17,7 @@ import (
 	"github.com/hollis-labs/go-materialize/materialize"
 	permission "github.com/hollis-labs/go-permission"
 	pevents "github.com/hollis-labs/go-providers/provider/events"
+	"github.com/hollis-labs/go-providers/registry"
 	sandboxprofile "github.com/hollis-labs/go-sandbox/sandbox"
 
 	"github.com/hollis-labs/go-agent-wrapper/acp"
@@ -180,10 +181,19 @@ type Config struct {
 	// in every mode. Each request still emits agent.permission.requested and
 	// agent.permission.resolved.
 	//
-	// The zero value is [permission.ModeDefault]. [New] rejects an unknown
-	// mode. It does not change provider launch flags (Codex only asks when
-	// its planted approval policy asks rather than refusing outright), and
-	// ACP sessions use ACPBestEffortPermissionRequestResponder instead.
+	// Set on a native launch that is not prepared, it is also the launch's
+	// posture: the go-providers registry maps it onto the runtime's own
+	// flags and environment (Claude's --permission-mode, Codex's
+	// sandbox_mode and approval_policy, OpenCode's OPENCODE_PERMISSION,
+	// agy's --mode), at the adapter's extra-argument slot, before "--". That
+	// needs a go-providers adapter. On a prepared launch the flags are the
+	// plan's (Provider.Permission); the responder then answers from the
+	// prepared execution's posture when this is empty, and Run returns
+	// ErrPostureConflict when both are set and differ.
+	//
+	// The zero value sets no launch flags, and the responder answers as
+	// [permission.ModeDefault]. [New] rejects an unknown mode. ACP sessions
+	// use ACPBestEffortPermissionRequestResponder instead.
 	PermissionPosture permission.Mode
 
 	// MCPAllow narrows which MCP tool calls the default and accept-edits
@@ -467,6 +477,17 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			childEnv = []string{nonInheritingEmptyEnvironment}
 		}
 	}
+	// A native launch's posture: an explicit PermissionPosture's flags and
+	// environment, from the registry. A prepared launch's are the plan's,
+	// already in its bindings.
+	var posture registry.PostureLaunch
+	if prepared == nil {
+		posture, err = nativePosture(w.cfg.Adapter, desc, w.cfg.PermissionPosture)
+		if err != nil {
+			return fmt.Errorf("wrapper: Config.PermissionPosture: %w", err)
+		}
+		childEnv = withPostureEnv(childEnv, posture.Env)
+	}
 
 	if prepared != nil && prepared.Materialization != nil {
 		emitPreparedMaterialization(ctx, w.cfg.Activity, source, prepared.Materialization)
@@ -474,7 +495,10 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		return err
 	}
 
-	cliAdapter := ra.CLIAdapter()
+	cliAdapter, err := withPostureArgs(ra.CLIAdapter(), posture.Args)
+	if err != nil {
+		return err
+	}
 	cliAdapter, err = preparedCLIAdapter(cliAdapter, prepared)
 	if err != nil {
 		return fmt.Errorf("wrapper: prepared adapter: %w", err)
@@ -627,11 +651,11 @@ func (w *Wrapper) Run(ctx context.Context) error {
 
 	workspaceDir, logPath := resolveWorkspaceLogPath(w.cfg.Workdir, w.sessionID, w.cfg.WorkspaceDir, w.cfg.LogPath)
 
-	posture := w.cfg.PermissionPosture
-	if posture == "" {
-		posture = permission.ModeDefault
+	approvalPosture, err := sessionPosture(w.cfg.PermissionPosture, prepared)
+	if err != nil {
+		return err
 	}
-	approvals := turn.CodexApprovalResponder{Mode: posture, MCPAllow: w.cfg.MCPAllow}
+	approvals := turn.CodexApprovalResponder{Mode: approvalPosture, MCPAllow: w.cfg.MCPAllow}
 
 	session, err := runtime.Start(ctx, agentsessions.StartOptions{
 		Workdir:           w.cfg.Workdir,
@@ -693,7 +717,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			resolved := map[string]any{
 				"method":  method,
 				"allowed": outcome.Allowed,
-				"posture": string(posture),
+				"posture": string(approvalPosture),
 				"reason":  outcome.Reason,
 			}
 			if outcome.Kind != "" {
