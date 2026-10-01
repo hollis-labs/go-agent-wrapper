@@ -2,6 +2,7 @@ package wrapper
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -17,9 +18,13 @@ import (
 
 // Acceptance for CW-20260930-0134: every runtime in the go-providers registry
 // launches through launch.Select + New + Run, in its default mode, against a
-// go-providers providertest fake that replays what the real CLI writes. ACP
-// is selectable for the runtimes with a native default, and Copilot also
-// runs over TCP elsewhere (TestACPWrapperCopilotTCPRealSubprocessLifecycle).
+// go-providers providertest fake that replays what the real CLI writes.
+// 5 of 6 complete a turn. For Codex's app-server, only the spawn, the
+// app-server argv and the first payload are verified: no turn completes,
+// because the wrapper does not drive the Codex thread protocol (the host
+// does, through agentkit's turn package). ACP is selectable for the runtimes
+// with a native default, and Copilot also runs over TCP elsewhere
+// (TestACPWrapperCopilotTCPRealSubprocessLifecycle).
 func TestLaunchEveryRegistryRuntimeThroughSelect(t *testing.T) {
 	skipUnlessSh(t)
 	cases := map[runtimes.ID]struct {
@@ -41,9 +46,9 @@ func TestLaunchEveryRegistryRuntimeThroughSelect(t *testing.T) {
 				}
 			},
 		},
-		// jsonrpc-stdio (app-server, D-74): the wrapper spawns it and
-		// delivers the first-turn payload; the Codex thread protocol
-		// belongs to agentkit's turn package, driven by the host.
+		// jsonrpc-stdio (app-server, D-74): spawn, app-server argv and
+		// first payload only; no turn completes. The Codex thread
+		// protocol belongs to agentkit's turn package, driven by the host.
 		runtimes.Codex: {
 			runs: []providertest.Run{providertest.Script(providertest.RecvLine(), providertest.Exit(0)).When("app-server")},
 			cfg: func(c *Config) {
@@ -94,12 +99,21 @@ func TestLaunchEveryRegistryRuntimeThroughSelect(t *testing.T) {
 
 	// ACP on request for the runtimes whose default is native. The
 	// transcript is the generic ACP turn (pi's capture); what is under
-	// test is that Select's ACP factory launches it for this runtime.
-	for _, id := range []runtimes.ID{runtimes.Claude, runtimes.Codex, runtimes.OpenCode} {
+	// test is that Select's ACP factory launches the right command for
+	// this runtime: Claude's and Codex's bridges run directly (no npx, no
+	// -y <package>), OpenCode as `opencode acp`.
+	for id, wantArgs := range map[runtimes.ID][]string{
+		runtimes.Claude:   {},
+		runtimes.Codex:    {},
+		runtimes.OpenCode: {"acp"},
+	} {
 		t.Run(string(id)+"/acp-stdio", func(t *testing.T) {
 			fake := providertest.New(t, id, providertest.Replay("pi/acp_turn"))
 			runSelected(t, launch.Selection{Runtime: string(id), Mode: runtimes.ModeACPStdio, Binary: fake.Path}, nil, driveACP)
 			requireCleanFakeRun(t, fake)
+			if got := fake.Call(0).Args; !slices.Equal(got, wantArgs) {
+				t.Errorf("%s acp argv = %q, want %q", id, got, wantArgs)
+			}
 		})
 	}
 }

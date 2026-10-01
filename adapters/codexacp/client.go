@@ -40,6 +40,7 @@ const defaultBridgeVersion = "1.6.2"
 // documented single-session contract.
 type Client struct {
 	bridgeBinary  string // default "npx"
+	directBinary  string // when set, spawned directly: no npx, no -y, no package spec
 	bridgeVersion string // default defaultBridgeVersion; "" (via WithClientBridgePackageSpec) means unpinned "@latest"-equivalent bare package name
 	bridgePkgSpec string // when set (via WithClientBridgePackageSpec), overrides the whole "package[@version]" token
 	extraArgs     []string
@@ -59,6 +60,15 @@ type ClientOption func(*Client)
 // [WithClientBridgePackageSpec]) to run a globally-installed `codex-acp`
 // binary directly instead of going through npx.
 func WithClientBinary(path string) ClientOption { return func(c *Client) { c.bridgeBinary = path } }
+
+// WithClientDirectBinary bypasses npx entirely: [Client.Launch] spawns this
+// binary directly with only [WithClientExtraArgs] (no `-y`, no package
+// spec), for an already-installed `codex-acp`. Unlike [WithClientBinary],
+// which replaces only `npx` and keeps the package arguments. Matches
+// claudeacp's and piacp's direct-binary options.
+func WithClientDirectBinary(path string) ClientOption {
+	return func(c *Client) { c.directBinary = path }
+}
 
 // WithClientBridgeVersion pins a specific codex-acp npm package version
 // other than this package's own verified default
@@ -117,6 +127,9 @@ func NewClient(opts ...ClientOption) *Client {
 // version>`. See [WithClientBinary]/[WithClientBridgeVersion]/
 // [WithClientBridgePackageSpec]/[WithClientExtraArgs].
 func (c *Client) resolveBridgeCommand() (string, []string) {
+	if c.directBinary != "" {
+		return c.directBinary, append([]string(nil), c.extraArgs...)
+	}
 	binary := c.bridgeBinary
 	if binary == "" {
 		binary = "npx"

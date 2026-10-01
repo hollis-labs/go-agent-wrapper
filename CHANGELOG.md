@@ -31,7 +31,10 @@ agent-contracts-leaf v0.3.0.
     only its dispatch facts (protocol, transport, channel) per pair.
   - All six runtimes launch through `launch.Select` + `wrapper.New` + `Run` in
     `TestLaunchEveryRegistryRuntimeThroughSelect`, against go-providers
-    `providertest` fakes replaying captured CLI output.
+    `providertest` fakes replaying captured CLI output. 5 of 6 complete a
+    turn. For Codex app-server, only the spawn, its argv and the first
+    payload are verified: the wrapper does not drive the Codex thread
+    protocol, the host does through agentkit's `turn`.
     `TestLiveLaunchEveryInstalledRuntimeThroughSelect` does the same against
     installed CLIs behind the shared live-provider gate.
 
@@ -55,6 +58,18 @@ agent-contracts-leaf v0.3.0.
 
   A host-supplied *custom* `CLIAdapter` cannot take `Binary`/`ExtraArgs`
   without being wrapped, so that combination is now `ErrInvalidSelection`.
+- **More events from Select-built sessions** (additive). Because the adapter
+  reaches agentkit unwrapped:
+  - sessions now emit `agent.tool_result`, `agent.subagent_spawn` and
+    provider heartbeats;
+  - agentkit's session-lost, auth-failure and resume-verify handling
+    switches on.
+
+  Consumers that switch exhaustively on event kinds will see new ones.
+- `codexacp.WithDirectBinary` / `WithClientDirectBinary` run an installed
+  `codex-acp` directly, with no npx, `-y` or package spec, as claudeacp and
+  piacp already could. `launch.Select` uses it for `Selection.Binary` on
+  Codex ACP. `WithBinary` still replaces only `npx`.
 - The `wrapper.Runtime*` `Process.Runtime` tokens take their values from
   agent-contracts-leaf `runtimes.Mode`. The values are unchanged, and
   `adapter` keeps its spelling.
@@ -79,6 +94,20 @@ agent-contracts-leaf v0.3.0.
   `RuntimeKindAPI` has no replacement: an API provider is not a CLI runtime
   the wrapper launches. Callers are Nanite `internal/runtime/agent/factory.go`
   and Torque `internal/runtime/agent/boot.go` (Sprint 4).
+- **Breaking:** `ErrUnsupportedSelection` and `ErrInvalidSelection` moved to
+  package `launch`. `Select` returns `adapters.Adapter`, not
+  `adapters.RuntimeAdapter`: an ACP adapter is not a RuntimeAdapter in the
+  native sense. A native result still implements `RuntimeAdapter`; type-assert
+  for it.
+
+### Migration notes
+
+- **Data migration:** stored mode strings `app-server` and `serve-http`, and
+  any other old launch-mode spelling, now fail at runtime with
+  `ErrUnsupportedSelection`. They are not translated. Nanite's and Torque's
+  persisted profiles need a data migration to the `runtimes.Mode` spellings
+  (`jsonrpc-stdio`, `http-sse`, `subprocess-per-turn`, `streaming-stdio`)
+  before they adopt this release.
 
 ## v0.14.0 — 2026-10-01
 

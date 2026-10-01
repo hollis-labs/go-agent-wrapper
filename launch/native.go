@@ -198,8 +198,11 @@ func (a *nativeAdapter) Resolve(rc adapters.ResolveContext) (adapters.Spec, erro
 	}, nil
 }
 
-// CLIAdapter returns a fresh go-providers adapter per call, so the wrapper
-// can set per-session state on it without affecting other sessions.
+// CLIAdapter returns the go-providers adapter the wrapper hands
+// agentsessions. A Select-built adapter, or a host's adapter configured with
+// Binary/ExtraArgs, is a fresh value per call; a host-supplied CLIAdapter
+// with neither is returned as-is, the same instance every call, as the host
+// passed it.
 func (a *nativeAdapter) CLIAdapter() provider.CLIAdapter { return a.cliFactory() }
 
 var _ adapters.RuntimeAdapter = (*nativeAdapter)(nil)

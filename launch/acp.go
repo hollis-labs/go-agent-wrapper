@@ -29,7 +29,9 @@ var acpFactories = map[Key]factory{
 	{runtimes.Codex, runtimes.ModeACPStdio}: func(sel Selection) (adapters.Adapter, error) {
 		var opts []codexacp.Option
 		if sel.Binary != "" {
-			opts = append(opts, codexacp.WithBinary(sel.Binary))
+			// The bridge itself, run directly: WithBinary would replace
+			// only npx and keep `-y @agentclientprotocol/codex-acp@…`.
+			opts = append(opts, codexacp.WithDirectBinary(sel.Binary))
 		}
 		if len(sel.ExtraArgs) > 0 {
 			opts = append(opts, codexacp.WithExtraArgs(sel.ExtraArgs...))
