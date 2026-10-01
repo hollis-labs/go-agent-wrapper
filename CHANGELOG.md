@@ -4,6 +4,45 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.23.0 — 2026-10-01
+
+Hosts can write-protect their control-plane directories from the agents the
+wrapper launches (CW-20260930-0237). Takes agentkit v0.19.0 (was v0.18.0) and
+go-sandbox v0.5.0 (was v0.4.1).
+
+### Security
+
+- **`Config.ProtectedPaths`** lists absolute directories the agent must
+  never write: the host's state, database, config, catalog or allow-lists.
+  `New` rejects a relative entry.
+- **Native and prepared runtime paths:** forwarded to agentkit's
+  `StartOptions.ProtectedPaths`.
+  - The paths fold into the one sandbox that wraps the child:
+    `SandboxPolicy`, `SandboxProfile`, a prepared access policy, or
+    otherwise a minimal host-filesystem profile whose only effect is the
+    protection.
+  - A backend that cannot enforce it, or a provider-native runtime, refuses
+    the launch.
+- **ACP path:**
+  - The paths are merged into the resolved `SandboxPolicy`, or the prepared
+    access policy, with go-sandbox `WithProtected`.
+  - With no resolved policy, the ACP launch is refused with
+    `ErrProtectedPathsUnsupported`, because the ACP launcher has no
+    protect-only sandbox yet. The error names CW-20261001-0162, which adds
+    one.
+- **go-sandbox's rules apply:**
+  - directories only, given by their real path, existing before launch;
+  - no write grant inside one;
+  - protection stops direct writes. Under the minimal host-filesystem
+    profile it is not a boundary against writes delegated to same-uid
+    services; go-sandbox's README has the boundary statement.
+- **Tested:**
+  - A wrapper `Run` whose fake agent tries to rewrite an allow-list in a
+    registered directory leaves it unchanged, while the agent's own write
+    lands. Without the forwarding, the same test shows the allow-list
+    rewritten.
+  - ACP merge and ACP refusal are tested too.
+
 ## v0.22.0 — 2026-10-01
 
 `CancelTurn` interrupts a streaming Claude turn and keeps the process

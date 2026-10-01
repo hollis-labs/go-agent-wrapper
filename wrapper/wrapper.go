@@ -142,6 +142,29 @@ type Config struct {
 	// child before exec. The zero-value profile (empty ID) disables this path.
 	SandboxProfile sandboxprofile.Profile
 
+	// ProtectedPaths lists control-plane directories the agent must never
+	// write: the host's state, database, config, catalog or allow-lists,
+	// which an agent running as the operator's uid could otherwise rewrite
+	// to grant itself authority (CW-20260930-0237). Each must be absolute.
+	//
+	// On the native and prepared runtime paths they are forwarded to
+	// agentkit's StartOptions.ProtectedPaths, which folds them into the one
+	// sandbox that wraps the child: SandboxPolicy or SandboxProfile when
+	// set, otherwise a minimal host-filesystem profile whose only effect is
+	// the protection. Where the platform cannot enforce it, the launch fails
+	// rather than run with the control plane writable.
+	//
+	// On the ACP path they are merged into the resolved SandboxPolicy (or
+	// the prepared access policy). An ACP launch with ProtectedPaths and no
+	// resolved policy is refused with ErrProtectedPathsUnsupported: the ACP
+	// launcher has no protect-only sandbox yet (CW-20261001-0162).
+	//
+	// go-sandbox's rules apply: directories only, real paths, existing
+	// before launch, no write grant inside one. Protection stops direct
+	// writes; under the minimal host-filesystem profile it is not a boundary
+	// against writes delegated to same-uid services (go-sandbox README).
+	ProtectedPaths []string
+
 	// WorkspaceDir is the per-session persistent root forwarded to
 	// agentsessions.StartOptions.WorkspaceDir — distinct from Workdir
 	// (the spawned process's cwd). Every one of agentkit's
@@ -351,6 +374,11 @@ func New(cfg Config) (*Wrapper, error) {
 	}
 	if err := (turn.CodexApprovalResponder{MCPAllow: cfg.MCPAllow}).Validate(); err != nil {
 		return nil, fmt.Errorf("wrapper: Config.MCPAllow: %w", err)
+	}
+	for _, path := range cfg.ProtectedPaths {
+		if !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("wrapper: Config.ProtectedPaths entry %q must be absolute", path)
+		}
 	}
 	if _, _, err := cfg.Environment.resolve(nil); err != nil {
 		return nil, err
@@ -678,6 +706,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		PreparedExecution: prepared,
 		SandboxPolicy:     w.cfg.SandboxPolicy,
 		Profile:           w.cfg.SandboxProfile,
+		ProtectedPaths:    w.cfg.ProtectedPaths,
 		SessionIDPreset:   w.cfg.SessionIDPreset,
 		AutoFireFirstTurn: w.cfg.AutoFireFirstTurn,
 		FirstTurnPayload:  []byte(w.cfg.FirstTurnPayload),
