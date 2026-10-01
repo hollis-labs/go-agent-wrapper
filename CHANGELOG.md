@@ -4,6 +4,35 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.13.1 — 2026-10-01
+
+Fix: one terminal event per native turn (CW-20260930-0137 slice a; root cause
+of CW-20261001-0019, Nanite's lost reply).
+
+### Fixed
+
+- **Usage no longer closes a turn.** `llmtypes.EventUsage` was translated to
+  its own `turn.completed`, which closed the turn and emitted `session.idle`,
+  so the adapter's real terminal (`EventDone`) went out afterwards as a second
+  `turn.completed` with no TurnID. The feed read `turn.completed(turn_id,
+  usage)` → `session.idle` → `turn.completed(no turn_id)` for Claude
+  (streaming stdio) and Codex alike. Usage is now accumulated over the turn
+  (token counts summed, latest stop reason kept) and attached under `usage`
+  to the turn's one terminal event, `turn.completed` or `turn.failed`, which
+  carries the TurnID and is followed by `session.idle`.
+- A terminal event that arrives with no open turn opens one first, so it is
+  still tagged and followed by `session.idle`.
+- A turn still open when the child exits is closed as `turn.failed`
+  (`reason: "process_exited"`, `exit_code`, any `wait_error` and accumulated
+  `usage`), followed by `session.idle`, before `process.exited`. Previously
+  such a turn was left open.
+
+### Changed
+
+- Consumers that read usage from a usage-only `turn.completed` now find it
+  on the turn's terminal event under the same `usage` key, and see one
+  `turn.completed` per turn instead of two.
+
 ## v0.13.0 — 2026-09-30
 
 Dependency convergence: go-agent-wrapper now builds against released tags instead

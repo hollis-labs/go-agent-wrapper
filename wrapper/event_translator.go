@@ -14,9 +14,10 @@ import (
 //
 // ok == false means the event has no direct envelope mapping
 // (e.g. a session_id update, which the wrapper handles separately by
-// rebinding the [activity.Bridge] [runtimeevents.Process]) — the
-// caller should skip emission for that frame rather than emit a
-// placeholder.
+// rebinding the [activity.Bridge] [runtimeevents.Process], or a usage
+// report, which [Wrapper.Run] accumulates onto the turn's terminal
+// event because usage is not a turn boundary) — the caller should skip
+// emission for that frame rather than emit a placeholder.
 //
 // payload is encoded as a structured map so consumers can json.Marshal
 // it into the [runtimeevents.Event.Payload] slot uniformly.
@@ -33,11 +34,6 @@ func translateStreamEvent(ev llmtypes.StreamEvent) (kind runtimeevents.EventKind
 			p["tool_use"] = ev.ToolUse
 		}
 		return runtimeevents.KindAgentToolUse, p, true
-
-	case llmtypes.EventUsage:
-		return runtimeevents.KindTurnCompleted, map[string]any{
-			"usage": ev.Usage,
-		}, true
 
 	case llmtypes.EventError:
 		return runtimeevents.KindTurnFailed, map[string]any{

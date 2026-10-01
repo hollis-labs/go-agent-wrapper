@@ -457,18 +457,36 @@ func (w *Wrapper) Run(ctx context.Context) error {
 
 	var turnMu sync.Mutex
 	var currentTurnID string
+	// turnUsage accumulates the usage reported during the open turn. Usage
+	// is not a turn boundary: adapters report it just before their terminal
+	// event, or once per step, so it rides on the turn's one terminal event
+	// instead of closing the turn itself.
+	var turnUsage *llmtypes.Usage
+	addTurnUsage := func(u *llmtypes.Usage) {
+		turnMu.Lock()
+		defer turnMu.Unlock()
+		turnUsage = mergeTurnUsage(turnUsage, u)
+	}
 	emitObserved := func(kind runtimeevents.EventKind, payload any, ev llmtypes.StreamEvent) {
 		payload = w.filterPayload(ctx, kind, payload)
 		turnMu.Lock()
 		defer turnMu.Unlock()
 
-		if currentTurnID == "" && isTurnInternal(kind) {
+		terminal := isTurnTerminal(kind)
+		// A terminal event with no open turn still closes a turn: the
+		// provider reported one, even if nothing in it reached the wrapper
+		// first. Opening it here keeps the one-terminal-per-turn shape.
+		if currentTurnID == "" && (isTurnInternal(kind) || terminal) {
 			currentTurnID = runtimeevents.NewTurnID()
 			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindTurnStarted, source, nil,
 				runtimeevents.WithTurnID(currentTurnID))
 			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionProcessing, source,
 				map[string]any{"turn_id": currentTurnID},
 				runtimeevents.WithTurnID(currentTurnID))
+		}
+		if terminal {
+			payload = withTurnUsage(payload, turnUsage)
+			turnUsage = nil
 		}
 
 		eventID := runtimeevents.NewEventID()
@@ -482,15 +500,42 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			w.observeToolUsePolicy(ctx, source, ev, eventID, currentTurnID)
 		}
 
-		if kind == runtimeevents.KindTurnCompleted || kind == runtimeevents.KindTurnFailed {
+		if terminal {
 			closedTurnID := currentTurnID
 			currentTurnID = ""
-			if closedTurnID != "" {
-				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionIdle, source,
-					map[string]any{"turn_id": closedTurnID},
-					runtimeevents.WithTurnID(closedTurnID))
-			}
+			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionIdle, source,
+				map[string]any{"turn_id": closedTurnID},
+				runtimeevents.WithTurnID(closedTurnID))
 		}
+	}
+	// flushOpenTurn ends a turn the child never finished: the process exited
+	// with a turn open and no terminal event for it. The turn fails, carrying
+	// its id and any usage it reported, and the session goes idle, so every
+	// turn.started still gets exactly one terminal event before
+	// process.exited.
+	flushOpenTurn := func(exitCode int, waitErr error) {
+		turnMu.Lock()
+		defer turnMu.Unlock()
+		if currentTurnID == "" {
+			turnUsage = nil
+			return
+		}
+		payload := map[string]any{
+			"error":     "wrapper: process exited before the turn completed",
+			"reason":    "process_exited",
+			"exit_code": exitCode,
+		}
+		if waitErr != nil {
+			payload["wait_error"] = waitErr.Error()
+		}
+		closedTurnID := currentTurnID
+		currentTurnID = ""
+		_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindTurnFailed, source,
+			withTurnUsage(payload, turnUsage), runtimeevents.WithTurnID(closedTurnID))
+		turnUsage = nil
+		_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionIdle, source,
+			map[string]any{"turn_id": closedTurnID},
+			runtimeevents.WithTurnID(closedTurnID))
 	}
 	emitProviderObserved := func(kind runtimeevents.EventKind, payload any) {
 		payload = w.filterPayload(ctx, kind, payload)
@@ -627,6 +672,10 @@ func (w *Wrapper) Run(ctx context.Context) error {
 				w.cfg.Activity.Emitter().SetProviderSessionID(ev.SessionID)
 				continue
 			}
+			if ev.Type == llmtypes.EventUsage {
+				addTurnUsage(ev.Usage)
+				continue
+			}
 			ev = w.filterStreamEvent(ctx, ev)
 			kind, payload, mapped := translateStreamEvent(ev)
 			if !mapped {
@@ -646,6 +695,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		w.inputWG.Wait()
 		close(fanout)
 		<-translatorDone
+		flushOpenTurn(exitCode, waitErr)
 		exitPayload := map[string]any{"exit_code": exitCode, "error": err.Error()}
 		if waitErr != nil {
 			exitPayload["wait_error"] = waitErr.Error()
@@ -672,6 +722,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	w.inputWG.Wait()
 	close(fanout)
 	<-translatorDone
+	flushOpenTurn(exitCode, waitErr)
 
 	exitPayload := map[string]any{"exit_code": exitCode}
 	if waitErr != nil {
@@ -843,10 +894,57 @@ func isTurnInternal(kind runtimeevents.EventKind) bool {
 // plus the turn-ending kinds (turn.completed / turn.failed) so the
 // terminal events also reference the turn they close.
 func isTurnScoped(kind runtimeevents.EventKind) bool {
-	if isTurnInternal(kind) {
-		return true
-	}
+	return isTurnInternal(kind) || isTurnTerminal(kind)
+}
+
+// isTurnTerminal reports whether a runtime event kind ends a turn. A native
+// turn has exactly one: turn.completed or turn.failed.
+func isTurnTerminal(kind runtimeevents.EventKind) bool {
 	return kind == runtimeevents.KindTurnCompleted || kind == runtimeevents.KindTurnFailed
+}
+
+// mergeTurnUsage adds one usage report to the turn's running total. Token
+// counts are summed, because an adapter that reports more than once per turn
+// reports per step (OpenCode's step_finish), and the latest non-empty stop
+// reason wins. The result never aliases u.
+func mergeTurnUsage(total, u *llmtypes.Usage) *llmtypes.Usage {
+	if u == nil {
+		return total
+	}
+	if total == nil {
+		c := *u
+		return &c
+	}
+	total.InputTokens += u.InputTokens
+	total.OutputTokens += u.OutputTokens
+	total.CacheCreationTokens += u.CacheCreationTokens
+	total.CacheReadTokens += u.CacheReadTokens
+	if u.StopReason != "" {
+		total.StopReason = u.StopReason
+	}
+	return total
+}
+
+// withTurnUsage attaches a turn's accumulated usage to its terminal event's
+// payload under "usage", the key turn.completed carried it under before usage
+// stopped being a turn boundary. A nil usage leaves the payload unchanged.
+func withTurnUsage(payload any, usage *llmtypes.Usage) any {
+	if usage == nil {
+		return payload
+	}
+	out := map[string]any{}
+	switch p := payload.(type) {
+	case nil:
+	case map[string]any:
+		for k, v := range p {
+			out[k] = v
+		}
+	default:
+		// Not a map: keep it whole rather than drop it.
+		out["payload"] = p
+	}
+	out["usage"] = usage
+	return out
 }
 
 // resolveWorkspaceLogPath applies Config.WorkspaceDir/LogPath's

@@ -44,20 +44,60 @@ func TestTranslateToolUse(t *testing.T) {
 	}
 }
 
-func TestTranslateUsageEmitsTurnCompleted(t *testing.T) {
-	kind, payload, ok := translateStreamEvent(llmtypes.StreamEvent{
+// Usage is not a turn boundary. Run accumulates it onto the turn's one
+// terminal event; mapping it to turn.completed closed the turn early and sent
+// the real terminal out untagged after session.idle (CW-20261001-0019).
+func TestTranslateUsageIsNotATurnBoundary(t *testing.T) {
+	_, _, ok := translateStreamEvent(llmtypes.StreamEvent{
 		Type:  llmtypes.EventUsage,
 		Usage: &llmtypes.Usage{InputTokens: 100, OutputTokens: 50},
 	})
-	if !ok {
-		t.Fatal("EventUsage should be mapped")
+	if ok {
+		t.Fatal("EventUsage should return ok=false (accumulated onto the terminal event)")
 	}
-	if kind != runtimeevents.KindTurnCompleted {
-		t.Errorf("kind = %q, want turn.completed", kind)
+}
+
+func TestMergeTurnUsageSumsStepsWithoutAliasing(t *testing.T) {
+	first := &llmtypes.Usage{InputTokens: 10, OutputTokens: 1, CacheReadTokens: 3, StopReason: "tool-calls"}
+	total := mergeTurnUsage(nil, first)
+	if total == first {
+		t.Fatal("merge aliased its input")
 	}
-	p, _ := payload.(map[string]any)
-	if _, has := p["usage"]; !has {
-		t.Error("payload missing usage")
+	total = mergeTurnUsage(total, &llmtypes.Usage{InputTokens: 5, OutputTokens: 2, CacheCreationTokens: 4})
+	total = mergeTurnUsage(total, nil)
+	want := llmtypes.Usage{InputTokens: 15, OutputTokens: 3, CacheCreationTokens: 4, CacheReadTokens: 3, StopReason: "tool-calls"}
+	if *total != want {
+		t.Fatalf("total = %+v, want %+v", *total, want)
+	}
+	total = mergeTurnUsage(total, &llmtypes.Usage{StopReason: "stop"})
+	if total.StopReason != "stop" {
+		t.Fatalf("StopReason = %q, want the latest non-empty one", total.StopReason)
+	}
+	if first.InputTokens != 10 {
+		t.Fatalf("merge mutated its first input: %+v", *first)
+	}
+}
+
+func TestWithTurnUsage(t *testing.T) {
+	u := &llmtypes.Usage{InputTokens: 7}
+	if got := withTurnUsage(nil, nil); got != nil {
+		t.Errorf("nil usage changed a nil payload: %v", got)
+	}
+	got, _ := withTurnUsage(nil, u).(map[string]any)
+	if got["usage"] != u {
+		t.Errorf("nil payload: got %v", got)
+	}
+	in := map[string]any{"error": "boom"}
+	got, _ = withTurnUsage(in, u).(map[string]any)
+	if got["error"] != "boom" || got["usage"] != u {
+		t.Errorf("map payload: got %v", got)
+	}
+	if _, mutated := in["usage"]; mutated {
+		t.Error("withTurnUsage mutated the caller's payload map")
+	}
+	got, _ = withTurnUsage("opaque", u).(map[string]any)
+	if got["payload"] != "opaque" || got["usage"] != u {
+		t.Errorf("non-map payload: got %v", got)
 	}
 }
 
