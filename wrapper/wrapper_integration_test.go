@@ -335,7 +335,7 @@ func canonicalPathForTest(t *testing.T, path string) string {
 
 func mustReadWrapperFile(t *testing.T, path string) []byte {
 	t.Helper()
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G304: a test helper; callers pass paths under t.TempDir
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
@@ -1563,7 +1563,7 @@ func TestRunBlockRecommendationIsPostSideEffect(t *testing.T) {
 			Message:        "host should block this operation at a pre-execution gate",
 		},
 		onObserve: func(policy.Observation) {
-			content, err := os.ReadFile(marker)
+			content, err := os.ReadFile(marker) //nolint:gosec // G304: the test's own temp file
 			markerSeenDuringObservation = err == nil && string(content) == "executed"
 		},
 	}
@@ -1572,7 +1572,7 @@ func TestRunBlockRecommendationIsPostSideEffect(t *testing.T) {
 	if !markerSeenDuringObservation {
 		t.Fatal("observer ran before the child side-effect marker existed; test no longer proves the post-hoc boundary")
 	}
-	content, err := os.ReadFile(marker)
+	content, err := os.ReadFile(marker) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatalf("read side-effect marker after block recommendation: %v", err)
 	}

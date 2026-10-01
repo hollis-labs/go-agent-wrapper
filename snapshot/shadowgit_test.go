@@ -19,7 +19,7 @@ import (
 
 func runGitT(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	cmd := exec.Command("git", args...) //nolint:gosec // G204: the test drives git with its own arguments
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@localhost",
@@ -39,11 +39,11 @@ func runGitT(t *testing.T, dir string, args ...string) string {
 // working-directory-isolation tests.
 func newRealRepo(t *testing.T, dir string) {
 	t.Helper()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: a fixture directory in t.TempDir
 		t.Fatal(err)
 	}
 	runGitT(t, dir, "init", "--quiet", "-b", "main")
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("real repo\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("real repo\n"), 0o644); err != nil { //nolint:gosec // G306: a project fixture file in t.TempDir, at the mode a checked-out file has
 		t.Fatal(err)
 	}
 	runGitT(t, dir, "add", "README.md")
@@ -74,17 +74,17 @@ func newShadowGitT(t *testing.T) *ShadowGit {
 func writeFile(t *testing.T, dir, rel, content string) {
 	t.Helper()
 	full := filepath.Join(dir, filepath.FromSlash(rel))
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil { //nolint:gosec // G301: a fixture directory in t.TempDir
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil { //nolint:gosec // G306: a project fixture file in t.TempDir, at the mode a checked-out file has
 		t.Fatal(err)
 	}
 }
 
 func readFile(t *testing.T, dir, rel string) string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
+	b, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel))) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestCapture_LoudInfrastructureFailure(t *testing.T) {
 	if err := os.MkdirAll(locked, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) }) //nolint:gosec // G302: restores owner access so t.TempDir cleanup can remove the directory
 
 	baseDir := filepath.Join(locked, "shadow-store") // NewShadowGit must create this and cannot
 	_, err := NewShadowGit(baseDir, WithLogger(newLoggerT(t)))
@@ -531,7 +531,7 @@ func TestRestore_SkipsWriteWhenAlreadyMatching_PreservesMtime(t *testing.T) {
 
 func TestRestore_Symlink(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "real.txt"), []byte("target"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "real.txt"), []byte("target"), 0o644); err != nil { //nolint:gosec // G306: a project fixture file in t.TempDir, at the mode a checked-out file has
 		t.Fatal(err)
 	}
 	if err := os.Symlink("real.txt", filepath.Join(root, "link.txt")); err != nil {
@@ -586,7 +586,7 @@ func TestRestore_UnsafePathRejected(t *testing.T) {
 
 func gitIndexSnapshot(t *testing.T, repoDir string) []byte {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(repoDir, ".git", "index"))
+	b, err := os.ReadFile(filepath.Join(repoDir, ".git", "index")) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -159,7 +159,7 @@ func TestACPWrapperRealSubprocessLifecycleAllAdapters(t *testing.T) {
 				t.Fatalf("process.exited events = %d, want exactly 1", processExits)
 			}
 
-			traceBytes, err := os.ReadFile(tracePath)
+			traceBytes, err := os.ReadFile(tracePath) //nolint:gosec // G304: the test's own temp file
 			if err != nil {
 				t.Fatalf("read trace: %v", err)
 			}
@@ -222,7 +222,7 @@ func TestACPWrapperRealSubprocessNormalizesMalformedDisconnectAndChildExit(t *te
 				t.Fatalf("Manager.Len = %d after failure, want 0", manager.Len())
 			}
 			assertACPControlsReleased(t, w, sink, "fresh-456")
-			traceBytes, readErr := os.ReadFile(tracePath)
+			traceBytes, readErr := os.ReadFile(tracePath) //nolint:gosec // G304: the test's own temp file
 			if readErr != nil {
 				t.Fatalf("read cleanup trace: %v", readErr)
 			}
@@ -514,7 +514,7 @@ func TestAllACPClientsValidateInitializeAndGateResume(t *testing.T) {
 
 func readFixtureTrace(t *testing.T, path string) string {
 	t.Helper()
-	contents, err := os.ReadFile(path)
+	contents, err := os.ReadFile(path) //nolint:gosec // G304: a test helper; callers pass paths under t.TempDir
 	if err != nil {
 		t.Fatalf("read fixture trace: %v", err)
 	}
@@ -643,7 +643,7 @@ func firstKind(events []runtimeevents.Event, kind runtimeevents.EventKind) (runt
 func TestACPWrapperPreparedLocalStdioSandboxDeniesReadWrite(t *testing.T) {
 	dir := t.TempDir()
 	fixturePath := filepath.Join(dir, "acpfixture")
-	build := exec.Command("go", "build", "-o", fixturePath, "./testdata/acpfixture")
+	build := exec.Command("go", "build", "-o", fixturePath, "./testdata/acpfixture") //nolint:gosec // G204: the test's own build of its fixture into t.TempDir
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build ACP fixture: %v\n%s", err, output)
 	}
@@ -721,7 +721,7 @@ func TestACPWrapperPreparedLocalStdioSandboxDeniesReadWrite(t *testing.T) {
 	if err = <-runErrCh; err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	traceBytes, err := os.ReadFile(tracePath)
+	traceBytes, err := os.ReadFile(tracePath) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -732,7 +732,7 @@ func TestACPWrapperPreparedLocalStdioSandboxDeniesReadWrite(t *testing.T) {
 	if strings.Contains(trace, "probe-read-allowed") || strings.Contains(trace, "probe-write-allowed") {
 		t.Fatalf("sandbox allowed denied probe:\n%s", trace)
 	}
-	if got, err := os.ReadFile(writeDeniedPath); err != nil || string(got) != "original" {
+	if got, err := os.ReadFile(writeDeniedPath); err != nil || string(got) != "original" { //nolint:gosec // G304: the test's own temp file
 		t.Fatalf("write denied path = %q err=%v, want original content", got, err)
 	}
 	event, ok := firstKind(sink.snapshot(), runtimeevents.KindSandboxApplied)
@@ -751,7 +751,7 @@ func TestACPWrapperPreparedLocalStdioSandboxDeniesReadWrite(t *testing.T) {
 func TestACPWrapperPreparedLocalTCPSandboxCapabilityResult(t *testing.T) {
 	dir := t.TempDir()
 	fixturePath := filepath.Join(dir, "acpfixture")
-	build := exec.Command("go", "build", "-o", fixturePath, "./testdata/acpfixture")
+	build := exec.Command("go", "build", "-o", fixturePath, "./testdata/acpfixture") //nolint:gosec // G204: the test's own build of its fixture into t.TempDir
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build ACP fixture: %v\n%s", err, output)
 	}
@@ -839,7 +839,7 @@ func TestACPWrapperPreparedLocalTCPSandboxCapabilityResult(t *testing.T) {
 	if payload["enforced"] != true || payload["applied"] != true || payload["state"] != "applied" {
 		t.Fatalf("sandbox payload = %#v", payload)
 	}
-	traceBytes, err := os.ReadFile(tracePath)
+	traceBytes, err := os.ReadFile(tracePath) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -875,7 +875,7 @@ func TestACPRemoteDialOnlyRejectsRequiredSandboxAndReportsDisabled(t *testing.T)
 func TestACPWrapperCopilotTCPRealSubprocessLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	fixturePath := filepath.Join(dir, "acpfixture")
-	build := exec.Command("go", "build", "-o", fixturePath, "./testdata/acpfixture")
+	build := exec.Command("go", "build", "-o", fixturePath, "./testdata/acpfixture") //nolint:gosec // G204: the test's own build of its fixture into t.TempDir
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build TCP fixture: %v\n%s", err, output)
 	}
@@ -926,7 +926,7 @@ func TestACPWrapperCopilotTCPRealSubprocessLifecycle(t *testing.T) {
 	if err = <-runErrCh; err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	traceBytes, err := os.ReadFile(tracePath)
+	traceBytes, err := os.ReadFile(tracePath) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -37,7 +37,7 @@ func TestSharedConformanceProgramRuns(t *testing.T) {
 		t.Skip("go binary not available")
 	}
 	root := t.TempDir()
-	cmd := exec.Command("go", "run", ".", "-scenario", "all", "-root", root)
+	cmd := exec.Command("go", "run", ".", "-scenario", "all", "-root", root) //nolint:gosec // G204: runs the example under test, with a t.TempDir root
 	cmd.Dir = "."
 	output, err := cmd.CombinedOutput()
 	if err != nil {

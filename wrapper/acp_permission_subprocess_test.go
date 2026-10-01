@@ -370,7 +370,7 @@ func waitForPermissionResponseLines(t *testing.T, marker string, count int) []st
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		data, err := os.ReadFile(marker)
+		data, err := os.ReadFile(marker) //nolint:gosec // G304: the test's own temp file
 		if err == nil {
 			trimmed := strings.TrimSpace(string(data))
 			if trimmed != "" {
@@ -661,7 +661,7 @@ func collectPermissionTurnEvents(t *testing.T, client acp.Client) []runtimeevent
 
 func readPermissionResponses(t *testing.T, marker string) []string {
 	t.Helper()
-	file, err := os.Open(marker)
+	file, err := os.Open(marker) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatalf("open permission responses: %v", err)
 	}
