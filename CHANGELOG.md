@@ -27,6 +27,35 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     passes at `-race -count=100`. On main it failed 11 of 50 runs: 12
     Close subtests, spread across all five clients.
 
+## v0.16.0 — 2026-10-01
+
+Prepared launches run each turn with its own argv (CW-20260930-0135, the
+wrapper half of "one argv owner"). Pairs with agentkit v0.13.0 (was
+v0.12.2); go-providers v0.34.1 and go-sandbox v0.4.1 are unchanged.
+
+### Fixed
+
+- **A prepared launch no longer reruns the first turn every turn.** The
+  wrapper hands `Config.PreparedExecution` straight to agentkit's Start.
+  agentkit v0.13.0 resolves each turn's argv from the prepared execution's
+  launch template (`Bindings.Launch`): the turn's own prompt, `--resume` /
+  `--session` / `--conversation` with the session the previous turn reported,
+  and the launch's own flags. Before, every turn reused the frozen first-turn
+  argv: the boot prompt again, no resume, and the provider argv appended a
+  second time. A streaming-stdio Claude launch gets its boot prompt as the
+  first stdin turn.
+- **The prepared adapter no longer hides capabilities.** It forwarded only
+  `EventParser`. It now forwards `SessionLostClassifier`,
+  `AuthFailureClassifier`, `SessionResumeVerifier` and `Preflighter` as well,
+  answering as an adapter without the interface would when the inner one
+  lacks it. A prepared agy launch, for example, now detects a lost
+  conversation and an auth failure. `BootDirProvider` is deliberately not
+  forwarded: the prepared boot dir is already planted, and forwarding it would
+  let the session plant again whenever `AutoPlantBootDir` is set.
+- The prepared adapter's `BuildArgs` resolves the launch template for the turn
+  instead of returning nil. A prepared execution without a template keeps its
+  frozen argv.
+
 ## v0.15.0 — 2026-10-01
 
 Apps pick any agent runtime by id and mode through one call, native or ACP

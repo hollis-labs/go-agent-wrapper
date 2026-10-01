@@ -108,28 +108,90 @@ func preparedCLIAdapter(inner provider.CLIAdapter, prepared *agentlaunch.Prepare
 	if err := prepared.Validate(); err != nil {
 		return nil, err
 	}
-	return &preparedAdapter{inner: inner, binary: prepared.Bindings.Argv[0]}, nil
+	return &preparedAdapter{inner: inner, binary: prepared.Bindings.Argv[0], launch: prepared.Bindings.Launch}, nil
 }
 
+// preparedAdapter runs the inner adapter under a prepared execution's spawn
+// bindings: the prepared binary, and argv from the prepared launch template.
+// It forwards every optional interface the session runtimes consult
+// (EventParser, SessionLostClassifier, AuthFailureClassifier,
+// SessionResumeVerifier, Preflighter), answering as an adapter without that
+// interface would when the inner one lacks it, so wrapping never hides a
+// capability.
+//
+// BootDirProvider is deliberately not forwarded. A prepared execution's boot
+// dir was already planted when it was prepared, and agentsessions plants
+// through BootDirProvider whenever StartOptions.AutoPlantBootDir is set (only
+// a prepared execution with a materialization handle switches that off).
+// Forwarding it would let the session plant the boot dir a second time, over
+// the prepared files.
 type preparedAdapter struct {
 	inner  provider.CLIAdapter
 	binary string
+	launch *agentlaunch.TurnTemplate
 }
+
+var (
+	_ provider.EventParser           = (*preparedAdapter)(nil)
+	_ provider.SessionLostClassifier = (*preparedAdapter)(nil)
+	_ provider.AuthFailureClassifier = (*preparedAdapter)(nil)
+	_ provider.SessionResumeVerifier = (*preparedAdapter)(nil)
+	_ provider.Preflighter           = (*preparedAdapter)(nil)
+)
 
 func (a *preparedAdapter) Name() string { return a.inner.Name() }
 func (a *preparedAdapter) Detect() (string, bool) {
 	return a.binary, a.binary != ""
 }
-func (a *preparedAdapter) BuildArgs(_, _, _ string) []string { return nil }
+
+// BuildArgs resolves the prepared launch template for the turn. The session
+// runtimes resolve the same template themselves (StartOptions.Launch), so this
+// matters only to a caller that asks the adapter directly. A prepared
+// execution without a template keeps its frozen Bindings.Argv, which the
+// runtime passes as ExtraArgs, so its BuildArgs contributes nothing.
+func (a *preparedAdapter) BuildArgs(prompt, systemPrompt, sessionID string) []string {
+	if a.launch == nil {
+		return nil
+	}
+	args, err := a.launch.TurnArgv(provider.TurnInput{Prompt: prompt, SystemPrompt: systemPrompt, ResumeID: sessionID})
+	if err != nil {
+		return nil
+	}
+	return args
+}
+
 func (a *preparedAdapter) ParseLine(line []byte) ([]llmtypes.StreamEvent, error) {
 	return a.inner.ParseLine(line)
 }
+
 func (a *preparedAdapter) ParseLineEvents(line []byte) ([]pevents.Event, error) {
 	parser, ok := a.inner.(provider.EventParser)
 	if !ok {
 		return nil, nil
 	}
 	return parser.ParseLineEvents(line)
+}
+
+func (a *preparedAdapter) IsSessionLost(stderrTail []byte) bool {
+	c, ok := a.inner.(provider.SessionLostClassifier)
+	return ok && c.IsSessionLost(stderrTail)
+}
+
+func (a *preparedAdapter) IsNotAuthenticated(stderrTail []byte) bool {
+	c, ok := a.inner.(provider.AuthFailureClassifier)
+	return ok && c.IsNotAuthenticated(stderrTail)
+}
+
+func (a *preparedAdapter) ResumeKeepsSessionID() bool {
+	v, ok := a.inner.(provider.SessionResumeVerifier)
+	return ok && v.ResumeKeepsSessionID()
+}
+
+func (a *preparedAdapter) Preflight() error {
+	if p, ok := a.inner.(provider.Preflighter); ok {
+		return p.Preflight()
+	}
+	return nil
 }
 
 func emitPreparedMaterialization(ctx context.Context, bridgeActivity *activity.Bridge, source runtimeevents.Source, handle *materialize.Handle) {
