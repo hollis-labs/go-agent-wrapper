@@ -11,15 +11,26 @@ and reports what happened.
 
 - `README.md` is the current status and the full event vocabulary.
 - `ROADMAP.md` records what is deferred and why.
-- `wrapper/` owns `Run`: runtime dispatch, session drive, event translation.
+- `wrapper/` owns `Config`, `New` and `Run`: runtime dispatch, session drive,
+  event translation, permission posture, prepared launches, protected paths,
+  `CancelTurn`/`Stop`.
 - `launch/` is `Select`: a runtime by go-providers registry id and
   agent-contracts-leaf mode in, its native or ACP adapter out, from a closed
-  factory table. `adapters/` holds the adapters themselves.
-- `acp/` owns ACP v1 negotiation, create-or-resume, cancellation and close.
-- `policy/` defines the advisory observer surface.
+  factory table that `Supported` lists. `adapters/` holds the adapters
+  themselves.
+- `acp/` owns ACP v1 negotiation, create-or-resume, session MCP servers,
+  cancellation and close; `Manager`/`Session` are the authoritative registry
+  and lifecycle.
+- `activity/` binds the wrapper to the `go-runtime-events` sink.
+- `policy/` defines the advisory observer surface; `classifybridge/` feeds it
+  from a `go-harness-filters` classifier.
 - `filters/` adapts `go-harness-filters` rules onto agent text and tool
   envelopes.
-- `plant/` and `sandbox/` own pre-spawn materialization and confinement.
+- `plant/` owns pre-spawn materialization. `sandbox/` is the post-start PID
+  applier; pre-spawn confinement is `Config.SandboxPolicy`/`SandboxProfile`/
+  `ProtectedPaths`.
+- `snapshot/` is the filesystem capture/diff/restore primitive;
+  `sidebyside/` holds the live native-vs-ACP Claude comparison.
 - `internal/testgate/` owns the live-provider opt-in gate.
 
 ## Commands
@@ -57,7 +68,7 @@ silently starting a fresh session — a caller that asked to resume and got a ne
 session would lose history without being told.
 
 Runtimes, modes and defaults are the go-providers registry's; the wrapper keeps
-no runtime list and no LaunchMode/RuntimeKind enum (D-73). Every registry
+no runtime list and no runtime or mode enum of its own (D-73). Every registry
 (runtime, mode) has a launch factory or a recorded reason it is not driven
 (`TestFactoriesFollowTheRegistry`), and every registry runtime launches through
 `launch.Select` + `New` + `Run` against a providertest fake

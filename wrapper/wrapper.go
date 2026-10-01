@@ -105,8 +105,8 @@ type Config struct {
 	PlantSpec plant.Spec
 
 	// PreparedExecution is an already resolved/materialized agentkit handoff.
-	// Native wrapper runtimes consume its exact argv/env/cwd and access policy
-	// without resolving provider projection or planting again.
+	// Native and ACP wrapper runtimes consume its exact argv/env/cwd and
+	// access policy without resolving provider projection or planting again.
 	PreparedExecution *agentlaunch.PreparedExecution
 
 	// PrepareRequest is the convenience path for callers that want the wrapper
@@ -204,8 +204,8 @@ type Config struct {
 	// outside the writable roots); accept-edits also approves file changes;
 	// plan declines all of them; yolo approves all of them. A request the
 	// responder cannot decide for a human is answered with a JSON-RPC error
-	// in every mode. Each request still emits agent.permission.requested and
-	// agent.permission.resolved.
+	// in every mode. Each request still emits agent.permission_requested and
+	// agent.permission_resolved.
 	//
 	// Set on a native launch that is not prepared, it is also the launch's
 	// posture: the go-providers registry maps it onto the runtime's own
@@ -227,7 +227,7 @@ type Config struct {
 	// ([turn.CodexApprovalResponder.MCPAllow]). Each entry is "server" or
 	// "server/tool", each half a path.Match pattern, e.g. "mux/torque_*".
 	// With entries, a call matching none is declined and its
-	// agent.permission.resolved says why; plan and yolo ignore the list.
+	// agent.permission_resolved says why; plan and yolo ignore the list.
 	// Empty keeps the posture's own answer: every MCP tool call the launch
 	// planted is approved. [New] rejects a malformed entry.
 	MCPAllow []string

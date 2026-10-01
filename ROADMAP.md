@@ -1,6 +1,6 @@
 # go-agent-wrapper Roadmap
 
-Status as of v0.13.0 (2026-09-30). See
+Status as of v0.25.0 (2026-10-01). See
 [CHANGELOG.md](./CHANGELOG.md) for what landed.
 
 ## Publish blockers
@@ -13,11 +13,12 @@ a deliberate manual operation after independent review.
 
 ### Concrete adapters
 
-- **PTY adapter** — `Wrapper.Run` dispatches the `pty` runtime token to
-  `Capabilities.PTY=true`, but no PTY-shaped concrete adapter ships in
-  v0.13.0. Claude has `provider.NewClaudeAdapterPTY()`, Codex has a PTY
-  shape too — both are mechanical follow-ons to the existing
-  streaming-stdio / jsonrpc-stdio adapters.
+- **PTY adapter** — `Wrapper.Run` maps a `pty-raw`/`pty` descriptor to
+  `Capabilities.PTY=true`, but no PTY-shaped concrete adapter ships.
+  `launch.Select` deliberately does not drive Claude's PTY TUI mode (the
+  only PTY mode in the go-providers registry; it is
+  `ErrUnsupportedSelection`), so a PTY session needs a host-supplied
+  adapter.
 
 ### Event taxonomy
 
@@ -36,6 +37,8 @@ The full kind set from
 - `session.processing` / `session.idle` around observed turn boundaries.
 - `session.heartbeat` from provider typed heartbeats, plus optional
   wrapper-synthesized heartbeats via `Config.HeartbeatInterval`.
+- `session.lost`, `session.auth_failed` and `agent.permission_denied` from
+  provider typed events.
 
 Remaining validation: exercise the provider typed-event paths against
 live Claude/Codex/OpenCode binaries, especially JSON-RPC approval shapes.
@@ -84,8 +87,9 @@ module's `cmd/agent-wrap` is the reference shape.
 the subprocess-per-turn adapter runtime, PID is 0 between turns — the
 applier has no live child to constrain. Pre-spawn enforcement on that
 runtime belongs in `agentsessions.StartOptions.Profile`; the wrapper now
-exposes `Config.SandboxProfile sandbox.Profile` and forwards it. Keep
-`Config.Sandbox` for long-lived PID post-start appliers.
+exposes `Config.SandboxProfile sandbox.Profile` and forwards it, as it does
+`Config.SandboxPolicy` and `Config.ProtectedPaths`. Keep `Config.Sandbox` for
+long-lived PID post-start appliers.
 
 ### Stdio fidelity per runtime
 
@@ -120,9 +124,10 @@ longer need to pre-generate an ID through `WithID` merely to establish a parent.
    fresh child). Our `turn.*` events align well there. For long-lived
    runtimes (streaming-stdio, jsonrpc-stdio, http-sse), turns are
    adapter-defined and depend on observing turn-terminal stream events
-   correctly — currently `EventDone`/`EventUsage`/`EventError` close a
-   turn. Validate this matches Claude/Codex/OpenCode reality once we
-   exercise them with live binaries.
+   correctly — currently `EventDone`/`EventError` close a turn, and usage
+   reports accumulate onto that terminal event rather than closing it.
+   Validate this matches Claude/Codex/OpenCode reality once we exercise
+   them with live binaries.
 
 ## Release readiness
 

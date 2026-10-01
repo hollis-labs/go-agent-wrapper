@@ -16,13 +16,19 @@
 //   - IO proxying (stdin, stdout, stderr, PTY, terminal resize)
 //   - planting (per-session boot dirs, MCP config, provider settings,
 //     hooks/plugins, recovery prompts) — see [plant]
-//   - sandboxing applied before exec — see [sandbox]
+//   - pre-spawn go-sandbox confinement (Config.SandboxPolicy,
+//     SandboxProfile, ProtectedPaths) and a post-start applier — see
+//     [sandbox]
+//   - prepared launches handed over from agentkit (Config.PreparedExecution,
+//     PrepareRequest) and the session's permission posture
+//     (Config.PermissionPosture, MCPAllow)
+//   - ACP session lifecycle through [acp.Manager] — see [acp]
 //   - runtime activity event emission — see [activity]
 //   - post-hoc policy observation and advisory event emission — see [policy]
 //   - optional filter-pipeline integration (envelope repair, classifier,
 //     command normalization) — see [filters]
 //   - provider-specific adapters (Claude, Codex, OpenCode, ...) — see
-//     [adapters]
+//     [adapters]; hosts usually pick one with launch.Select
 //
 // The wrapper does not prescribe prompt design, workflow logic, turn
 // semantics, or agent cognition. Apps that import this package keep

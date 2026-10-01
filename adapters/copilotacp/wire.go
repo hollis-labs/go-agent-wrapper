@@ -112,8 +112,8 @@ type sessionPromptParams struct {
 // refusal, cancelled. Confirmed live: a real cancelled-mid-turn response
 // from Copilot 1.0.12 actually carried "end_turn", not "cancelled" — a
 // minor spec-compliance quirk in Copilot's own implementation, not a
-// bug in this client; StopReason is surfaced verbatim in the emitted
-// turn.completed payload rather than re-interpreted.
+// bug in this client; StopReason is passed through
+// llmtypes.NormalizeStopReason into the emitted turn.completed stop_reason.
 type sessionPromptResult struct {
 	StopReason string `json:"stopReason"`
 }

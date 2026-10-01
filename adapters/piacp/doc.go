@@ -196,11 +196,13 @@
 //
 // # Wrapper-owned lifecycle
 //
-// [Client] spawns and owns its `npx -y pi-acp` subprocess directly via
-// os/exec — real request/response correlation, real notification
-// dispatch, entirely self-contained. [Adapter] exposes a fresh client through
-// [acp.ClientAdapter], and wrapper.Wrapper owns its full initialize/auth/config,
-// create-or-resume, prompt/cancel, liveness, and cleanup through [acp.Manager].
+// [Client] delegates to the shared [acp.NDJSONBridgeClient], which spawns and
+// owns the `pi-acp` subprocess (request/response correlation, notification
+// dispatch, termination); this package supplies only command resolution and
+// translate.go's session/update mapping. [Adapter] exposes a fresh client
+// through [acp.ClientAdapter], and wrapper.Wrapper owns its full
+// initialize/auth/config, create-or-resume, prompt/cancel, liveness, and
+// cleanup through [acp.Manager].
 // [Adapter.CLIAdapter] remains compatibility/introspection glue only.
 //
 // # Known limitations
@@ -210,8 +212,9 @@
 //     further the way 17-acp.md's "per-agent unknown" framing applies to
 //     OpenCode/Copilot CLI.
 //   - MCP servers accepted in `session/new`'s params but not wired
-//     through to `pi` by `pi-acp` (per its own README) — this package
-//     always sends an empty `mcpServers` array, matching that reality.
+//     through to `pi` by `pi-acp` (per its own README). The session's
+//     stdio servers are still sent as `mcpServers` (HTTP ones are dropped:
+//     pi-acp does not advertise mcpCapabilities.http), but Pi never sees them.
 //   - `agent_thought_chunk` mapping is unverified/dead code today (see
 //     above) — pi-acp does not currently emit it.
 //   - CLIAdapter()'s ParseLine remains a deliberate pass-through; Wrapper uses

@@ -10,9 +10,11 @@
 //  3. How do we turn its native output into runtimeevents.Events?
 //     (Per-provider observer code, layered on top of the channel.)
 //
-// [Select] is the first-class native factory when a host already knows its
-// provider, Runtime kind, and launch mode. Concrete adapters (claude, codex,
-// opencode) also ship as sibling subpackages and compose with the lower-level
-// github.com/hollis-labs/go-providers and go-agent-sessions runtimes.
-// This package owns only the contract.
+// Hosts normally obtain an Adapter from launch.Select, which picks a runtime
+// by go-providers registry id and mode and returns its native or ACP adapter.
+// Concrete adapters also ship as sibling subpackages: native claude, codex
+// and opencode, which compose with github.com/hollis-labs/go-providers and
+// agentkit's agentsessions runtimes, and the ACP clients claudeacp,
+// codexacp, copilotacp, opencodeacp and piacp. This package owns only the
+// contract.
 package adapters
