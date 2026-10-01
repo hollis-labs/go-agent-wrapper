@@ -108,7 +108,10 @@ func NewDeliveryCapabilities(entries ...DeliveryCapabilityEvidence) DeliveryCapa
 }
 
 // DeliveryCapabilitiesForRuntime returns the honest default delivery/control
-// declaration for a wrapper runtime descriptor. It intentionally does not infer
+// declaration for a wrapper runtime descriptor. turnScopedCancel says whether
+// wrapper.CancelTurn ends a turn on this runtime without closing the session:
+// ACP's session/cancel, or a native runtime with a turn interrupt (see
+// launch.Select). It intentionally does not infer
 // Claude Code cross-session ListAgents/SendMessage support: this repository has
 // no provider-backed route/send implementation for that API yet, so
 // between-tool-call delivery stays absent.
@@ -135,13 +138,33 @@ func DeliveryCapabilitiesForRuntime(provider string, protocol Protocol, transpor
 		})
 	}
 	if turnScopedCancel {
+		mechanism, evidence := turnCancelMechanism(protocol)
 		entries = append(entries, DeliveryCapabilityEvidence{
 			Capability: DeliveryCapabilityCancelTurn,
-			Mechanism:  "acp.Session.Cancel / wrapper.CancelTurn",
-			Evidence:   "ACP managed session sends session/cancel without closing the session",
+			Mechanism:  mechanism,
+			Evidence:   evidence,
 		})
 	}
 	return NewDeliveryCapabilities(entries...)
+}
+
+// turnCancelMechanism names how wrapper.CancelTurn ends a turn on protocol
+// without closing the session.
+func turnCancelMechanism(protocol Protocol) (mechanism, evidence string) {
+	switch protocol {
+	case ProtocolClaudeStreamJSON:
+		return "stream-json control_request interrupt / wrapper.CancelTurn",
+			"agentsessions streaming-stdio TurnInterrupter: the turn fails with reason interrupted and the process keeps running"
+	case ProtocolCodexAppServer:
+		return "JSON-RPC turn/interrupt / wrapper.CancelTurn",
+			"agentsessions jsonrpc-stdio TurnInterrupter interrupts the open turn; Codex reports turn/completed with status interrupted"
+	case ProtocolOpenCodeNative:
+		return "POST /session/{id}/abort / wrapper.CancelTurn",
+			"agentsessions serve-http TurnInterrupter aborts the turn; the session stays"
+	default:
+		return "acp.Session.Cancel / wrapper.CancelTurn",
+			"ACP managed session sends session/cancel without closing the session"
+	}
 }
 
 func deliveryMechanism(protocol Protocol, transport Transport) string {
@@ -175,30 +198,30 @@ func (c DeliveryCapabilities) Clone() DeliveryCapabilities {
 	return DeliveryCapabilities{Supported: append([]DeliveryCapabilityEvidence(nil), c.Supported...)}
 }
 
-// Supports reports whether cap is advertised.
-func (c DeliveryCapabilities) Supports(cap DeliveryCapability) bool {
-	_, ok := c.Evidence(cap)
+// Supports reports whether capability is advertised.
+func (c DeliveryCapabilities) Supports(capability DeliveryCapability) bool {
+	_, ok := c.Evidence(capability)
 	return ok
 }
 
-// Evidence returns the concrete evidence for cap when advertised.
-func (c DeliveryCapabilities) Evidence(cap DeliveryCapability) (DeliveryCapabilityEvidence, bool) {
+// Evidence returns the concrete evidence for capability when advertised.
+func (c DeliveryCapabilities) Evidence(capability DeliveryCapability) (DeliveryCapabilityEvidence, bool) {
 	for _, entry := range c.Supported {
-		if entry.Capability == cap {
+		if entry.Capability == capability {
 			return entry, true
 		}
 	}
 	return DeliveryCapabilityEvidence{}, false
 }
 
-// Require returns a typed error when cap is absent or lacks evidence.
-func (c DeliveryCapabilities) Require(cap DeliveryCapability) error {
-	entry, ok := c.Evidence(cap)
+// Require returns a typed error when capability is absent or lacks evidence.
+func (c DeliveryCapabilities) Require(capability DeliveryCapability) error {
+	entry, ok := c.Evidence(capability)
 	if !ok {
-		return &DeliveryCapabilityError{Capability: cap}
+		return &DeliveryCapabilityError{Capability: capability}
 	}
 	if entry.Mechanism == "" || entry.Evidence == "" {
-		return &DeliveryCapabilityError{Capability: cap, Reason: "missing evidence"}
+		return &DeliveryCapabilityError{Capability: capability, Reason: "missing evidence"}
 	}
 	return nil
 }
@@ -302,8 +325,8 @@ func (c DeliveryCapabilities) Plan(req DeliveryPlanRequest) (DeliveryPlan, error
 	}, nil
 }
 
-func deliveryReceipts(cap DeliveryCapability) []DeliveryReceiptStage {
-	switch cap {
+func deliveryReceipts(capability DeliveryCapability) []DeliveryReceiptStage {
+	switch capability {
 	case DeliveryCapabilitySendTurn:
 		return []DeliveryReceiptStage{DeliveryReceiptTurnSubmitted}
 	case DeliveryCapabilityInterrupt:

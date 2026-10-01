@@ -52,7 +52,9 @@ func (*Adapter) Name() string { return "claude" }
 // channel as the event source. Interrupt is [adapters.InterruptProcess]
 // — Claude's streaming-stdio session (agentkit's
 // streamingStdioSession) closes stdin and escalates to SIGTERM/SIGKILL
-// on Stop(); no wire-level cancel frame is sent. Hooks may add the
+// on Stop(). Ending one turn is separate: wrapper.CancelTurn sends Claude's
+// stream-json interrupt and keeps the process, which Delivery advertises as
+// [adapters.DeliveryCapabilityCancelTurn]. Hooks may add the
 // [runtimeevents.ChannelHook] channel at runtime depending on the
 // planted hook configuration; that's recorded at hook-plant time, not
 // here.
@@ -63,7 +65,7 @@ func (*Adapter) Describe() adapters.Descriptor {
 		Transport: adapters.TransportStdio,
 		Interrupt: adapters.InterruptProcess,
 		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelClaudeStreamJSON},
-		Delivery:  adapters.DeliveryCapabilitiesForRuntime("claude", adapters.ProtocolClaudeStreamJSON, adapters.TransportStdio, adapters.InterruptProcess, false),
+		Delivery:  adapters.DeliveryCapabilitiesForRuntime("claude", adapters.ProtocolClaudeStreamJSON, adapters.TransportStdio, adapters.InterruptProcess, true),
 	}
 }
 

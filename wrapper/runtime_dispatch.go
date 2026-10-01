@@ -121,7 +121,7 @@ func runtimeSourceChannel(protocol adapters.Protocol, transport adapters.Transpo
 // keyed on Transport alone (PTY reports "pty", every other transport
 // reports "stdio"), matching the pre-split behavior where only the
 // "pty" runtime token got a dedicated case.
-func rawSourceChannel(protocol adapters.Protocol, transport adapters.Transport) runtimeevents.SourceChannel {
+func rawSourceChannel(transport adapters.Transport) runtimeevents.SourceChannel {
 	if transport == adapters.TransportPTY {
 		return runtimeevents.ChannelPTY
 	}

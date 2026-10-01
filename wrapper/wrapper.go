@@ -467,7 +467,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		Confidence: runtimeevents.ConfidenceExact,
 	}
 	rawSource := runtimeevents.Source{
-		Channel:    rawSourceChannel(desc.Protocol, desc.Transport),
+		Channel:    rawSourceChannel(desc.Transport),
 		Confidence: runtimeevents.ConfidenceExact,
 	}
 	w.sessMu.Lock()
@@ -493,14 +493,14 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		// contract and surface PTY/no-PTY mismatches early. The agentkit runtime
 		// constructs its own binary and argv via CLIAdapter, while Spec.Env is an
 		// honored final replacement for the Config-derived base environment.
-		spec, err := w.cfg.Adapter.Resolve(adapters.ResolveContext{
+		spec, resolveErr := w.cfg.Adapter.Resolve(adapters.ResolveContext{
 			BootDir: bootDir,
 			Cwd:     w.cfg.Workdir,
 			Env:     baseEnv,
 			PTY:     caps.PTY,
 		})
-		if err != nil {
-			return fmt.Errorf("wrapper: adapter Resolve: %w", err)
+		if resolveErr != nil {
+			return fmt.Errorf("wrapper: adapter Resolve: %w", resolveErr)
 		}
 		var adapterEnvironmentExplicit bool
 		childEnv, adapterEnvironmentExplicit, err = resolvedSpecEnvironment(baseEnv, spec.Env)
@@ -525,7 +525,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 
 	if prepared != nil && prepared.Materialization != nil {
 		emitPreparedMaterialization(ctx, w.cfg.Activity, source, prepared.Materialization)
-	} else if err := w.runPlanter(ctx, source); err != nil {
+	} else if err = w.runPlanter(ctx, source); err != nil {
 		return err
 	}
 
@@ -547,7 +547,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("wrapper: agentsessions.NewFromAdapter: %w", err)
 	}
-	if err := runtime.Prepare(ctx); err != nil {
+	if err = runtime.Prepare(ctx); err != nil {
 		return fmt.Errorf("wrapper: runtime.Prepare: %w", err)
 	}
 
@@ -951,7 +951,9 @@ func (w *Wrapper) Stop(ctx context.Context) error {
 //
 // The next SendInput starts a turn on the same process. Any other session
 // returns ErrTurnCancelUnsupported; Stop ends it instead. It returns once
-// the agent has acknowledged the interrupt.
+// the agent has acknowledged the interrupt. The adapter's
+// Describe().Delivery advertises adapters.DeliveryCapabilityCancelTurn
+// exactly where this works.
 func (w *Wrapper) CancelTurn(ctx context.Context) error {
 	w.sessMu.RLock()
 	acpSession := w.acpSession
@@ -1039,8 +1041,9 @@ func isTurnInternal(kind runtimeevents.EventKind) bool {
 		runtimeevents.KindAgentPermissionResolved,
 		runtimeevents.KindAgentPermissionDenied:
 		return true
+	default:
+		return false
 	}
-	return false
 }
 
 // isTurnScoped reports whether a runtime event kind should carry the

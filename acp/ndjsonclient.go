@@ -260,7 +260,7 @@ func (c *NDJSONBridgeClient) Launch(ctx context.Context, params LaunchParams) er
 		stderr.Close()
 		return fmt.Errorf("%s: sandbox: %w", c.cfg.Component, err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err = cmd.Start(); err != nil {
 		stdout.Close()
 		stderr.Close()
 		sandboxCleanup()
@@ -321,7 +321,7 @@ func (c *NDJSONBridgeClient) Launch(ctx context.Context, params LaunchParams) er
 		_ = c.Close(context.Background())
 		return fmt.Errorf("%s: initialize negotiation: %w", c.cfg.Component, err)
 	}
-	if err := c.authenticate(ctx, initialize, params.AuthMethodID); err != nil {
+	if err = c.authenticate(ctx, initialize, params.AuthMethodID); err != nil {
 		_ = c.Close(context.Background())
 		return fmt.Errorf("%s: authenticate: %w", c.cfg.Component, err)
 	}
@@ -494,7 +494,7 @@ func (c *NDJSONBridgeClient) Prompt(ctx context.Context, prompt string) error {
 	// immediately), but the response is awaited on a background
 	// goroutine so Prompt returns once the turn is merely accepted, per
 	// [Client.Prompt]'s documented contract.
-	_, respCh, err := c.beginCall(ctx, "session/prompt", params)
+	respCh, err := c.beginCall("session/prompt", params)
 	if err != nil {
 		c.finishTurn(turnID, nil, err)
 		c.turnWG.Done()
@@ -889,8 +889,9 @@ func (c *NDJSONBridgeClient) failPending(err error) {
 
 // beginCall allocates a request id, registers the pending channel, and
 // writes the request frame — but does not wait for the response. Pairs
-// with [Client.awaitCall].
-func (c *NDJSONBridgeClient) beginCall(ctx context.Context, method string, params any) (int64, chan rpcResponse, error) {
+// with [Client.awaitCall]. It takes no context because the write is not
+// bounded by one (CW-20261001-0211).
+func (c *NDJSONBridgeClient) beginCall(method string, params any) (chan rpcResponse, error) {
 	id := c.nextID.Add(1)
 	respCh := make(chan rpcResponse, 1)
 	c.pendMu.Lock()
@@ -907,9 +908,9 @@ func (c *NDJSONBridgeClient) beginCall(ctx context.Context, method string, param
 		c.pendMu.Lock()
 		delete(c.pending, id)
 		c.pendMu.Unlock()
-		return 0, nil, err
+		return nil, err
 	}
-	return id, respCh, nil
+	return respCh, nil
 }
 
 func (c *NDJSONBridgeClient) awaitCall(ctx context.Context, respCh chan rpcResponse) (json.RawMessage, error) {
@@ -929,7 +930,7 @@ func (c *NDJSONBridgeClient) awaitCall(ctx context.Context, respCh chan rpcRespo
 // adapter with an agent-specific extension method may use it too. A JSON-RPC
 // error response comes back as a *RPCError.
 func (c *NDJSONBridgeClient) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	_, respCh, err := c.beginCall(ctx, method, params)
+	respCh, err := c.beginCall(method, params)
 	if err != nil {
 		return nil, err
 	}
@@ -1025,7 +1026,7 @@ func (c *NDJSONBridgeClient) writeLineWithDeadline(v any, deadline time.Time) er
 // that is non-nil. JSON-RPC 2.0 requires a response for every request that
 // carries an id — without one, the agent blocks waiting for it.
 func (c *NDJSONBridgeClient) RespondToServerRequest(id json.RawMessage, result any, rpcErr *RPCError) error {
-	resp := map[string]any{"jsonrpc": "2.0", "id": json.RawMessage(id)}
+	resp := map[string]any{"jsonrpc": "2.0", "id": id}
 	if rpcErr != nil {
 		resp["error"] = rpcErr
 	} else {

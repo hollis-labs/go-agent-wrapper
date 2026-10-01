@@ -102,9 +102,11 @@ const (
 	InterruptNone InterruptCapability = "none"
 	// InterruptProcess means Stop() sends no wire-level cancel — it
 	// closes stdin, waits a grace period, then escalates to
-	// SIGTERM/SIGKILL. This is the honest current state of both the
-	// Claude and Codex adapters: no interrupt/cancel frame is ever
-	// sent over the wire before the process is killed.
+	// SIGTERM/SIGKILL. This is Stop() on the Claude streaming-stdio and
+	// Codex app-server adapters. It says nothing about ending one turn:
+	// wrapper.CancelTurn interrupts a turn on both without stopping the
+	// process, and their Delivery advertises it as
+	// DeliveryCapabilityCancelTurn.
 	InterruptProcess InterruptCapability = "process"
 	// InterruptTurn means Stop() calls a genuine native mid-turn
 	// cancel (an HTTP/RPC call, or a wire-level control frame) before

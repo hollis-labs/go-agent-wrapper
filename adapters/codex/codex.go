@@ -51,8 +51,10 @@ func (*Adapter) Name() string { return "codex" }
 // app-server JSON-RPC protocol over stdio and the JSON-RPC channel as
 // the event source. Interrupt is [adapters.InterruptProcess] — Codex's
 // jsonrpc-stdio session (agentkit's jsonRpcStdioSession) closes stdin
-// and escalates to SIGTERM/SIGKILL on Stop(); no JSON-RPC
-// turn/interrupt call is sent before killing the process.
+// and escalates to SIGTERM/SIGKILL on Stop(). Ending one turn is separate:
+// wrapper.CancelTurn sends turn/interrupt for the open turn and keeps the
+// process, which Delivery advertises as
+// [adapters.DeliveryCapabilityCancelTurn].
 func (*Adapter) Describe() adapters.Descriptor {
 	return adapters.Descriptor{
 		Provider:  "codex",
@@ -60,7 +62,7 @@ func (*Adapter) Describe() adapters.Descriptor {
 		Transport: adapters.TransportStdio,
 		Interrupt: adapters.InterruptProcess,
 		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelJSONRPC},
-		Delivery:  adapters.DeliveryCapabilitiesForRuntime("codex", adapters.ProtocolCodexAppServer, adapters.TransportStdio, adapters.InterruptProcess, false),
+		Delivery:  adapters.DeliveryCapabilitiesForRuntime("codex", adapters.ProtocolCodexAppServer, adapters.TransportStdio, adapters.InterruptProcess, true),
 	}
 }
 

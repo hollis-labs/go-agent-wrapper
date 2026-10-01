@@ -333,6 +333,7 @@ func assertPermissionEventIDs(t *testing.T, events []runtimeevents.Event, want [
 			resolved = append(resolved, string(payload.RequestID))
 		case runtimeevents.KindTurnCompleted, runtimeevents.KindTurnFailed:
 			terminal = index
+		default:
 		}
 	}
 	if terminal < 0 {
@@ -592,6 +593,7 @@ func runPermissionSubprocessScenario(t *testing.T, fixture permissionClientFixtu
 			resolvedIDs[string(payload.RequestID)]++
 		case runtimeevents.KindTurnCompleted, runtimeevents.KindTurnFailed:
 			terminalIndex = index
+		default:
 		}
 	}
 	if requested != wantPermissionEvents || resolved != wantPermissionEvents {

@@ -2,7 +2,6 @@ package wrapper
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -71,19 +70,18 @@ func (w *Wrapper) runACP(
 		launchCWD = prepared.Bindings.CWD
 		childEnv = preparedEnvSlice(prepared)
 		command = preparedLaunchCommand(prepared)
-		policy, err := acpSandboxPolicyFromPrepared(prepared, launchCWD)
+		sandboxPolicy, err = acpSandboxPolicyFromPrepared(prepared, launchCWD)
 		if err != nil {
 			return fmt.Errorf("wrapper: ACP prepared sandbox policy: %w", err)
 		}
-		sandboxPolicy = policy
 	} else {
-		spec, err := w.cfg.Adapter.Resolve(adapters.ResolveContext{
+		spec, resolveErr := w.cfg.Adapter.Resolve(adapters.ResolveContext{
 			BootDir: bootDir,
 			Cwd:     w.cfg.Workdir,
 			Env:     baseEnv,
 		})
-		if err != nil {
-			return fmt.Errorf("wrapper: adapter Resolve: %w", err)
+		if resolveErr != nil {
+			return fmt.Errorf("wrapper: adapter Resolve: %w", resolveErr)
 		}
 		var adapterEnvironmentExplicit bool
 		childEnv, adapterEnvironmentExplicit, err = resolvedSpecEnvironment(baseEnv, spec.Env)
@@ -98,7 +96,7 @@ func (w *Wrapper) runACP(
 
 	if prepared != nil && prepared.Materialization != nil {
 		emitPreparedMaterialization(ctx, w.cfg.Activity, source, prepared.Materialization)
-	} else if err := w.runPlanter(ctx, source); err != nil {
+	} else if err = w.runPlanter(ctx, source); err != nil {
 		return err
 	}
 
@@ -194,7 +192,7 @@ func (w *Wrapper) runACP(
 			}
 			var payload any
 			if len(ev.Payload) > 0 {
-				payload = json.RawMessage(ev.Payload)
+				payload = ev.Payload
 			}
 			_ = w.cfg.Activity.Emit(ctx, ev.Kind, source, payload, opts...)
 			switch ev.Kind {
@@ -206,6 +204,8 @@ func (w *Wrapper) runACP(
 			case runtimeevents.KindTurnCompleted, runtimeevents.KindTurnFailed:
 				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionIdle, source,
 					map[string]any{"turn_id": ev.TurnID}, runtimeevents.WithTurnID(ev.TurnID))
+			default:
+				// Other kinds need no follow-up event.
 			}
 			if ev.Kind == runtimeevents.KindAgentToolUse {
 				w.observeACPToolUsePolicy(ctx, source, ev.Payload, eventID, ev.TurnID)

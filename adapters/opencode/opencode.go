@@ -57,6 +57,8 @@ func (*Adapter) Name() string { return "opencode" }
 // `/global/dispose` and `/session/{id}/abort` HTTP endpoints and
 // cancels the SSE stream before falling back to the same
 // SIGTERM/SIGKILL escalation the other adapters use unconditionally.
+// wrapper.CancelTurn aborts one turn and keeps the server, which Delivery
+// advertises as [adapters.DeliveryCapabilityCancelTurn].
 func (*Adapter) Describe() adapters.Descriptor {
 	return adapters.Descriptor{
 		Provider:  "opencode",
@@ -64,7 +66,7 @@ func (*Adapter) Describe() adapters.Descriptor {
 		Transport: adapters.TransportHTTPSSE,
 		Interrupt: adapters.InterruptTurn,
 		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelOpenCodePlugin},
-		Delivery:  adapters.DeliveryCapabilitiesForRuntime("opencode", adapters.ProtocolOpenCodeNative, adapters.TransportHTTPSSE, adapters.InterruptTurn, false),
+		Delivery:  adapters.DeliveryCapabilitiesForRuntime("opencode", adapters.ProtocolOpenCodeNative, adapters.TransportHTTPSSE, adapters.InterruptTurn, true),
 	}
 }
 
