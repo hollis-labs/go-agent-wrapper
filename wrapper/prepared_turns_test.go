@@ -3,6 +3,7 @@ package wrapper
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,33 +20,40 @@ import (
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 )
 
-// nativeTestAdapter runs a real go-providers CLIAdapter through the wrapper's
-// subprocess-per-turn shape.
-type nativeTestAdapter struct{ cli provider.CLIAdapter }
+// nativeTestAdapter runs a real go-providers CLIAdapter through the wrapper,
+// subprocess-per-turn or, with streaming, streaming-stdio.
+type nativeTestAdapter struct {
+	cli       provider.CLIAdapter
+	streaming bool
+}
 
 func (a *nativeTestAdapter) Name() string { return a.cli.Name() }
 func (a *nativeTestAdapter) Describe() adapters.Descriptor {
-	return adapters.Descriptor{
+	d := adapters.Descriptor{
 		Provider:  "prepared-test",
 		Interrupt: adapters.InterruptProcess,
 		Channels:  []runtimeevents.SourceChannel{runtimeevents.ChannelStdio},
 	}
+	if a.streaming {
+		d.Protocol, d.Transport = adapters.ProtocolClaudeStreamJSON, adapters.TransportStdio
+	}
+	return d
 }
 func (a *nativeTestAdapter) Resolve(rc adapters.ResolveContext) (adapters.Spec, error) {
 	return adapters.Spec{Binary: "unused", Cwd: rc.Cwd}, nil
 }
 func (a *nativeTestAdapter) CLIAdapter() provider.CLIAdapter { return a.cli }
 
-// preparedClaudePerTurn prepares a Claude subprocess-per-turn launch whose
-// binary is binary, the way an app would: compile, Prepare, PrepareExecution.
-func preparedClaudePerTurn(t *testing.T, binary string) *agentlaunch.PreparedExecution {
+// preparedClaude prepares a Claude launch in mode whose binary is binary, the
+// way an app would: compile, Prepare, PrepareExecution.
+func preparedClaude(t *testing.T, binary string, mode runtimes.Mode) *agentlaunch.PreparedExecution {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	plan := agentlaunch.LaunchPlan{
 		Project:   agentlaunch.ProjectSpec{ID: "proj", Name: "Project", Root: t.TempDir()},
 		Agent:     agentlaunch.AgentSpec{ID: "agent-id", Name: "agent-name"},
 		Provider:  agentlaunch.ProviderSpec{ID: "claude", Binary: binary},
-		Runtime:   runtimes.ModeSubprocessPerTurn,
+		Runtime:   mode,
 		Workspace: agentlaunch.WorkspaceSpec{Mode: agentlaunch.WorkspaceTemp, TempPrefix: t.TempDir()},
 		BootProfile: agentlaunch.BootProfileRef{Inline: &agentlaunch.BootProfileInline{
 			BootPrompt: "PERSONA-PROMPT", BootContent: "TASK-KICKOFF", BootMode: agentlaunch.BootModePlanted,
@@ -77,7 +85,7 @@ func TestRunPreparedExecution_EachTurnResolvesItsOwnArgv(t *testing.T) {
 		providertest.Replay("claude/print_turn1"),
 		providertest.Replay("claude/print_turn2_resume"),
 	)
-	exec := preparedClaudePerTurn(t, fake.Path)
+	exec := preparedClaude(t, fake.Path, runtimes.ModeSubprocessPerTurn)
 	if exec.Bindings.Launch == nil {
 		t.Fatal("prepared execution carries no launch template")
 	}
@@ -130,8 +138,9 @@ func TestRunPreparedExecution_EachTurnResolvesItsOwnArgv(t *testing.T) {
 	}
 	for i, want := range []struct{ prompt, resume string }{{"first turn", ""}, {"second turn", sid}} {
 		c := calls[i]
-		if got, _ := c.ArgAfter("-p"); got != want.prompt {
-			t.Errorf("turn %d: -p %q, want %q: %q", i+1, got, want.prompt, c.Args)
+		// The prompt is last, after "--" (go-providers v0.34.1).
+		if n := len(c.Args); n < 2 || c.Args[n-2] != "--" || c.Args[n-1] != want.prompt {
+			t.Errorf("turn %d: argv does not end in -- %q: %q", i+1, want.prompt, c.Args)
 		}
 		if got, _ := c.ArgAfter("--resume"); got != want.resume {
 			t.Errorf("turn %d: --resume %q, want %q: %q", i+1, got, want.resume, c.Args)
@@ -187,5 +196,47 @@ func TestPreparedAdapterForwardsOptionalInterfaces(t *testing.T) {
 		bare.(provider.AuthFailureClassifier).IsNotAuthenticated([]byte("authentication failed")) ||
 		bare.(provider.Preflighter).Preflight() != nil {
 		t.Error("a bare inner adapter must get the neutral answers")
+	}
+}
+
+// A streaming-stdio Claude launch prepared by agentkit and run through
+// Wrapper.Run gets its boot kickoff as the first stdin turn: the wrapper
+// passes PreparedExecution straight to Start, and Start delivers it.
+func TestRunPreparedExecution_StreamingClaudeGetsItsBootTurn(t *testing.T) {
+	fake := providertest.New(t, runtimes.Claude, providertest.Replay("claude/stream_resume"))
+	exec := preparedClaude(t, fake.Path, runtimes.ModeStreamingStdio)
+
+	sink := newCapturingSink()
+	w, err := New(Config{
+		App:               "test-prepared-streaming",
+		Adapter:           &nativeTestAdapter{cli: provider.NewClaudeAdapterStreamingStdio(), streaming: true},
+		Activity:          activity.NewBridge(sink),
+		Workdir:           exec.Bindings.CWD,
+		PreparedExecution: exec,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	runErr := make(chan error, 1)
+	go func() { runErr <- w.Run(ctx) }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if calls := fake.Calls(); len(calls) > 0 && len(calls[0].Stdin) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = w.Stop(context.Background())
+	<-runErr
+
+	c := fake.Call(0)
+	if len(c.Stdin) == 0 || !strings.Contains(c.Stdin[0], `"type":"user"`) || !strings.Contains(c.Stdin[0], "TASK-KICKOFF") {
+		t.Fatalf("stdin = %q, want the boot kickoff as a stream-json user frame", c.Stdin)
+	}
+	if !c.HasArg("--input-format") || c.HasArg("TASK-KICKOFF") {
+		t.Errorf("argv = %q, want stream-json input mode and no prompt", c.Args)
 	}
 }
