@@ -38,7 +38,7 @@ func TestSelectNativeMatrix(t *testing.T) {
 		{
 			name:      "claude subprocess per turn",
 			selection: Selection{Runtime: "claude", Mode: runtimes.ModeSubprocessPerTurn},
-			wantArgs:  []string{"-p", "prompt", "--output-format", "stream-json", "--verbose"},
+			wantArgs:  []string{"-p", "--output-format", "stream-json", "--verbose", "--", "prompt"},
 		},
 		{
 			name:         "codex default is app server (D-74)",
@@ -49,12 +49,12 @@ func TestSelectNativeMatrix(t *testing.T) {
 		{
 			name:      "codex subprocess per turn",
 			selection: Selection{Runtime: "codex", Mode: runtimes.ModeSubprocessPerTurn},
-			wantArgs:  []string{"exec", "prompt", "--json", "--skip-git-repo-check"},
+			wantArgs:  []string{"exec", "--json", "--skip-git-repo-check", "--", "prompt"},
 		},
 		{
 			name:      "opencode default is subprocess per turn",
 			selection: Selection{Runtime: "opencode"},
-			wantArgs:  []string{"run", "--format", "json", "--agent", "", "prompt"},
+			wantArgs:  []string{"run", "--format", "json", "--agent", "", "--", "prompt"},
 		},
 		{
 			name:         "opencode http-sse is explicit",
@@ -180,11 +180,13 @@ func TestSelectBinaryAndExtraArgsStayStructured(t *testing.T) {
 		t.Fatalf("Detect = (%q, %v), want (%q, true)", got, ok, binary)
 	}
 	args := cli.BuildArgs("prompt with spaces; still one arg", "", "")
-	// The extras sit at codex exec's extra slot, before --json, not after it.
+	// The extras sit at codex exec's extra slot, before --json, and the
+	// untrusted prompt is last, after "--" (go-providers v0.34.1).
 	want := []string{
-		"exec", "prompt with spaces; still one arg",
+		"exec",
 		"--label", "a value with spaces", "$(touch /tmp/never)", "'quoted' && false",
 		"--json", "--skip-git-repo-check",
+		"--", "prompt with spaces; still one arg",
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args = %#v, want %#v", args, want)

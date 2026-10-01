@@ -4,6 +4,8 @@ github.com/hollis-labs/agent-contracts-leaf v0.3.0 h1:tOAbq1y2Qtkk/S81hpSTlE3ZIs
 github.com/hollis-labs/agent-contracts-leaf v0.3.0/go.mod h1:Yp3iEG7I1qHxGL+Ad085RDVP5xUM/dbL0nFxzCAQ9/w=
 github.com/hollis-labs/agentkit v0.12.1 h1:oOMzRQHpJa3PblFmqZVvisQIzsDURwninJfyzK+7PIM=
 github.com/hollis-labs/agentkit v0.12.1/go.mod h1:qqM7Fi3KX/41iMuGczqrc+bSoUGTqiLvTkmOmsGwsPY=
+github.com/hollis-labs/agentkit v0.12.2 h1:i3OV0YODMlp2TlU9ciLDSWCpDSNt1ongtNishtpxWz8=
+github.com/hollis-labs/agentkit v0.12.2/go.mod h1:qqM7Fi3KX/41iMuGczqrc+bSoUGTqiLvTkmOmsGwsPY=
 github.com/hollis-labs/go-harness-filters v0.1.1 h1:uTAF+ejKhje+rXMEOwTHsO7ig2fCAQnkANXgZBAyYZA=
 github.com/hollis-labs/go-harness-filters v0.1.1/go.mod h1:84dThT2Ro93bk7Lzpr9KNsRDY4hUcIvYoBtmIB6IEzM=
 github.com/hollis-labs/go-llm-contracts v0.3.0 h1:qVKulEixvxf5iJmUMzDfRoL00gfS6/r0TmAJ1zNX0Dc=
