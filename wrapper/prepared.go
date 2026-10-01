@@ -108,7 +108,11 @@ func preparedCLIAdapter(inner provider.CLIAdapter, prepared *agentlaunch.Prepare
 	if err := prepared.Validate(); err != nil {
 		return nil, err
 	}
-	return &preparedAdapter{inner: inner, binary: prepared.Bindings.Argv[0], launch: prepared.Bindings.Launch}, nil
+	adapter := &preparedAdapter{inner: inner, binary: prepared.Bindings.Argv[0], launch: prepared.Bindings.Launch}
+	if interrupter, ok := inner.(provider.TurnInterrupter); ok {
+		return &interruptiblePreparedAdapter{preparedAdapter: adapter, interrupter: interrupter}, nil
+	}
+	return adapter, nil
 }
 
 // preparedAdapter runs the inner adapter under a prepared execution's spawn
@@ -117,7 +121,8 @@ func preparedCLIAdapter(inner provider.CLIAdapter, prepared *agentlaunch.Prepare
 // (EventParser, SessionLostClassifier, AuthFailureClassifier,
 // SessionResumeVerifier, Preflighter), answering as an adapter without that
 // interface would when the inner one lacks it, so wrapping never hides a
-// capability.
+// capability. TurnInterrupter has no such neutral answer, so it is forwarded
+// by a separate type, only when the inner adapter has it.
 //
 // BootDirProvider is deliberately not forwarded. A prepared execution's boot
 // dir was already planted when it was prepared, and agentsessions plants

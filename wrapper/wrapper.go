@@ -321,6 +321,9 @@ type Wrapper struct {
 	inputWG      sync.WaitGroup
 	inputsClosed bool
 
+	// turns tracks the open turn and the one CancelTurn interrupted.
+	turns turnMarks
+
 	sessMu     sync.RWMutex
 	session    agentsessions.Session
 	acpSession *acp.Session
@@ -547,6 +550,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		// first. Opening it here keeps the one-terminal-per-turn shape.
 		if currentTurnID == "" && (isTurnInternal(kind) || terminal) {
 			currentTurnID = runtimeevents.NewTurnID()
+			w.turns.opened(currentTurnID)
 			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindTurnStarted, source, nil,
 				runtimeevents.WithTurnID(currentTurnID))
 			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionProcessing, source,
@@ -557,6 +561,9 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			payload = withTurnUsage(payload, turnUsage)
 			payload = withStopReason(payload, turnUsage)
 			turnUsage = nil
+			if kind == runtimeevents.KindTurnFailed && w.turns.isInterrupted(currentTurnID) {
+				payload = withInterruptedReason(payload)
+			}
 		}
 
 		eventID := runtimeevents.NewEventID()
@@ -573,6 +580,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		if terminal {
 			closedTurnID := currentTurnID
 			currentTurnID = ""
+			w.turns.closed(closedTurnID)
 			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionIdle, source,
 				map[string]any{"turn_id": closedTurnID},
 				runtimeevents.WithTurnID(closedTurnID))
@@ -601,6 +609,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		}
 		closedTurnID := currentTurnID
 		currentTurnID = ""
+		w.turns.closed(closedTurnID)
 		_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindTurnFailed, source,
 			withTurnUsage(payload, turnUsage), runtimeevents.WithTurnID(closedTurnID))
 		turnUsage = nil
@@ -615,6 +624,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 
 		if currentTurnID == "" && isTurnInternal(kind) {
 			currentTurnID = runtimeevents.NewTurnID()
+			w.turns.opened(currentTurnID)
 			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindTurnStarted, source, nil,
 				runtimeevents.WithTurnID(currentTurnID))
 			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionProcessing, source,
@@ -700,6 +710,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			turnMu.Lock()
 			if currentTurnID == "" {
 				currentTurnID = runtimeevents.NewTurnID()
+				w.turns.opened(currentTurnID)
 				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindTurnStarted, source, nil,
 					runtimeevents.WithTurnID(currentTurnID))
 				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionProcessing, source,
@@ -894,18 +905,26 @@ func (w *Wrapper) Stop(ctx context.Context) error {
 	return w.requestInterrupt(ctx, source, session, "user_stop")
 }
 
-// CancelTurn requests ACP session/cancel without closing the session. Native
-// adapters do not expose a distinct turn-cancel primitive and return
-// ErrTurnCancelUnsupported.
+// CancelTurn ends the turn in flight without closing the session. ACP
+// sessions send session/cancel. A native session whose runtime can interrupt
+// a turn (agentsessions.TurnInterrupter: streaming-stdio Claude's stream-json
+// interrupt) keeps its process: the turn ends with turn.failed, reason
+// "interrupted", and the next SendInput starts a turn on the same process.
+// Any other session returns ErrTurnCancelUnsupported; Stop ends it instead.
+// It returns once the agent has acknowledged the interrupt.
 func (w *Wrapper) CancelTurn(ctx context.Context) error {
 	w.sessMu.RLock()
-	session := w.acpSession
+	acpSession := w.acpSession
+	session := w.session
 	source := w.typedSource
 	w.sessMu.RUnlock()
-	if session == nil {
-		return ErrTurnCancelUnsupported
+	if acpSession != nil {
+		return w.requestACPInterrupt(ctx, source, acpSession, "turn_cancel", false)
 	}
-	return w.requestACPInterrupt(ctx, source, session, "turn_cancel", false)
+	if interrupter, ok := session.(agentsessions.TurnInterrupter); ok {
+		return w.requestTurnInterrupt(ctx, source, interrupter)
+	}
+	return ErrTurnCancelUnsupported
 }
 
 // ProviderSessionID returns the current provider-assigned ACP session id, or
@@ -1191,7 +1210,8 @@ var ErrAdapterNotRuntime = errors.New("wrapper: adapter does not implement adapt
 // detect.
 var ErrSessionNotStarted = errors.New("wrapper: session not started")
 
-// ErrTurnCancelUnsupported is returned by CancelTurn for a non-ACP runtime.
+// ErrTurnCancelUnsupported is returned by CancelTurn for a session that can
+// neither cancel an ACP turn nor interrupt a native one.
 var ErrTurnCancelUnsupported = errors.New("wrapper: runtime does not expose turn-scoped cancellation")
 
 // ErrAdapterNotACPClient is returned when an adapter declares ProtocolACP but
