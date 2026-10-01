@@ -47,7 +47,7 @@ func (c *managedFakeClient) Cancel(context.Context) error {
 	c.cancelCalls.Add(1)
 	c.events <- runtimeevents.Event{
 		Kind: runtimeevents.KindTurnCompleted, TurnID: "turn-1",
-		Payload: json.RawMessage(`{"stop_reason":"cancelled"}`),
+		Payload: json.RawMessage(`{"stop_reason":"cancelled"}`), //nolint:misspell // ACP's stopReason spelling
 	}
 	return nil
 }

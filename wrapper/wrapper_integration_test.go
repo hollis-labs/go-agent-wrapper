@@ -511,7 +511,7 @@ func TestRunCtxCancelStopsSession(t *testing.T) {
 	}
 	sink.waitFor(t, runtimeevents.KindAgentDelta, 5*time.Second)
 
-	// Cancelling ctx should propagate Stop to the session and unblock
+	// Canceling ctx should propagate Stop to the session and unblock
 	// Run.
 	cancel()
 

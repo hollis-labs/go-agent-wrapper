@@ -57,7 +57,7 @@ type PermissionRequest struct {
 }
 
 // PermissionSelection is a host's answer to one permission request. The zero
-// value declines safely with ACP's cancelled outcome. A non-empty OptionID is
+// value declines safely with ACP's canceled outcome. A non-empty OptionID is
 // accepted only when it exactly matches one option in the request.
 type PermissionSelection struct {
 	OptionID string
@@ -126,7 +126,7 @@ type PermissionOutcome string
 
 // Normalized permission response outcomes.
 const (
-	PermissionOutcomeCancelled PermissionOutcome = "cancelled"
+	PermissionOutcomeCancelled PermissionOutcome = "cancelled" //nolint:misspell // ACP's own spelling of the outcome and stopReason value
 	PermissionOutcomeSelected  PermissionOutcome = "selected"
 )
 
@@ -290,7 +290,7 @@ func (p *BestEffortPermissionRequests) SetResponseGate(gate sync.Locker) {
 
 // Dispatch admits and runs Respond away from a protocol reader while bounding
 // the number of goroutines and raw request copies retained by response I/O. At
-// capacity, it invokes respond synchronously with a cancelled resolution; this
+// capacity, it invokes respond synchronously with a canceled resolution; this
 // deliberately backpressures the one reader instead of allocating unbounded
 // work. after runs once Respond (including response I/O) has finished.
 func (p *BestEffortPermissionRequests) Dispatch(
@@ -308,7 +308,7 @@ func (p *BestEffortPermissionRequests) Dispatch(
 // can be queued. onAdmission runs after the coordinator lock is released and
 // before response work starts. Adapters emit requested/resolved events only
 // when admission.ActiveTurn is true. Requests received after CloseTurnAdmission
-// are answered cancelled without being reclassified by a later BeginTurn.
+// are answered canceled without being reclassified by a later BeginTurn.
 func (p *BestEffortPermissionRequests) DispatchTurnRequest(
 	rawParams json.RawMessage,
 	onAdmission func(PermissionDispatchAdmission),
@@ -403,7 +403,7 @@ func (p *BestEffortPermissionRequests) completePermissionAdmission(admission per
 // calling goroutine, and passes a fail-safe ACP resolution to respond. Respond
 // itself must run outside the protocol reader because a legitimate operator
 // decision may take time. The final cancellation check and response commit are
-// linearized with CancelTurn, so a request from an already-cancelled turn
+// linearized with CancelTurn, so a request from an already-canceled turn
 // cannot race through as selected. Event emission and transport I/O happen
 // after that state lock is released. Shipped adapters also bound writes, so
 // response backpressure can delay, but cannot indefinitely pin, EndTurn or
@@ -423,7 +423,7 @@ func (p *BestEffortPermissionRequests) respondAdmitted(
 ) PermissionResolution {
 	request, err := parsePermissionRequest(rawParams)
 	if err != nil {
-		resolution := permissionFailure("invalid request", "invalid ACP permission request; cancelled")
+		resolution := permissionFailure("invalid request", "invalid ACP permission request")
 		return deliverPermissionResponse(resolution, respond)
 	}
 	if p != nil {
@@ -431,7 +431,7 @@ func (p *BestEffortPermissionRequests) respondAdmitted(
 		wrongSession := p.sessionID != "" && request.SessionID != p.sessionID
 		p.mu.Unlock()
 		if wrongSession {
-			resolution := permissionFailure("session mismatch", "ACP permission request named a different session; cancelled")
+			resolution := permissionFailure("session mismatch", "ACP permission request named a different session")
 			return deliverPermissionResponse(resolution, respond)
 		}
 	}
@@ -444,7 +444,7 @@ func (p *BestEffortPermissionRequests) respondAdmitted(
 		return deliverPermissionResponse(resolution, respond)
 	}
 	if admission.atCapacity {
-		resolution := permissionFailure("responder capacity reached", "ACP permission responder capacity reached; cancelled")
+		resolution := permissionFailure("responder capacity reached", "ACP permission responder capacity reached")
 		return deliverPermissionResponse(resolution, respond)
 	}
 
@@ -457,7 +457,7 @@ func (p *BestEffortPermissionRequests) respondAdmitted(
 	}
 	if p.callbacks >= MaxConcurrentBestEffortPermissionRequests {
 		p.mu.Unlock()
-		resolution := permissionFailure("responder capacity reached", "ACP permission responder capacity reached; cancelled")
+		resolution := permissionFailure("responder capacity reached", "ACP permission responder capacity reached")
 		return deliverPermissionResponse(resolution, respond)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -497,11 +497,11 @@ func (p *BestEffortPermissionRequests) respondAdmitted(
 		turn != admission.turn || !turn.active || turn.canceled
 	var resolution PermissionResolution
 	if canceled || errors.Is(callback.err, context.Canceled) || errors.Is(callback.err, context.DeadlineExceeded) {
-		resolution = cancelledPermission("request cancelled")
+		resolution = cancelledPermission("request cancelled") //nolint:misspell // Reason is emitted on agent.permission_resolved; kept as released
 	} else if callback.err != nil {
-		resolution = permissionFailure("responder failed", "ACP permission responder failed; cancelled")
+		resolution = permissionFailure("responder failed", "ACP permission responder failed")
 	} else if callback.selection.OptionID == "" {
-		resolution = cancelledPermission("responder cancelled")
+		resolution = cancelledPermission("responder cancelled") //nolint:misspell // Reason is emitted on agent.permission_resolved; kept as released
 	} else {
 		for _, option := range request.Options {
 			if option.OptionID != callback.selection.OptionID {
@@ -515,11 +515,11 @@ func (p *BestEffortPermissionRequests) respondAdmitted(
 			break
 		}
 		if resolution.Outcome == "" {
-			resolution = permissionFailure("invalid selection", "ACP permission responder returned an unoffered option; cancelled")
+			resolution = permissionFailure("invalid selection", "ACP permission responder returned an unoffered option")
 		}
 	}
 	// The state transition is the response's concurrency linearization point.
-	// Lifecycle methods that win this lock first force a cancelled resolution;
+	// Lifecycle methods that win this lock first force a canceled resolution;
 	// once committed, an overlapping lifecycle call may proceed without waiting
 	// for event emission or transport I/O.
 	entry.committed = true
@@ -644,7 +644,7 @@ func (p *BestEffortPermissionRequests) EndTurn() {
 	p.mu.Unlock()
 }
 
-// CancelTurn marks the current permission generation cancelled and cancels
+// CancelTurn marks the current permission generation canceled and cancels
 // every responder currently waiting for it. Late permission frames for that
 // turn continue to decline until BeginTurn opens the next generation.
 func (p *BestEffortPermissionRequests) CancelTurn() {
@@ -732,8 +732,10 @@ func cancelledPermission(reason string) PermissionResolution {
 	return PermissionResolution{Outcome: PermissionOutcomeCancelled, Reason: reason}
 }
 
+// permissionFailure resolves a request as canceled and attaches a protocol
+// diagnostic that names the outcome.
 func permissionFailure(reason, diagnosticMessage string) PermissionResolution {
-	diagnostic := NewDiagnostic(DiagnosticProtocol, diagnosticMessage, "")
+	diagnostic := NewDiagnostic(DiagnosticProtocol, diagnosticMessage+"; "+string(PermissionOutcomeCancelled), "")
 	return PermissionResolution{
 		Outcome:    PermissionOutcomeCancelled,
 		Reason:     reason,

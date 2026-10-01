@@ -203,14 +203,16 @@ func isQuotaExceeded(text string) bool {
 }
 
 // TestRealCopilotACP_CancelInterruptsTurn verifies InterruptTurn is a
-// real capability, not assumed: a long-generation prompt, cancelled
+// real capability, not assumed: a long-generation prompt, canceled
 // ~2-3s in, must complete far sooner than an uninterrupted long
 // generation would (bounded well under the timeout), with a
 // turn.completed/turn.failed event landing promptly after Cancel rather
 // than after the full generation would have finished. Mirrors this
 // task's own manual live verification (a ~2000-word-essay prompt,
-// cancelled ~3s in, ended within the same ~3s window with an
+// canceled ~3s in, ended within the same ~3s window with an
 // agent-emitted "Info: Operation cancelled by user" message).
+//
+//nolint:misspell // quotes the agent's own "Operation cancelled by user" message
 func TestRealCopilotACP_CancelInterruptsTurn(t *testing.T) {
 	skipUnlessCopilotBinary(t)
 

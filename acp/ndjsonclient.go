@@ -1083,6 +1083,8 @@ func mustMarshal(v any) json.RawMessage {
 // Codex, OpenCode and Pi tool paths can execute internally without ever
 // invoking this method, consistent with 17-acp.md's documented expectation,
 // though not exhaustively confirmed for every ACP-proxyable operation.
+//
+//nolint:misspell // quotes the wire outcome "cancelled"
 func (c *NDJSONBridgeClient) handleServerRequest(frame rpcFrame) {
 	if frame.Method != "session/request_permission" {
 		_ = c.RespondToServerRequest(frame.ID, nil, &RPCError{

@@ -31,7 +31,7 @@
 // ACP session/request_permission is a separate protocol request on which an
 // agent can block while awaiting a response. It is not routed through Observer.
 // Four current direct ACP clients (Claude, Codex, OpenCode, and Pi) default that
-// request to a well-formed cancelled outcome; Copilot currently returns a
+// request to a well-formed canceled outcome; Copilot currently returns a
 // JSON-RPC method-not-handled error. A host-supplied responder
 // (wrapper.Config.ACPBestEffortPermissionRequestResponder) answers that
 // genuine control point instead, but only for providers and operation classes

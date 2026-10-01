@@ -290,7 +290,7 @@ func TestBestEffortPermissionLateFrameCannotCrossTurnsAllACPSubprocesses(t *test
 			firstEvents := collectPermissionTurnEvents(t, client)
 			assertPermissionEventIDs(t, firstEvents, nil)
 			firstResponses := waitForPermissionResponseLines(t, marker, 1)
-			assertPermissionWireOutcome(t, firstResponses[0], "late-1", "cancelled", "")
+			assertPermissionWireOutcome(t, firstResponses[0], "late-1", wireCancelled, "")
 			if got := responderCalls.Load(); got != 0 {
 				t.Fatalf("late frame invoked first/next-turn responder %d times", got)
 			}
@@ -342,6 +342,9 @@ func assertPermissionEventIDs(t *testing.T, events []runtimeevents.Event, want [
 		t.Fatalf("permission requested/resolved ids = %v/%v, want %v; events=%+v", requested, resolved, want, events)
 	}
 }
+
+// wireCancelled is the spelling ACP puts on the wire for a canceled outcome.
+const wireCancelled = "cancelled" //nolint:misspell // ACP's own spelling
 
 func assertPermissionWireOutcome(t *testing.T, line, id, outcome, optionID string) {
 	t.Helper()
@@ -510,12 +513,12 @@ func runPermissionSubprocessScenario(t *testing.T, fixture permissionClientFixtu
 			continue
 		}
 		if scenario == "default" {
-			const want = `{"id":99,"jsonrpc":"2.0","result":{"outcome":{"outcome":"cancelled"}}}`
+			const want = `{"id":99,"jsonrpc":"2.0","result":{"outcome":{"outcome":"cancelled"}}}` //nolint:misspell // the exact wire frame
 			if line != want {
 				t.Fatalf("legacy default wire response = %s, want exact %s", line, want)
 			}
 		}
-		wantOutcome, wantOption := "cancelled", ""
+		wantOutcome, wantOption := wireCancelled, ""
 		switch scenario {
 		case "allow", "string-id", "null-id":
 			wantOutcome, wantOption = "selected", "allow"
@@ -584,7 +587,7 @@ func runPermissionSubprocessScenario(t *testing.T, fixture permissionClientFixtu
 				t.Fatal("selected allow option emitted allowed=false")
 			}
 			if payload.OptionKind == "" && payload.Allowed {
-				t.Fatal("cancelled permission emitted allowed=true")
+				t.Fatal("canceled permission emitted allowed=true")
 			}
 			resolvedIDs[string(payload.RequestID)]++
 		case runtimeevents.KindTurnCompleted, runtimeevents.KindTurnFailed:
