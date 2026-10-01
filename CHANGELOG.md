@@ -4,6 +4,29 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.22.0 — 2026-10-01
+
+`CancelTurn` interrupts a streaming Claude turn and keeps the process
+(CW-20261001-0103). Requires agentkit v0.18.0 and go-providers v0.39.0.
+
+### Changed
+
+- **`Wrapper.CancelTurn` works on a native session whose runtime can
+  interrupt a turn.** Today that is streaming-stdio Claude, through
+  agentkit's `agentsessions.TurnInterrupter` and Claude's stream-json
+  `control_request` interrupt. It was `ErrTurnCancelUnsupported` for every
+  native runtime.
+  - It emits `interrupt.requested` (reason `turn_cancel`), waits for Claude's
+    acknowledgement, then emits `interrupt.acknowledged` with the `turn_id`.
+  - The open turn ends with `turn.failed`, `reason: "interrupted"`.
+  - The process stays up, and the next `SendInput` runs a turn on it, with
+    in-process state intact and no `--resume` cold start.
+  - With no turn open, Claude just acknowledges.
+  - ACP still sends `session/cancel`. Any other session still returns
+    `ErrTurnCancelUnsupported`, and `Stop` ends it.
+- **The prepared-execution adapter forwards `provider.TurnInterrupter`**,
+  but only when the adapter it wraps has one.
+
 ## v0.21.1 — 2026-10-01
 
 ### Fixed
