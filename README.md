@@ -34,7 +34,12 @@ End-to-end launch path is wired:
   `interrupt.requested`/`interrupt.acknowledged`.
 - `agent.delta`, `agent.tool_use`, `agent.tool_result`, and
   `agent.subagent_spawn` flow through the translator, as do JSON-RPC
-  permission request/resolution events where the adapter emits them. If
+  permission request/resolution events where the adapter emits them. On the
+  native Codex app-server runtime, `Config.PermissionPosture` (go-permission's
+  `Mode`; zero value `default`) answers Codex's approval requests through
+  agentkit's `turn.CodexApprovalResponder`: `default` approves planted MCP
+  tool calls and declines sandbox escalations, `accept-edits` also approves
+  file changes, `plan` declines all, `yolo` approves all. If
   `Config.PolicyObserver` is set,
   each translated tool-use event is handed to `policy.Observer.Observe`
   after `agent.tool_use` is emitted. A mapped recommendation emits a correlated
