@@ -130,21 +130,20 @@ func TestRuntimeSourceChannel(t *testing.T) {
 func TestRawSourceChannel(t *testing.T) {
 	cases := []struct {
 		name      string
-		protocol  adapters.Protocol
 		transport adapters.Transport
 		want      runtimeevents.SourceChannel
 	}{
-		{"pty", adapters.ProtocolPTYRaw, adapters.TransportPTY, runtimeevents.ChannelPTY},
-		{"claude streaming-stdio", adapters.ProtocolClaudeStreamJSON, adapters.TransportStdio, runtimeevents.ChannelStdio},
-		{"codex jsonrpc-stdio", adapters.ProtocolCodexAppServer, adapters.TransportStdio, runtimeevents.ChannelStdio},
-		{"opencode http-sse", adapters.ProtocolOpenCodeNative, adapters.TransportHTTPSSE, runtimeevents.ChannelStdio},
-		{"acp/stdio", adapters.ProtocolACP, adapters.TransportStdio, runtimeevents.ChannelStdio},
-		{"unset (adapter fallback)", "", "", runtimeevents.ChannelStdio},
+		{"pty", adapters.TransportPTY, runtimeevents.ChannelPTY},
+		{"claude streaming-stdio", adapters.TransportStdio, runtimeevents.ChannelStdio},
+		{"codex jsonrpc-stdio", adapters.TransportStdio, runtimeevents.ChannelStdio},
+		{"opencode http-sse", adapters.TransportHTTPSSE, runtimeevents.ChannelStdio},
+		{"acp/stdio", adapters.TransportStdio, runtimeevents.ChannelStdio},
+		{"unset (adapter fallback)", "", runtimeevents.ChannelStdio},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := rawSourceChannel(c.protocol, c.transport); got != c.want {
-				t.Errorf("rawSourceChannel(%q, %q) = %q, want %q", c.protocol, c.transport, got, c.want)
+			if got := rawSourceChannel(c.transport); got != c.want {
+				t.Errorf("rawSourceChannel(%q) = %q, want %q", c.transport, got, c.want)
 			}
 		})
 	}

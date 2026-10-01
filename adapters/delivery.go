@@ -198,30 +198,30 @@ func (c DeliveryCapabilities) Clone() DeliveryCapabilities {
 	return DeliveryCapabilities{Supported: append([]DeliveryCapabilityEvidence(nil), c.Supported...)}
 }
 
-// Supports reports whether cap is advertised.
-func (c DeliveryCapabilities) Supports(cap DeliveryCapability) bool {
-	_, ok := c.Evidence(cap)
+// Supports reports whether capability is advertised.
+func (c DeliveryCapabilities) Supports(capability DeliveryCapability) bool {
+	_, ok := c.Evidence(capability)
 	return ok
 }
 
-// Evidence returns the concrete evidence for cap when advertised.
-func (c DeliveryCapabilities) Evidence(cap DeliveryCapability) (DeliveryCapabilityEvidence, bool) {
+// Evidence returns the concrete evidence for capability when advertised.
+func (c DeliveryCapabilities) Evidence(capability DeliveryCapability) (DeliveryCapabilityEvidence, bool) {
 	for _, entry := range c.Supported {
-		if entry.Capability == cap {
+		if entry.Capability == capability {
 			return entry, true
 		}
 	}
 	return DeliveryCapabilityEvidence{}, false
 }
 
-// Require returns a typed error when cap is absent or lacks evidence.
-func (c DeliveryCapabilities) Require(cap DeliveryCapability) error {
-	entry, ok := c.Evidence(cap)
+// Require returns a typed error when capability is absent or lacks evidence.
+func (c DeliveryCapabilities) Require(capability DeliveryCapability) error {
+	entry, ok := c.Evidence(capability)
 	if !ok {
-		return &DeliveryCapabilityError{Capability: cap}
+		return &DeliveryCapabilityError{Capability: capability}
 	}
 	if entry.Mechanism == "" || entry.Evidence == "" {
-		return &DeliveryCapabilityError{Capability: cap, Reason: "missing evidence"}
+		return &DeliveryCapabilityError{Capability: capability, Reason: "missing evidence"}
 	}
 	return nil
 }
@@ -325,8 +325,8 @@ func (c DeliveryCapabilities) Plan(req DeliveryPlanRequest) (DeliveryPlan, error
 	}, nil
 }
 
-func deliveryReceipts(cap DeliveryCapability) []DeliveryReceiptStage {
-	switch cap {
+func deliveryReceipts(capability DeliveryCapability) []DeliveryReceiptStage {
+	switch capability {
 	case DeliveryCapabilitySendTurn:
 		return []DeliveryReceiptStage{DeliveryReceiptTurnSubmitted}
 	case DeliveryCapabilityInterrupt:
