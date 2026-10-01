@@ -647,11 +647,33 @@ func freeTCPPort() (int, error) {
 	return port, nil
 }
 
-// writeFrame serializes f as one NDJSON line and writes it to the
-// active transport, serialized against concurrent writers.
-func (c *Client) writeFrame(f wireFrame) error {
+// writeFrameCtx serializes a request frame as one NDJSON line and writes it to
+// the active transport, serialized against concurrent writers and bounded by
+// the caller's ctx (CW-20261001-0238): nothing is written once ctx has ended,
+// a caller queued behind a stalled write leaves on its own ctx, a ctx that
+// ends mid-write releases the write and the writer lock, and a frame left
+// half on the wire closes the transport. See [acp.WriteFrameCtx].
+func (c *Client) writeFrameCtx(ctx context.Context, f wireFrame) error {
 	f.JSONRPC = "2.0"
-	return c.writeJSONFrame(f)
+	data, err := json.Marshal(f)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+
+	c.mu.Lock()
+	w := c.writer
+	c.mu.Unlock()
+	if w == nil {
+		return ErrNotLaunched
+	}
+	if err := acp.WriteFrameCtx(ctx, &c.writeMu, w, data, c.closeTransport); err != nil {
+		if ended := ctx.Err(); ended != nil && errors.Is(err, ended) {
+			return fmt.Errorf("copilotacp: write request: %w", ended)
+		}
+		return err
+	}
+	return nil
 }
 
 func (c *Client) writeServerResponse(id json.RawMessage, result json.RawMessage, rpcErr *wireError) error {
@@ -661,10 +683,6 @@ func (c *Client) writeServerResponse(id json.RawMessage, result json.RawMessage,
 		Result:  result,
 		Error:   rpcErr,
 	}, time.Now().Add(250*time.Millisecond))
-}
-
-func (c *Client) writeJSONFrame(frame any) error {
-	return c.writeJSONFrameWithDeadline(frame, time.Time{})
 }
 
 type writeDeadliner interface {
@@ -720,7 +738,7 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	}
 
 	idCopy := id
-	if err := c.writeFrame(wireFrame{ID: &idCopy, Method: method, Params: raw}); err != nil {
+	if err := c.writeFrameCtx(ctx, wireFrame{ID: &idCopy, Method: method, Params: raw}); err != nil {
 		cleanup()
 		return nil, err
 	}
@@ -844,7 +862,7 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 	// orders admission before either a fast response or concurrent Close can
 	// reach closeEvents/turnWG.Wait.
 	idCopy := id
-	if err := c.writeFrame(wireFrame{ID: &idCopy, Method: "session/prompt", Params: raw}); err != nil {
+	if err := c.writeFrameCtx(ctx, wireFrame{ID: &idCopy, Method: "session/prompt", Params: raw}); err != nil {
 		c.pendMu.Lock()
 		delete(c.pending, id)
 		c.pendMu.Unlock()

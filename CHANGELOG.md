@@ -4,6 +4,52 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.25.6 — 2026-10-01
+
+The Copilot ACP client's request writes honor the caller's ctx
+(CW-20261001-0238). Provisional number: it follows v0.25.5.
+
+### Fixed
+
+- **A stalled Copilot agent no longer pins `call` and `Prompt` writes.**
+  - **Before:** `adapters/copilotacp`'s `Client.call` and `Prompt` wrote the
+    request frame with no deadline, the same gap v0.25.4 closed in the NDJSON
+    client. An agent that stopped reading stdin, or a TCP peer that stopped
+    reading its socket, blocked the write. Canceling ctx did not release it,
+    and because it held the writer lock, every later write queued behind it.
+  - **Now:** the frame write is bounded by the ctx, over stdio and TCP alike.
+    - It writes nothing once ctx has ended, and a caller queued behind a
+      stalled write leaves when its own ctx ends.
+    - A ctx that ends mid-write interrupts it: through the write deadline when
+      the transport has one (a pipe and a socket do), otherwise by closing the
+      transport.
+    - If the interrupted write had put part of a frame on the wire, the
+      transport is closed, because the agent would read a line it cannot
+      parse. If nothing was written, it stays open and the request was never
+      sent.
+    - `Prompt` passes its ctx to the write only, gives the admission gate and
+      the turn back when the write is released, and still pairs its
+      `turn.started` with a `turn.failed`.
+    - `call` already dropped its pending entry when ctx ended first.
+  - A ctx that never ends still leaves the write bounded only by the
+    transport closing, as before. There is no hidden default deadline.
+
+### Changed
+
+- **`acp.WriteFrameCtx`** is the one implementation of that bounded write,
+  extracted from the NDJSON client's `writeLineCtx` (v0.25.4). Both clients
+  call it. `NDJSONBridgeClient`'s behavior and error text are unchanged; its
+  existing tests pass against the shared helper unchanged.
+- **Tested** over stdio against a real child that stops reading stdin, and
+  over TCP against a peer that stops reading, with the socket buffers shrunk so
+  a 1 MiB request blocks. A cancel and a deadline each return promptly with the
+  ctx error, leave the writer lock free and nothing pending, and close the
+  half-written transport. Fake writers cover a queued caller, a partial frame, a
+  transport with no write deadline, an ended ctx, an abandoned call, and
+  `Prompt`. The tests end the ctx only after the write has begun, because under
+  `-race` on a loaded host building the frame can outlast a short ctx. With the
+  unbounded write restored they all fail.
+
 ## v0.25.4 — 2026-10-01
 
 NDJSON request writes honor the caller's ctx (CW-20261001-0211), and the
