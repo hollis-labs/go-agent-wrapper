@@ -13,7 +13,9 @@ This is the "sibling agent in parallel" path identified by the
 `agentkit-wrapper-alignment-review-2026-05-26.md` rollout (step 9):
 filters / plant / sandbox composition + Tachyon `cmd/agent-wrap`.
 
-## Status (v0.13.0, 2026-09-30)
+## Status
+
+This describes `main`; [CHANGELOG.md](./CHANGELOG.md) dates each release.
 
 End-to-end launch path is wired:
 
@@ -399,9 +401,12 @@ proxy; `go.mod` contains no `replace` directive.
 go test -race ./...   # tests
 go vet ./...          # vet
 gofmt -l .            # formatting check (no output = clean)
-golangci-lint run     # lint
-govulncheck ./...     # vulnerability scan
+golangci-lint run --new-from-rev=663610c999ffca9979acfb2e5ef6b9ce0cee6422  # lint (CI ratchet)
+go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...                     # vulnerability scan
 ```
+
+CI pins golangci-lint v2.11.4 and lints only lines changed since the commit
+above; a plain `golangci-lint run` lists the findings that predate the config.
 
 The default suite is deterministic and never launches an installed Claude,
 Codex, Copilot, OpenCode, or Pi process merely because its CLI (or `npx`) is on
