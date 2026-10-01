@@ -333,7 +333,7 @@ func runTether(ctx context.Context, base string) (scenarioResult, error) {
 		mustContainFile(filepath.Join(bootRoot, "bundles", "task-beta", "AGENTS.md"), "beta task bundle"),
 		mustContainFile(filepath.Join(bootRoot, "bundles", "copied", "shared", "prompt.md"), "copied Tether prompt"),
 		mustContainFile(filepath.Join(bootRoot, ".claude", "settings.json"), "synthetic-tether"),
-		mustContainFile(filepath.Join(bootRoot, ".codex", "config.toml"), "synthetic"),
+		mustContainFile(filepath.Join(bootRoot, "config.toml"), "synthetic"), // Codex reads it under CODEX_HOME=boot
 	}
 	if err := firstError(checks); err != nil {
 		return scenarioResult{}, err
