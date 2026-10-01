@@ -111,6 +111,19 @@ func TestPreparedAdapterForwardsTurnInterrupterOnlyWhenPresent(t *testing.T) {
 	if _, ok := opencode.(provider.TurnInterrupter); ok {
 		t.Error("prepared OpenCode claims a turn interrupt it does not have")
 	}
+	codex, err := preparedCLIAdapter(provider.NewCodexAdapterAppServer(), exec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := codex.(provider.RPCTurnInterrupter); !ok {
+		t.Error("prepared Codex hides RPCTurnInterrupter")
+	}
+	if _, ok := codex.(provider.TurnInterrupter); ok {
+		t.Error("prepared Codex claims a stdin interrupt it does not have")
+	}
+	if _, ok := opencode.(provider.RPCTurnInterrupter); ok {
+		t.Error("prepared OpenCode claims a JSON-RPC interrupt")
+	}
 }
 
 func TestTurnMarks(t *testing.T) {
@@ -134,5 +147,125 @@ func TestTurnMarks(t *testing.T) {
 	}
 	if got := withInterruptedReason(map[string]any{"error": "e"}).(map[string]any); got["reason"] != "interrupted" || got["error"] != "e" {
 		t.Errorf("withInterruptedReason = %v", got)
+	}
+}
+
+// stdoutHas reports whether the session's stdout carried a line containing
+// all of parts.
+func stdoutHas(sink *capturingSink, parts ...string) bool {
+	for _, ev := range sink.snapshot() {
+		if ev.Kind != runtimeevents.KindStdoutLine {
+			continue
+		}
+		var line struct {
+			Line string `json:"line"`
+		}
+		if json.Unmarshal(ev.Payload, &line) != nil {
+			continue
+		}
+		all := true
+		for _, p := range parts {
+			all = all && strings.Contains(line.Line, p)
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+func waitStdout(t *testing.T, sink *capturingSink, parts ...string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !stdoutHas(sink, parts...) {
+		if time.Now().After(deadline) {
+			t.Fatalf("stdout never carried %q", parts)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// CancelTurn on Codex app-server, with the host driving the thread protocol
+// as raw frames numbered from 1: the wrapper sends turn/interrupt for the
+// open turn, Codex completes it "interrupted", and the host's next turn runs
+// on the same process. The transcript is go-providers' live capture
+// (codex-cli 0.159.2) (CW-20261001-0160).
+func TestCancelTurnInterruptsCodexAppServer(t *testing.T) {
+	skipUnlessSh(t)
+	fake := providertest.New(t, runtimes.Codex, providertest.Replay("codex/app_server_interrupt"))
+	runHostDriven(t, launch.Selection{Runtime: "codex", Mode: runtimes.ModeJSONRPCStdio, Binary: fake.Path},
+		func(t *testing.T, w *Wrapper, sink *capturingSink) {
+			send := func(frame string) {
+				if err := w.SendInput(context.Background(), []byte(frame)); err != nil {
+					t.Fatalf("SendInput %s: %v", frame, err)
+				}
+			}
+			sink.waitFor(t, runtimeevents.KindSessionReady, 5*time.Second)
+			send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"t","version":"0"}}}`)
+			if _, err := awaitCodexResponse(sink, 1, 10*time.Second); err != nil {
+				t.Fatalf("initialize: %v", err)
+			}
+			send(`{"jsonrpc":"2.0","method":"initialized"}`)
+			send(`{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{}}`)
+			if _, err := awaitCodexResponse(sink, 2, 10*time.Second); err != nil {
+				t.Fatalf("thread/start: %v", err)
+			}
+			send(`{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"threadId":"t","input":[]}}`)
+			waitStdout(t, sink, `"item/started"`, `"commandExecution"`)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := w.CancelTurn(ctx); err != nil {
+				t.Fatalf("CancelTurn: %v", err)
+			}
+			waitStdout(t, sink, `"turn/completed"`, `"status":"interrupted"`)
+			send(`{"jsonrpc":"2.0","id":4,"method":"turn/start","params":{"threadId":"t","input":[]}}`)
+			waitStdout(t, sink, `"turn/completed"`, `"status":"completed"`)
+			sink.waitFor(t, runtimeevents.KindInterruptAcknowledged, time.Second)
+		})
+	if n := len(fake.Calls()); n != 1 {
+		t.Errorf("codex started %d times; CancelTurn must keep the process", n)
+	}
+	var interrupt string
+	for _, line := range fake.Call(0).Stdin {
+		if strings.Contains(line, `"turn/interrupt"`) {
+			interrupt = line
+		}
+	}
+	if !strings.Contains(interrupt, `"turnId":"00000000-0000-4000-8000-000000000003"`) {
+		t.Errorf("turn/interrupt = %q, want the captured turn", interrupt)
+	}
+	if errs := fake.Errors(); len(errs) != 0 {
+		t.Errorf("fake errors: %q", errs)
+	}
+}
+
+// runHostDriven runs a wrapper whose host drives the runtime's own protocol
+// (Codex app-server), so no agent text is expected on the event stream.
+func runHostDriven(t *testing.T, sel launch.Selection, drive func(*testing.T, *Wrapper, *capturingSink)) {
+	t.Helper()
+	adapter, err := launch.Select(sel)
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	sink := newCapturingSink()
+	w, err := New(Config{App: "host-driven", Adapter: adapter, Activity: activity.NewBridge(sink), Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- w.Run(ctx) }()
+	drive(t, w, sink)
+	if err := w.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Run did not return")
 	}
 }

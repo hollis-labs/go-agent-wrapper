@@ -116,6 +116,9 @@ func preparedCLIAdapter(inner provider.CLIAdapter, prepared *agentlaunch.Prepare
 	if interrupter, ok := inner.(provider.TurnInterrupter); ok {
 		return &interruptiblePreparedAdapter{preparedAdapter: adapter, interrupter: interrupter}, nil
 	}
+	if interrupter, ok := inner.(provider.RPCTurnInterrupter); ok {
+		return &rpcInterruptiblePreparedAdapter{preparedAdapter: adapter, interrupter: interrupter}, nil
+	}
 	return adapter, nil
 }
 
