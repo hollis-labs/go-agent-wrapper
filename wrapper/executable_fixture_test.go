@@ -134,7 +134,7 @@ func TestShellFixturesUseStableExecutableAndUniqueReadOnlyScripts(t *testing.T) 
 				results <- result{want: want, err: err}
 				return
 			}
-			output, err := exec.Command(launcherPath).CombinedOutput()
+			output, err := exec.Command(launcherPath).CombinedOutput() //nolint:gosec // G204: the fixture launcher this test just wrote
 			results <- result{launcherPath: launcherPath, want: want, got: string(output), err: err}
 		}()
 	}
@@ -174,7 +174,7 @@ func TestShellFixturesUseStableExecutableAndUniqueReadOnlyScripts(t *testing.T) 
 		if info.Mode().Perm() != 0o444 {
 			t.Errorf("script data %s mode = %#o, want read-only 0444", filepath.Base(scriptPath), info.Mode().Perm())
 		}
-		body, err := os.ReadFile(scriptPath)
+		body, err := os.ReadFile(scriptPath) //nolint:gosec // G304: the test's own temp file
 		if err != nil {
 			t.Errorf("read script data %s after execution: %v", filepath.Base(scriptPath), err)
 			continue

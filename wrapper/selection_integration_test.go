@@ -88,14 +88,14 @@ IFS= read -r line || :
 		t.Fatal("Run did not return")
 	}
 
-	observed, err := os.ReadFile(probe)
+	observed, err := os.ReadFile(probe) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatalf("read environment probe: %v", err)
 	}
 	if got, want := string(observed), "streaming value with spaces; $(not executed)\n\n"; got != want {
 		t.Fatalf("child environment = %q, want %q", got, want)
 	}
-	argv, err := os.ReadFile(argsProbe)
+	argv, err := os.ReadFile(argsProbe) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatalf("read argv probe: %v", err)
 	}
@@ -141,7 +141,7 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"empty environment"
 	if err = w.Run(runCtx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	observed, err := os.ReadFile(probe)
+	observed, err := os.ReadFile(probe) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatalf("read environment probe: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestSelectedSubprocessPerTurnEnvironmentArgsEventsAndCleanup(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			binDir := filepath.Join(root, "bin with spaces;not-shell")
-			if err := os.MkdirAll(binDir, 0o755); err != nil {
+			if err := os.MkdirAll(binDir, 0o755); err != nil { //nolint:gosec // G301: a fixture directory in t.TempDir
 				t.Fatalf("mkdir fixture bin: %v", err)
 			}
 			probe := filepath.Join(root, "environment.txt")
@@ -294,7 +294,7 @@ func TestSelectedSubprocessPerTurnEnvironmentArgsEventsAndCleanup(t *testing.T) 
 				t.Fatal("Run did not stop")
 			}
 
-			observedEnv, err := os.ReadFile(probe)
+			observedEnv, err := os.ReadFile(probe) //nolint:gosec // G304: the test's own temp file
 			if err != nil {
 				t.Fatalf("read environment probe: %v", err)
 			}
@@ -306,7 +306,7 @@ func TestSelectedSubprocessPerTurnEnvironmentArgsEventsAndCleanup(t *testing.T) 
 				t.Fatalf("shell-looking data executed; marker stat err=%v", err)
 			}
 
-			observedArgs, err := os.ReadFile(argsProbe)
+			observedArgs, err := os.ReadFile(argsProbe) //nolint:gosec // G304: the test's own temp file
 			if err != nil {
 				t.Fatalf("read argv probe: %v", err)
 			}
@@ -430,7 +430,7 @@ func waitForPIDFileValue(path string, timeout time.Duration) (int, error) {
 	var lastParseErr error
 	sawFile := false
 	for time.Now().Before(deadline) {
-		body, err := os.ReadFile(path)
+		body, err := os.ReadFile(path) //nolint:gosec // G304: a test helper; callers pass paths under t.TempDir
 		if err == nil {
 			sawFile = true
 			lastBody = append(lastBody[:0], body...)
@@ -464,7 +464,7 @@ func waitForPIDFileValue(path string, timeout time.Duration) (int, error) {
 
 func TestWaitForPIDFileRetriesTruncateAndPartialWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pid")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatalf("open fixture: %v", err)
 	}

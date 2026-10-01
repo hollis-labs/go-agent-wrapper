@@ -16,26 +16,26 @@ import (
 func generateBenchTree(b *testing.B, root string, numFiles, ignoredFiles int) {
 	b.Helper()
 	dirs := []string{"internal/api", "internal/store", "internal/chat", "ui/src/components", "docs", "cmd/app"}
-	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("node_modules/\n*.log\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("node_modules/\n*.log\n"), 0o644); err != nil { //nolint:gosec // G306: a project fixture file in t.TempDir, at the mode a checked-out file has
 		b.Fatal(err)
 	}
 	for i := 0; i < numFiles; i++ {
 		dir := dirs[i%len(dirs)]
 		full := filepath.Join(root, dir)
-		if err := os.MkdirAll(full, 0o755); err != nil {
+		if err := os.MkdirAll(full, 0o755); err != nil { //nolint:gosec // G301: a fixture directory in t.TempDir
 			b.Fatal(err)
 		}
 		content := fmt.Sprintf("package p\n\n// file %d\nfunc F%d() int { return %d }\n", i, i, i)
-		if err := os.WriteFile(filepath.Join(full, fmt.Sprintf("file_%04d.go", i)), []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(full, fmt.Sprintf("file_%04d.go", i)), []byte(content), 0o644); err != nil { //nolint:gosec // G306: a project fixture file in t.TempDir, at the mode a checked-out file has
 			b.Fatal(err)
 		}
 	}
 	nmDir := filepath.Join(root, "node_modules", "some-pkg")
-	if err := os.MkdirAll(nmDir, 0o755); err != nil {
+	if err := os.MkdirAll(nmDir, 0o755); err != nil { //nolint:gosec // G301: a fixture directory in t.TempDir
 		b.Fatal(err)
 	}
 	for i := 0; i < ignoredFiles; i++ {
-		if err := os.WriteFile(filepath.Join(nmDir, fmt.Sprintf("dep_%04d.js", i)), []byte("module.exports = {};\n"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(nmDir, fmt.Sprintf("dep_%04d.js", i)), []byte("module.exports = {};\n"), 0o644); err != nil { //nolint:gosec // G306: a project fixture file in t.TempDir, at the mode a checked-out file has
 			b.Fatal(err)
 		}
 	}
@@ -47,13 +47,13 @@ func generateBenchTree(b *testing.B, root string, numFiles, ignoredFiles int) {
 func mutateFewFiles(b *testing.B, root string, numFiles, seed int) {
 	b.Helper()
 	dirs := []string{"internal/api", "internal/store", "internal/chat", "ui/src/components", "docs", "cmd/app"}
-	r := rand.New(rand.NewSource(int64(seed)))
+	r := rand.New(rand.NewSource(int64(seed))) //nolint:gosec // G404: deterministic benchmark content; the fixed seed is the point
 	for i := 0; i < 3; i++ {
 		idx := r.Intn(numFiles)
 		dir := dirs[idx%len(dirs)]
 		path := filepath.Join(root, dir, fmt.Sprintf("file_%04d.go", idx))
 		content := fmt.Sprintf("package p\n\n// file %d, mutation %d\nfunc F%d() int { return %d }\n", idx, seed, idx, idx+seed)
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil { //nolint:gosec // G306: a project fixture file in t.TempDir, at the mode a checked-out file has
 			b.Fatal(err)
 		}
 	}
