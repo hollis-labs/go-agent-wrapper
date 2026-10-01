@@ -951,7 +951,9 @@ func (w *Wrapper) Stop(ctx context.Context) error {
 //
 // The next SendInput starts a turn on the same process. Any other session
 // returns ErrTurnCancelUnsupported; Stop ends it instead. It returns once
-// the agent has acknowledged the interrupt.
+// the agent has acknowledged the interrupt. The adapter's
+// Describe().Delivery advertises adapters.DeliveryCapabilityCancelTurn
+// exactly where this works.
 func (w *Wrapper) CancelTurn(ctx context.Context) error {
 	w.sessMu.RLock()
 	acpSession := w.acpSession

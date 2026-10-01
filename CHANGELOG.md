@@ -4,6 +4,32 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.25.3 — 2026-10-01
+
+### Fixed
+
+- **Native turn cancellation is advertised** (CW-20261001-0200).
+  `Wrapper.CancelTurn` interrupts a turn and keeps the process on Claude
+  streaming-stdio, Codex app-server and OpenCode serve. Until now the native
+  descriptors' `Delivery` never listed `adapters.DeliveryCapabilityCancelTurn`
+  (only ACP did), so a host reading capabilities would not offer it. They now
+  list it for exactly those runtimes. `launch.Select` derives the claim from
+  the runtime and the configured adapter, so a host's own adapter that hides
+  `provider.TurnInterrupter` or `provider.RPCTurnInterrupter` gets none. The
+  per-turn runtimes (Claude print, Codex exec, OpenCode run, agy) still do
+  not claim it. The `cancel_turn` evidence names each runtime's own mechanism.
+- `Descriptor.Interrupt` is unchanged, because it describes `Stop`. Claude
+  streaming-stdio and Codex app-server still stop at the process level
+  (`InterruptProcess`), and OpenCode serve aborts natively before signaling
+  (`InterruptTurn`). Its docs no longer claim that no interrupt frame is ever
+  sent to Claude or Codex.
+- `TestCancelTurnCapabilityMatchesCancelTurn` runs every native
+  `launch.Supported()` mode on a fake. It checks that the descriptor's
+  `cancel_turn` agrees with what `CancelTurn` does, and it names the three
+  interruptible runtimes. `TestCancelTurnCapabilityACP` covers the ACP
+  launches, and `TestSelectCancelTurnFollowsTheAdapter` covers a host
+  adapter without the interface.
+
 ## v0.25.2 — 2026-10-01
 
 A coherent dependency refresh, so hosts take one consistent latest set
