@@ -225,8 +225,16 @@ type Session struct {
 	sawMalformed      bool
 	launchCommitted   bool
 	pendingReady      bool
+	// finished is set when finish fixes the terminal state. A finished
+	// session observes nothing more from the client.
+	finished bool
 
-	events               chan runtimeevents.Event
+	events chan runtimeevents.Event
+	// eventsMu guards sends on events against its close: publish skips the
+	// send once eventsClosed is set. select-with-default protects only
+	// against a full buffer, not a closed channel.
+	eventsMu             sync.Mutex
+	eventsClosed         bool
 	diagnostics          chan Diagnostic
 	done                 chan struct{}
 	launchDone           chan struct{}
@@ -359,14 +367,7 @@ func (s *Session) drain() {
 				continue
 			}
 		}
-		select {
-		case s.events <- ev:
-		case <-s.done:
-			return
-		default:
-			// Runtime activity is best-effort; lifecycle draining must never
-			// stall teardown behind a slow host consumer.
-		}
+		s.publish(ev)
 	}
 	// Client.Launch is allowed to emit session.ready before returning. Do not
 	// let a fast EOF finalize/unregister the session until Manager has either
@@ -375,9 +376,29 @@ func (s *Session) drain() {
 	s.finish()
 }
 
+// publish forwards ev to the host without blocking. Runtime activity is
+// best-effort; lifecycle draining must never stall teardown behind a slow host
+// consumer. Once finish has closed events, nothing more is published: drain
+// keeps reading the client after a failed launch or commit has finished the
+// session from another goroutine.
+func (s *Session) publish(ev runtimeevents.Event) {
+	s.eventsMu.Lock()
+	defer s.eventsMu.Unlock()
+	if s.eventsClosed {
+		return
+	}
+	select {
+	case s.events <- ev:
+	default:
+	}
+}
+
 func (s *Session) observeEvent(ev runtimeevents.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.finished {
+		return
+	}
 	s.lastActivity = time.Now().UTC()
 	if identity, ok := s.client.(interface{ ProviderSessionID() string }); ok {
 		if id := identity.ProviderSessionID(); id != "" {
@@ -478,6 +499,7 @@ func (s *Session) finish() {
 		})
 
 		s.mu.Lock()
+		s.finished = true
 		switch {
 		case s.closeRequested:
 			s.state = StateClosed
@@ -501,7 +523,12 @@ func (s *Session) finish() {
 		if s.onDone != nil {
 			s.onDone(s.id, s)
 		}
+		s.eventsMu.Lock()
+		s.eventsClosed = true
 		close(s.events)
+		s.eventsMu.Unlock()
+		// done closes last: when Wait or Close returns, Events and
+		// Diagnostics are closed and no OnDiagnostic callback is running.
 		s.diagnosticMu.Lock()
 		s.diagnosticsClosed = true
 		s.diagnosticMu.Unlock()
