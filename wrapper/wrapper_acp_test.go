@@ -165,7 +165,7 @@ func (a *fakeACPCLIAdapter) ParseLine(line []byte) ([]llmtypes.StreamEvent, erro
 		Echo string `json:"echo"`
 	}
 	if err := json.Unmarshal(line, &frame); err != nil || frame.Echo == "" {
-		return nil, nil
+		return nil, nil //nolint:nilerr // a line ParseLine cannot parse is skipped, not an error (provider.CLIAdapter contract)
 	}
 	text := frame.Echo
 	if err := a.client.Prompt(context.Background(), text); err != nil {

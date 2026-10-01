@@ -125,7 +125,7 @@ func (cfg ChildEnvironment) resolveForOS(inherited []string, goos string) (env [
 			return nil, false, fmt.Errorf("%w: set[%d] is not KEY=VALUE", ErrInvalidEnvironment, i)
 		}
 		if err := validateEnvironmentName(key); err != nil {
-			return nil, false, fmt.Errorf("%w: set[%d]: %v", ErrInvalidEnvironment, i, err)
+			return nil, false, fmt.Errorf("%w: set[%d]: %w", ErrInvalidEnvironment, i, err)
 		}
 		if strings.ContainsRune(value, '\x00') {
 			return nil, false, fmt.Errorf("%w: set[%d] value contains NUL", ErrInvalidEnvironment, i)
@@ -164,7 +164,7 @@ func environmentNameSet(names []string, field, goos string) (map[string]struct{}
 	set := make(map[string]struct{}, len(names))
 	for i, name := range names {
 		if err := validateEnvironmentName(name); err != nil {
-			return nil, fmt.Errorf("%w: %s[%d]: %v", ErrInvalidEnvironment, field, i, err)
+			return nil, fmt.Errorf("%w: %s[%d]: %w", ErrInvalidEnvironment, field, i, err)
 		}
 		set[canonicalEnvironmentName(name, goos)] = struct{}{}
 	}
