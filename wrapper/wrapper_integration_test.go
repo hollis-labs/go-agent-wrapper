@@ -425,6 +425,7 @@ func TestRunEndToEndAdapterRuntime(t *testing.T) {
 			sawTurnDone = true
 		case runtimeevents.KindProcessExited:
 			sawExited = true
+		default:
 		}
 		// Track the most-recent ProviderSessionID — the translator
 		// rebinds it on the Bridge when EventSessionID fires.
@@ -1380,6 +1381,7 @@ func TestRunFiltersAgentDeltaAndStdout(t *testing.T) {
 			if strings.Contains(raw, "safe text") {
 				sawFilteredStdout = true
 			}
+		default:
 		}
 	}
 	if !sawFilteredDelta {
@@ -1890,6 +1892,7 @@ func TestRunEmitsStdoutRawAndLineEvents(t *testing.T) {
 			if l, ok := p["line"].(string); ok {
 				lines = append(lines, l)
 			}
+		default:
 		}
 	}
 
@@ -2201,6 +2204,7 @@ func TestRunSessionLifecycleEventsHaveNoTurnID(t *testing.T) {
 			if ev.TurnID != "" {
 				t.Errorf("non-turn-scoped event %s carries TurnID %q", ev.Kind, ev.TurnID)
 			}
+		default:
 		}
 	}
 }

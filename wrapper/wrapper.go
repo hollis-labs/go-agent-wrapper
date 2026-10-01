@@ -1039,8 +1039,9 @@ func isTurnInternal(kind runtimeevents.EventKind) bool {
 		runtimeevents.KindAgentPermissionResolved,
 		runtimeevents.KindAgentPermissionDenied:
 		return true
+	default:
+		return false
 	}
-	return false
 }
 
 // isTurnScoped reports whether a runtime event kind should carry the

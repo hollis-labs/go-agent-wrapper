@@ -206,6 +206,8 @@ func (w *Wrapper) runACP(
 			case runtimeevents.KindTurnCompleted, runtimeevents.KindTurnFailed:
 				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionIdle, source,
 					map[string]any{"turn_id": ev.TurnID}, runtimeevents.WithTurnID(ev.TurnID))
+			default:
+				// Other kinds need no follow-up event.
 			}
 			if ev.Kind == runtimeevents.KindAgentToolUse {
 				w.observeACPToolUsePolicy(ctx, source, ev.Payload, eventID, ev.TurnID)

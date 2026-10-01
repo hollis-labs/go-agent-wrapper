@@ -436,6 +436,8 @@ func (s *Session) observeEvent(ev runtimeevents.Event) {
 			s.err = &LifecycleError{Kind: OutcomeChildExit, Operation: "wait", Diagnostic: redactDiagnostic(payload.Error)}
 			s.terminalOutcome = OutcomeChildExit
 		}
+	default:
+		// Other kinds leave the session's lifecycle state as it is.
 	}
 }
 
