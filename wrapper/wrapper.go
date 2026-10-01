@@ -939,11 +939,19 @@ func (w *Wrapper) Stop(ctx context.Context) error {
 
 // CancelTurn ends the turn in flight without closing the session. ACP
 // sessions send session/cancel. A native session whose runtime can interrupt
-// a turn (agentsessions.TurnInterrupter: streaming-stdio Claude's stream-json
-// interrupt) keeps its process: the turn ends with turn.failed, reason
-// "interrupted", and the next SendInput starts a turn on the same process.
-// Any other session returns ErrTurnCancelUnsupported; Stop ends it instead.
-// It returns once the agent has acknowledged the interrupt.
+// a turn (agentsessions.TurnInterrupter) keeps its process:
+//   - streaming-stdio Claude: Claude's stream-json interrupt. The turn ends
+//     with turn.failed, reason "interrupted".
+//   - Codex app-server: turn/interrupt for the open turn. The wrapper does
+//     not model Codex turns (the host drives the thread protocol), so the
+//     host sees the turn end as Codex reports it: turn/completed with status
+//     "interrupted".
+//   - OpenCode serve: POST /session/{id}/abort. The turn ends with
+//     turn.failed, reason "interrupted".
+//
+// The next SendInput starts a turn on the same process. Any other session
+// returns ErrTurnCancelUnsupported; Stop ends it instead. It returns once
+// the agent has acknowledged the interrupt.
 func (w *Wrapper) CancelTurn(ctx context.Context) error {
 	w.sessMu.RLock()
 	acpSession := w.acpSession

@@ -47,6 +47,29 @@ An ACP launch honours `Config.ProtectedPaths` without a resolved
     lands.
   - Unit tests cover the remote refusal and the bwrap argv.
 
+## v0.24.0 — 2026-10-01
+
+`CancelTurn` interrupts Codex app-server and OpenCode serve turns
+(CW-20261001-0160). Requires agentkit v0.20.1 and go-providers v0.40.0.
+
+### Changed
+
+- **`Wrapper.CancelTurn` keeps the process on two more native runtimes.**
+  It still emits `interrupt.requested` and `interrupt.acknowledged`, and the
+  next `SendInput` starts a turn on the same process.
+  - **Codex app-server:** it sends `turn/interrupt` for the open turn,
+    through agentkit's jsonrpc-stdio session. The wrapper doesn't model Codex
+    turns, because the host drives the thread protocol. The host sees the
+    turn end as Codex reports it: `turn/completed` with
+    `status: "interrupted"`.
+  - **OpenCode serve:** it calls `POST /session/{id}/abort`, through agentkit's
+    serve-http session. The turn ends with `turn.failed`, reason
+    `interrupted`.
+  - agentkit v0.20.1 keeps the session's own JSON-RPC request ids clear of
+    the ids a host writes through `SendInput`.
+- **The prepared-execution adapter forwards `provider.RPCTurnInterrupter`,**
+  but only when the adapter it wraps has one.
+
 ## v0.23.0 — 2026-10-01
 
 Hosts can write-protect their control-plane directories from the agents the
