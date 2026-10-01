@@ -267,7 +267,7 @@ done
 	if err := c.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	traceBytes, err := os.ReadFile(tracePath)
+	traceBytes, err := os.ReadFile(tracePath) //nolint:gosec // G304: the test's own temp file
 	if err != nil {
 		t.Fatal(err)
 	}

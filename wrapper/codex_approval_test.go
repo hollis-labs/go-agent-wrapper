@@ -141,7 +141,7 @@ type fakeAnswer struct {
 
 func readAnswers(t *testing.T, path string) map[string]fakeAnswer {
 	t.Helper()
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: a test helper; callers pass paths under t.TempDir
 	if err != nil {
 		t.Fatalf("read answers: %v", err)
 	}
