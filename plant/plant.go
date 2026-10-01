@@ -11,6 +11,8 @@ import (
 	"github.com/hollis-labs/agentkit/agentlaunch"
 	"github.com/hollis-labs/go-materialize/artifact"
 	"github.com/hollis-labs/go-materialize/materialize"
+	"github.com/hollis-labs/go-providers/layout"
+	"github.com/hollis-labs/go-providers/registry"
 )
 
 // Planter lays down per-session boot files into a boot dir the wrapper
@@ -51,10 +53,14 @@ type Spec struct {
 	// Shortcut for adding ".mcp.json" to Files, with mode 0600.
 	MCPConfig []byte
 
-	// ProviderSettings maps provider name ("claude", "codex",
-	// "opencode") to the provider-specific settings-file content. The
-	// SharedPlanter places each file at the path the provider expects
-	// inside the boot dir's planted HOME.
+	// ProviderSettings maps a runtime id or alias ("claude", "codex",
+	// "opencode", "antigravity", ...) to its native settings-file content.
+	// The SharedPlanter places each file at that runtime's native-config
+	// path in the go-providers layout, relative to the boot dir (for example
+	// .claude/settings.json, or config.toml for Codex under CODEX_HOME=boot).
+	// The launch must carry the layout row's Env, Flag and CWD for the
+	// runtime to read it. A runtime the registry does not know, or one with
+	// no native-config row (launched only over ACP), is an error.
 	ProviderSettings map[string][]byte
 
 	// Hooks lists provider-specific hooks to install (Claude Code
@@ -163,7 +169,10 @@ func specArtifactTree(spec Spec) (artifact.Tree, error) {
 		entries = append(entries, legacyFileEntry(".mcp.json", spec.MCPConfig, 0o600, "mcp"))
 	}
 	for provider, content := range spec.ProviderSettings {
-		rel := providerSettingsPath(provider)
+		rel, err := providerSettingsPath(provider)
+		if err != nil {
+			return artifact.Tree{}, err
+		}
 		entries = append(entries, legacyFileEntry(rel, content, 0o600, "provider-settings:"+provider))
 	}
 	for _, hook := range spec.Hooks {
@@ -200,21 +209,19 @@ func legacyFileEntry(rel string, content []byte, mode fs.FileMode, entryID strin
 	}
 }
 
-func providerSettingsPath(provider string) string {
-	switch strings.ToLower(provider) {
-	case "claude":
-		return ".claude/settings.json"
-	case "codex":
-		return ".codex/config.toml"
-	case "opencode":
-		return ".config/opencode/opencode.json"
-	default:
-		clean := strings.Trim(strings.ToLower(provider), "/")
-		if clean == "" {
-			clean = "unknown"
-		}
-		return filepath.ToSlash(filepath.Join(".config", clean, "settings"))
+// providerSettingsPath is where runtime provider reads its native settings
+// file, relative to the boot dir. It comes from the go-providers layout's
+// every-mode native-config row (D-73: one list), not a list kept here.
+func providerSettingsPath(provider string) (string, error) {
+	d, ok := registry.Lookup(provider)
+	if !ok {
+		return "", fmt.Errorf("plant: provider settings for %q: unknown runtime", provider)
 	}
+	e, ok := layout.Find(d.ID, layout.Shape{}, layout.NativeConfig)
+	if !ok {
+		return "", fmt.Errorf("plant: provider settings for %q: runtime %s has no native config file in the go-providers layout", provider, d.ID)
+	}
+	return e.Rel, nil
 }
 
 func hookPath(h Hook) (string, error) {

@@ -4,6 +4,26 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.18.0 — 2026-10-01
+
+### Changed
+
+- **`plant` takes provider settings paths from the go-providers layout**
+  (CW-20261001-0074, D-73: one list). `Spec.ProviderSettings[name]` is
+  planted at the native-config path of the layout's every-mode row for
+  runtime `name`. `name` may be an id or an alias. The hard-coded
+  claude/codex/opencode switch is gone. Paths, relative to the boot dir:
+  - **Claude:** `.claude/settings.json` (unchanged).
+  - **Codex:** `config.toml`, was `.codex/config.toml`. Codex reads it
+    under `CODEX_HOME=boot`.
+  - **OpenCode:** `opencode.json`, was `.config/opencode/opencode.json`.
+    OpenCode reads it under `OPENCODE_CONFIG_DIR=boot`.
+  - **Antigravity:** `.agents/plugins/tether/plugin.json`, was a guessed
+    `.config/antigravity/settings`.
+- **Breaking:** a name the registry doesn't know, or a runtime launched
+  only over ACP (copilot, pi), is now an error. Before, plant fell back to
+  `.config/<name>/settings`.
+
 ## v0.17.1 — 2026-10-01
 
 Takes agentkit v0.14.2 (was v0.14.0). It brings two fixes to the wrapper's
