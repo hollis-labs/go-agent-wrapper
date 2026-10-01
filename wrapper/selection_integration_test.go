@@ -69,18 +69,18 @@ IFS= read -r line || :
 	// and require the independent process terminal below.
 	sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)
 	select {
-	case err := <-runDone:
+	case err = <-runDone:
 		t.Fatalf("streaming session exited before Stop: %v", err)
 	default:
 	}
 	if hasKind(sink.snapshot(), runtimeevents.KindProcessExited) {
 		t.Fatal("process.exited arrived before the explicit streaming-session Stop")
 	}
-	if err := w.Stop(context.Background()); err != nil {
+	if err = w.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 	select {
-	case err := <-runDone:
+	case err = <-runDone:
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
@@ -138,7 +138,7 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"empty environment"
 	}
 	runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := w.Run(runCtx); err != nil {
+	if err = w.Run(runCtx); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	observed, err := os.ReadFile(probe)
@@ -278,15 +278,15 @@ func TestSelectedSubprocessPerTurnEnvironmentArgsEventsAndCleanup(t *testing.T) 
 			go func() { runDone <- w.Run(runCtx) }()
 			sink.waitFor(t, runtimeevents.KindSessionReady, 5*time.Second)
 
-			if err := w.SendInput(context.Background(), []byte(prompt)); err != nil {
+			if err = w.SendInput(context.Background(), []byte(prompt)); err != nil {
 				t.Fatalf("SendInput: %v", err)
 			}
 			sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)
-			if err := w.Stop(context.Background()); err != nil {
+			if err = w.Stop(context.Background()); err != nil {
 				t.Fatalf("Stop: %v", err)
 			}
 			select {
-			case err := <-runDone:
+			case err = <-runDone:
 				if err != nil {
 					t.Fatalf("Run: %v", err)
 				}
@@ -302,7 +302,7 @@ func TestSelectedSubprocessPerTurnEnvironmentArgsEventsAndCleanup(t *testing.T) 
 			if string(observedEnv) != wantEnv {
 				t.Fatalf("child environment = %q, want %q", observedEnv, wantEnv)
 			}
-			if _, err := os.Stat(injectionMarker); !errors.Is(err, os.ErrNotExist) {
+			if _, err = os.Stat(injectionMarker); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("shell-looking data executed; marker stat err=%v", err)
 			}
 
@@ -476,16 +476,16 @@ func TestWaitForPIDFileRetriesTruncateAndPartialWrite(t *testing.T) {
 	partialReady := make(chan struct{})
 	writerDone := make(chan error, 1)
 	go func() {
-		if _, err := file.WriteString(target[:1]); err != nil {
+		if _, writeErr := file.WriteString(target[:1]); writeErr != nil {
 			_ = file.Close()
-			writerDone <- err
+			writerDone <- writeErr
 			return
 		}
 		close(partialReady)
 		time.Sleep(40 * time.Millisecond)
-		if _, err := file.WriteString(target[1:] + "\n"); err != nil {
+		if _, writeErr := file.WriteString(target[1:] + "\n"); writeErr != nil {
 			_ = file.Close()
-			writerDone <- err
+			writerDone <- writeErr
 			return
 		}
 		writerDone <- file.Close()

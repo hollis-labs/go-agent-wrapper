@@ -659,7 +659,7 @@ func TestRunSharedPlanterCreateDoesNotPrecreateTarget(t *testing.T) {
 	go func() { runErrCh <- w.Run(ctx) }()
 
 	sink.waitFor(t, runtimeevents.KindSessionReady, 5*time.Second)
-	if err := w.SendInput(context.Background(), []byte("ignored")); err != nil {
+	if err = w.SendInput(context.Background(), []byte("ignored")); err != nil {
 		t.Fatalf("SendInput: %v", err)
 	}
 	sink.waitFor(t, runtimeevents.KindTurnCompleted, 5*time.Second)

@@ -593,9 +593,9 @@ func (m *Manager) Launch(ctx context.Context, cfg SessionConfig) (*Session, erro
 		s.state = StateClosing
 		s.mu.Unlock()
 		s.closeOnce.Do(func() {
-			err := cfg.Client.Close(context.Background())
+			closeErr := cfg.Client.Close(context.Background())
 			s.mu.Lock()
-			s.closeErr = err
+			s.closeErr = closeErr
 			s.mu.Unlock()
 		})
 		s.launchDoneOnce.Do(func() { close(s.launchDone) })

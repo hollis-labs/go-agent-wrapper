@@ -260,7 +260,7 @@ func (c *NDJSONBridgeClient) Launch(ctx context.Context, params LaunchParams) er
 		stderr.Close()
 		return fmt.Errorf("%s: sandbox: %w", c.cfg.Component, err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err = cmd.Start(); err != nil {
 		stdout.Close()
 		stderr.Close()
 		sandboxCleanup()
@@ -321,7 +321,7 @@ func (c *NDJSONBridgeClient) Launch(ctx context.Context, params LaunchParams) er
 		_ = c.Close(context.Background())
 		return fmt.Errorf("%s: initialize negotiation: %w", c.cfg.Component, err)
 	}
-	if err := c.authenticate(ctx, initialize, params.AuthMethodID); err != nil {
+	if err = c.authenticate(ctx, initialize, params.AuthMethodID); err != nil {
 		_ = c.Close(context.Background())
 		return fmt.Errorf("%s: authenticate: %w", c.cfg.Component, err)
 	}
