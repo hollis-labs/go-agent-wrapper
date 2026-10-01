@@ -98,6 +98,7 @@ loop:
 			case runtimeevents.KindTurnCompleted, runtimeevents.KindTurnFailed:
 				terminal = ev
 				break loop
+			default:
 			}
 		case <-deadline:
 			t.Fatal("timed out waiting for a real pi-acp turn to complete")
@@ -190,6 +191,7 @@ waitLoop:
 				// running the sleep loop long enough to observe —
 				// nothing meaningful to cancel; let the caller retry.
 				return false, "turn completed/failed before a real tool call was observed"
+			default:
 			}
 		case <-waitDeadline:
 			break waitLoop

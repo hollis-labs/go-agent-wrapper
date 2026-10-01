@@ -157,6 +157,7 @@ func runNativeInterruptTest(t *testing.T) (latency time.Duration, acceptedTextBe
 			reqAt = te.at
 		case runtimeevents.KindInterruptAcknowledged:
 			ackAt = te.at
+		default:
 		}
 	}
 	if !reqAt.IsZero() && !ackAt.IsZero() {

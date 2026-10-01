@@ -190,7 +190,7 @@ func (sg *ShadowGit) captureOne(ctx context.Context, t Target) (RootSnapshot, er
 	}
 
 	addArgs := append([]string{"add", "-A", "--"}, buildPathspecs(includes, oversizeExcludes)...)
-	if _, err := sg.runGit(ctx, gitDir, t.Root, nil, addArgs...); err != nil {
+	if _, err = sg.runGit(ctx, gitDir, t.Root, nil, addArgs...); err != nil {
 		return RootSnapshot{}, fmt.Errorf("target %q: git add: %w", t.ID, err)
 	}
 
@@ -367,7 +367,7 @@ func (sg *ShadowGit) restoreOne(ctx context.Context, gitDir string, rs RootSnaps
 			return nil // nothing on disk, nothing in the snapshot: no-op
 		}
 		sg.logger.WarnContext(ctx, "snapshot: restore removes path not present in snapshot", "path", rel, "root", rs.Root)
-		if err := os.Remove(full); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err = os.Remove(full); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove %q: %w", full, err)
 		}
 		return nil
@@ -540,7 +540,7 @@ func (sg *ShadowGit) ensureShadowRepo(ctx context.Context, targetID string) (str
 	metaPath := filepath.Join(root, "meta.json")
 
 	if fi, err := os.Stat(gitDir); err == nil && fi.IsDir() {
-		if err := sg.verifyMeta(metaPath, targetID); err != nil {
+		if err = sg.verifyMeta(metaPath, targetID); err != nil {
 			return "", fmt.Errorf("%w: target %q: %w", ErrShadowStoreUnavailable, targetID, err)
 		}
 		return gitDir, nil
@@ -730,9 +730,9 @@ func (sg *ShadowGit) currentBlobHash(root, relPath string) (hash string, exists 
 	var content []byte
 	switch {
 	case fi.Mode()&os.ModeSymlink != 0:
-		target, err := os.Readlink(full)
-		if err != nil {
-			return "", false, fmt.Errorf("readlink %q: %w", full, err)
+		target, linkErr := os.Readlink(full)
+		if linkErr != nil {
+			return "", false, fmt.Errorf("readlink %q: %w", full, linkErr)
 		}
 		content = []byte(target)
 	case fi.IsDir():

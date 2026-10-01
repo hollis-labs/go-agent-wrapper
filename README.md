@@ -63,7 +63,9 @@ End-to-end launch path is wired:
   app-server's `turn/interrupt` and OpenCode serve's abort. An interrupted
   Claude or OpenCode turn ends `turn.failed` with reason `interrupted`; Codex
   reports its own interrupted `turn/completed`. Other runtimes return
-  `ErrTurnCancelUnsupported`.
+  `ErrTurnCancelUnsupported`. The adapter's `Describe().Delivery` advertises
+  `cancel_turn` exactly where `CancelTurn` works (for a host's own native
+  adapter, only if it keeps the turn-interrupt interface).
 - If `Config.PolicyObserver` is set,
   each translated tool-use event is handed to `policy.Observer.Observe`
   after `agent.tool_use` is emitted. A mapped recommendation emits a correlated

@@ -49,6 +49,8 @@ func (w *Wrapper) filterStreamEvent(ctx context.Context, ev llmtypes.StreamEvent
 		if err := json.Unmarshal(out.Repaired, &repaired); err == nil {
 			ev.ToolUse = &repaired
 		}
+	default:
+		// Filters apply only to agent text and tool-use envelopes.
 	}
 	return ev
 }

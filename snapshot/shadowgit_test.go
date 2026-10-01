@@ -348,7 +348,7 @@ func TestDiff_AddedModifiedDeleted(t *testing.T) {
 
 	writeFile(t, root, "modify.txt", "after")
 	writeFile(t, root, "new.txt", "brand new")
-	if err := os.Remove(filepath.Join(root, "remove.txt")); err != nil {
+	if err = os.Remove(filepath.Join(root, "remove.txt")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -398,7 +398,7 @@ func TestPreview_ReportsAllRequestedKinds(t *testing.T) {
 
 	// Mutate on-disk state after the capture.
 	writeFile(t, root, "will-change.txt", "modified on disk")
-	if err := os.Remove(filepath.Join(root, "will-be-deleted.txt")); err != nil {
+	if err = os.Remove(filepath.Join(root, "will-be-deleted.txt")); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, root, "not-in-snapshot.txt", "new since capture")
@@ -517,7 +517,7 @@ func TestRestore_SkipsWriteWhenAlreadyMatching_PreservesMtime(t *testing.T) {
 	}
 	time.Sleep(20 * time.Millisecond) // ensure any write would produce an observably different mtime
 
-	if err := sg.Restore(context.Background(), set, []string{JoinPath("proj-j", "stable.txt")}); err != nil {
+	if err = sg.Restore(context.Background(), set, []string{JoinPath("proj-j", "stable.txt")}); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	after, err := os.Stat(full)
@@ -545,10 +545,10 @@ func TestRestore_Symlink(t *testing.T) {
 		t.Fatalf("Capture: %v", err)
 	}
 
-	if err := os.Remove(filepath.Join(root, "link.txt")); err != nil {
+	if err = os.Remove(filepath.Join(root, "link.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if err := sg.Restore(context.Background(), set, []string{JoinPath("proj-k", "link.txt")}); err != nil {
+	if err = sg.Restore(context.Background(), set, []string{JoinPath("proj-k", "link.txt")}); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 	fi, err := os.Lstat(filepath.Join(root, "link.txt"))

@@ -100,11 +100,11 @@ func TestACPWrapperRealSubprocessLifecycleAllAdapters(t *testing.T) {
 				t.Fatalf("ProviderSessionID = %q, want %q", got, providerSessionID)
 			}
 
-			if err := w.SendInput(ctx, []byte("first turn")); err != nil {
+			if err = w.SendInput(ctx, []byte("first turn")); err != nil {
 				t.Fatalf("first SendInput: %v", err)
 			}
 			sink.waitFor(t, runtimeevents.KindAgentDelta, 5*time.Second)
-			if err := w.CancelTurn(ctx); err != nil {
+			if err = w.CancelTurn(ctx); err != nil {
 				t.Fatalf("CancelTurn: %v", err)
 			}
 			waitForACPTurnOutcome(t, w, acp.OutcomeCanceled)
@@ -112,15 +112,15 @@ func TestACPWrapperRealSubprocessLifecycleAllAdapters(t *testing.T) {
 				t.Fatal("session was not live after turn-scoped cancellation")
 			}
 
-			if err := w.SendInput(ctx, []byte("second turn")); err != nil {
+			if err = w.SendInput(ctx, []byte("second turn")); err != nil {
 				t.Fatalf("second SendInput: %v", err)
 			}
 			waitForACPReady(t, manager, w.SessionID())
-			if err := w.Stop(ctx); err != nil {
+			if err = w.Stop(ctx); err != nil {
 				t.Fatalf("Stop: %v", err)
 			}
 			select {
-			case err := <-runErrCh:
+			case err = <-runErrCh:
 				if err != nil {
 					t.Fatalf("Run: %v", err)
 				}
@@ -352,6 +352,7 @@ func TestAcceptedPromptEndsExactlyOnceOnExplicitCloseAllAdapters(t *testing.T) {
 						t.Fatalf("terminal TurnID = %q, want %q", event.TurnID, startedID)
 					}
 					terminals++
+				default:
 				}
 			}
 			if startedID == "" || terminals != 1 {
@@ -416,6 +417,7 @@ func TestConcurrentPromptCloseAdmissionAndWireOrderAllAdapters(t *testing.T) {
 							t.Fatalf("iteration %d terminal TurnID = %q, started = %q", iteration, event.TurnID, startedID)
 						}
 						terminals++
+					default:
 					}
 				}
 
@@ -542,6 +544,7 @@ func collectClientTurn(t *testing.T, client acp.Client, timeout time.Duration) c
 				result.terminal = event
 				result.terminals++
 				return result
+			default:
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for turn terminal: %+v", result)
@@ -704,7 +707,7 @@ func TestACPWrapperPreparedLocalStdioSandboxDeniesReadWrite(t *testing.T) {
 	readyDeadline := time.After(10 * time.Second)
 	for !manager.IsLive(w.SessionID()) {
 		select {
-		case err := <-runErrCh:
+		case err = <-runErrCh:
 			t.Fatalf("Run returned before ACP ready: %v", err)
 		case <-readyDeadline:
 			t.Fatalf("ACP session %q was not registered", w.SessionID())
@@ -712,10 +715,10 @@ func TestACPWrapperPreparedLocalStdioSandboxDeniesReadWrite(t *testing.T) {
 		}
 	}
 	sink.waitFor(t, runtimeevents.KindSandboxApplied, 5*time.Second)
-	if err := w.Stop(ctx); err != nil {
+	if err = w.Stop(ctx); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if err := <-runErrCh; err != nil {
+	if err = <-runErrCh; err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	traceBytes, err := os.ReadFile(tracePath)
@@ -798,7 +801,7 @@ func TestACPWrapperPreparedLocalTCPSandboxCapabilityResult(t *testing.T) {
 	go func() { runErrCh <- w.Run(ctx) }()
 	if runtime.GOOS == "linux" {
 		select {
-		case err := <-runErrCh:
+		case err = <-runErrCh:
 			if !errors.Is(err, sandboxprofile.ErrUnsupportedPolicy) {
 				t.Fatalf("Run err = %v, want unsupported Linux TCP sandbox", err)
 			}
@@ -810,7 +813,7 @@ func TestACPWrapperPreparedLocalTCPSandboxCapabilityResult(t *testing.T) {
 			t.Fatal("missing sandbox.applied unsupported event")
 		}
 		var payload map[string]any
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		if err = json.Unmarshal(event.Payload, &payload); err != nil {
 			t.Fatalf("decode sandbox.applied: %v", err)
 		}
 		if payload["unsupported"] == nil || payload["state"] != "unsupported" || payload["enforced"] != false {
@@ -819,10 +822,10 @@ func TestACPWrapperPreparedLocalTCPSandboxCapabilityResult(t *testing.T) {
 		return
 	}
 	waitForACPReady(t, manager, w.SessionID())
-	if err := w.Stop(ctx); err != nil {
+	if err = w.Stop(ctx); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if err := <-runErrCh; err != nil {
+	if err = <-runErrCh; err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	event, ok := firstKind(sink.snapshot(), runtimeevents.KindSandboxApplied)
@@ -830,7 +833,7 @@ func TestACPWrapperPreparedLocalTCPSandboxCapabilityResult(t *testing.T) {
 		t.Fatal("missing sandbox.applied")
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+	if err = json.Unmarshal(event.Payload, &payload); err != nil {
 		t.Fatalf("decode sandbox.applied: %v", err)
 	}
 	if payload["enforced"] != true || payload["applied"] != true || payload["state"] != "applied" {
@@ -905,22 +908,22 @@ func TestACPWrapperCopilotTCPRealSubprocessLifecycle(t *testing.T) {
 	if got := w.ProviderSessionID(); got != "resume-tcp" {
 		t.Fatalf("ProviderSessionID = %q, want resume-tcp", got)
 	}
-	if err := w.SendInput(ctx, []byte("tcp first")); err != nil {
+	if err = w.SendInput(ctx, []byte("tcp first")); err != nil {
 		t.Fatal(err)
 	}
 	sink.waitFor(t, runtimeevents.KindAgentDelta, 5*time.Second)
-	if err := w.CancelTurn(ctx); err != nil {
+	if err = w.CancelTurn(ctx); err != nil {
 		t.Fatal(err)
 	}
 	waitForACPTurnOutcome(t, w, acp.OutcomeCanceled)
-	if err := w.SendInput(ctx, []byte("tcp second")); err != nil {
+	if err = w.SendInput(ctx, []byte("tcp second")); err != nil {
 		t.Fatal(err)
 	}
 	waitForACPReady(t, manager, w.SessionID())
-	if err := w.Stop(ctx); err != nil {
+	if err = w.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-runErrCh; err != nil {
+	if err = <-runErrCh; err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	traceBytes, err := os.ReadFile(tracePath)

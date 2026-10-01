@@ -166,6 +166,7 @@ func assertRealTurnEvents(t *testing.T, evs []runtimeevents.Event, wantSubstring
 			}
 		case runtimeevents.KindTurnFailed:
 			t.Fatalf("turn failed: %+v", ev)
+		default:
 		}
 	}
 

@@ -108,7 +108,10 @@ func NewDeliveryCapabilities(entries ...DeliveryCapabilityEvidence) DeliveryCapa
 }
 
 // DeliveryCapabilitiesForRuntime returns the honest default delivery/control
-// declaration for a wrapper runtime descriptor. It intentionally does not infer
+// declaration for a wrapper runtime descriptor. turnScopedCancel says whether
+// wrapper.CancelTurn ends a turn on this runtime without closing the session:
+// ACP's session/cancel, or a native runtime with a turn interrupt (see
+// launch.Select). It intentionally does not infer
 // Claude Code cross-session ListAgents/SendMessage support: this repository has
 // no provider-backed route/send implementation for that API yet, so
 // between-tool-call delivery stays absent.
@@ -135,13 +138,33 @@ func DeliveryCapabilitiesForRuntime(provider string, protocol Protocol, transpor
 		})
 	}
 	if turnScopedCancel {
+		mechanism, evidence := turnCancelMechanism(protocol)
 		entries = append(entries, DeliveryCapabilityEvidence{
 			Capability: DeliveryCapabilityCancelTurn,
-			Mechanism:  "acp.Session.Cancel / wrapper.CancelTurn",
-			Evidence:   "ACP managed session sends session/cancel without closing the session",
+			Mechanism:  mechanism,
+			Evidence:   evidence,
 		})
 	}
 	return NewDeliveryCapabilities(entries...)
+}
+
+// turnCancelMechanism names how wrapper.CancelTurn ends a turn on protocol
+// without closing the session.
+func turnCancelMechanism(protocol Protocol) (mechanism, evidence string) {
+	switch protocol {
+	case ProtocolClaudeStreamJSON:
+		return "stream-json control_request interrupt / wrapper.CancelTurn",
+			"agentsessions streaming-stdio TurnInterrupter: the turn fails with reason interrupted and the process keeps running"
+	case ProtocolCodexAppServer:
+		return "JSON-RPC turn/interrupt / wrapper.CancelTurn",
+			"agentsessions jsonrpc-stdio TurnInterrupter interrupts the open turn; Codex reports turn/completed with status interrupted"
+	case ProtocolOpenCodeNative:
+		return "POST /session/{id}/abort / wrapper.CancelTurn",
+			"agentsessions serve-http TurnInterrupter aborts the turn; the session stays"
+	default:
+		return "acp.Session.Cancel / wrapper.CancelTurn",
+			"ACP managed session sends session/cancel without closing the session"
+	}
 }
 
 func deliveryMechanism(protocol Protocol, transport Transport) string {

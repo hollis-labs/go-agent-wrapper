@@ -336,3 +336,23 @@ func TestSelectedAdapterDescribeClonesDeliveryCapabilities(t *testing.T) {
 		t.Fatal("Describe returned delivery slice sharing adapter backing storage")
 	}
 }
+
+// cancel_turn follows the adapter, not just the mode (CW-20261001-0200): the
+// built-in Codex app-server adapter can interrupt a turn, and a host's own
+// adapter that hides provider.RPCTurnInterrupter gets no claim.
+func TestSelectCancelTurnFollowsTheAdapter(t *testing.T) {
+	builtin, err := Select(Selection{Runtime: "codex", Mode: runtimes.ModeJSONRPCStdio})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if !builtin.Describe().Delivery.Supports(adapters.DeliveryCapabilityCancelTurn) {
+		t.Error("built-in Codex app-server does not advertise cancel_turn")
+	}
+	custom, err := Select(Selection{Runtime: "codex", Mode: runtimes.ModeJSONRPCStdio, CLIAdapter: customCLI{provider.NewCodexAdapterAppServer()}})
+	if err != nil {
+		t.Fatalf("Select custom: %v", err)
+	}
+	if custom.Describe().Delivery.Supports(adapters.DeliveryCapabilityCancelTurn) {
+		t.Error("a custom adapter without RPCTurnInterrupter advertises cancel_turn")
+	}
+}

@@ -76,7 +76,8 @@ func newNative(key Key, spec nativeSpec, sel Selection) (*nativeAdapter, error) 
 	}
 	// Probe once so a host adapter that cannot take the Binary/ExtraArgs
 	// fails Select, not the first spawn.
-	if _, err := configure(base(), sel.Binary, sel.ExtraArgs); err != nil {
+	probe, err := configure(base(), sel.Binary, sel.ExtraArgs)
+	if err != nil {
 		return nil, err
 	}
 	return &nativeAdapter{
@@ -85,13 +86,36 @@ func newNative(key Key, spec nativeSpec, sel Selection) (*nativeAdapter, error) 
 			Provider: string(key.Runtime), Protocol: spec.protocol, Transport: spec.transport,
 			Interrupt: spec.interrupt,
 			Channels:  []runtimeevents.SourceChannel{spec.channel},
-			Delivery:  adapters.DeliveryCapabilitiesForRuntime(string(key.Runtime), spec.protocol, spec.transport, spec.interrupt, false),
+			Delivery:  adapters.DeliveryCapabilitiesForRuntime(string(key.Runtime), spec.protocol, spec.transport, spec.interrupt, nativeTurnCancel(spec.protocol, probe)),
 		},
 		cliFactory: func() provider.CLIAdapter {
 			cli, _ := configure(base(), sel.Binary, sel.ExtraArgs)
 			return cli
 		},
 	}, nil
+}
+
+// nativeTurnCancel reports whether wrapper.CancelTurn can end a turn on this
+// native runtime without stopping it, which is what the descriptor's
+// cancel_turn delivery capability claims. agentkit's streaming-stdio session
+// interrupts through a provider.TurnInterrupter adapter (Claude), its
+// jsonrpc-stdio session through a provider.RPCTurnInterrupter (Codex
+// app-server), and its serve-http session over HTTP (OpenCode serve). A
+// host's own adapter without the interface gets no claim. The per-turn
+// runtimes have no turn to interrupt short of the process.
+func nativeTurnCancel(protocol adapters.Protocol, cli provider.CLIAdapter) bool {
+	switch protocol {
+	case adapters.ProtocolClaudeStreamJSON:
+		_, ok := cli.(provider.TurnInterrupter)
+		return ok
+	case adapters.ProtocolCodexAppServer:
+		_, ok := cli.(provider.RPCTurnInterrupter)
+		return ok
+	case adapters.ProtocolOpenCodeNative:
+		return true
+	default:
+		return false
+	}
 }
 
 // configure sets the selection's Binary and ExtraArgs on the adapter's own

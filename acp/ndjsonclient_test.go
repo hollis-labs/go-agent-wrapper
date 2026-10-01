@@ -632,6 +632,7 @@ func TestNDJSONBridgeClient_PermissionRequestDefaultsToCancelledAndUnblocksChild
 				if want := component + ": no approval handler configured"; payload.Reason != want {
 					t.Fatalf("resolution reason = %q, want %q", payload.Reason, want)
 				}
+			default:
 			}
 		}
 		if !requested || !resolved {
