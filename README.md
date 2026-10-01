@@ -25,7 +25,11 @@ End-to-end launch path is wired:
 - Lifecycle events emitted: `session.ready`, `process.started`,
   `process.exited`, `session.processing`/`session.idle`, optional
   `session.heartbeat`, `turn.started`/`turn.completed`/`turn.failed`
-  (with monotonic per-session TurnIDs), `stdin.write`,
+  (with monotonic per-session TurnIDs; a native turn ends in exactly one
+  `turn.completed` or `turn.failed` carrying its TurnID and the turn's
+  accumulated `usage`, followed by `session.idle`, and a turn still open
+  when the process exits is closed as `turn.failed` with reason
+  `process_exited` before `process.exited`), `stdin.write`,
   `stdout.raw`/`stdout.line`, `stderr.raw`/`stderr.line`,
   `interrupt.requested`/`interrupt.acknowledged`.
 - `agent.delta`, `agent.tool_use`, `agent.tool_result`, and
