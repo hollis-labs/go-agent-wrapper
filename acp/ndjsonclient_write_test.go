@@ -40,6 +40,40 @@ exec sleep 60
 	return script
 }
 
+// enteredWriter reports when a request write begins, so a test can end the
+// call's ctx only once the real pipe write is under way. Building a request
+// frame can take longer than a short ctx under -race on a loaded host, and a
+// ctx that ends before the write starts tests a different path.
+type enteredWriter struct {
+	io.WriteCloser
+	entered chan struct{}
+}
+
+func (w *enteredWriter) Write(p []byte) (int, error) {
+	select {
+	case w.entered <- struct{}{}:
+	default:
+	}
+	return w.WriteCloser.Write(p)
+}
+
+func (w *enteredWriter) SetWriteDeadline(t time.Time) error {
+	if d, ok := w.WriteCloser.(writeDeadliner); ok {
+		return d.SetWriteDeadline(t)
+	}
+	return os.ErrNoDeadline
+}
+
+// observeWrites wraps the launched client's stdin in an enteredWriter. The
+// wrapper closes the real stdin, so closeTransport still releases a write.
+func observeWrites(c *NDJSONBridgeClient) chan struct{} {
+	entered := make(chan struct{}, 1)
+	c.mu.Lock()
+	c.stdin = &enteredWriter{WriteCloser: c.stdin, entered: entered}
+	c.mu.Unlock()
+	return entered
+}
+
 // A real child that has stopped reading stdin: a request bigger than the pipe
 // blocks in the write. Canceling, or the ctx deadline passing, releases the
 // caller and writeMu. The pipe took part of the frame, so the stream is no
@@ -49,6 +83,7 @@ func TestNDJSONBridgeClient_CtxReleasesRequestWriteToStalledChild(t *testing.T) 
 	for _, name := range []string{"cancel", "deadline"} {
 		t.Run(name, func(t *testing.T) {
 			forEachComponent(t, func(t *testing.T, component string) {
+				t.Parallel() // the deadline cases each wait out a few seconds
 				client := newTestClient(component, stalledAgent(t))
 				launchCtx, launchCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer launchCancel()
@@ -61,48 +96,68 @@ func TestNDJSONBridgeClient_CtxReleasesRequestWriteToStalledChild(t *testing.T) 
 					_ = client.Close(closeCtx)
 				})
 
+				entered := observeWrites(client)
+
+				// The ctx ends only after the write has begun, so the blocked
+				// write is what gets interrupted. A "cancel" ends it then; a
+				// "deadline" ctx has 4 seconds, long enough to build the
+				// frame, and the test fails if the write had not begun by then.
 				var (
 					ctx    context.Context
 					cancel context.CancelFunc
 				)
 				if name == "deadline" {
-					ctx, cancel = context.WithTimeout(context.Background(), 300*time.Millisecond)
+					ctx, cancel = context.WithTimeout(context.Background(), 4*time.Second)
 				} else {
 					ctx, cancel = context.WithCancel(context.Background())
 				}
 				defer cancel()
 
 				done := make(chan error, 1)
+				start := time.Now()
 				go func() {
-					_, err := client.Call(ctx, "x/big", map[string]any{"data": strings.Repeat("x", 4<<20)})
+					_, err := client.Call(ctx, "x/big", map[string]any{"data": strings.Repeat("x", 1<<20)})
 					done <- err
 				}()
+				want := context.DeadlineExceeded
 				if name == "cancel" {
 					select {
+					case <-entered:
 					case err := <-done:
-						t.Fatalf("Call returned before it was canceled: %v", err)
-					case <-time.After(300 * time.Millisecond):
+						t.Fatalf("Call returned before its write began: %v", err)
+					case <-time.After(10 * time.Second):
+						t.Fatal("the request write never began")
 					}
+					time.Sleep(100 * time.Millisecond) // let the write fill the pipe and block
 					cancel()
-				}
-				want := context.Canceled
-				if name == "deadline" {
-					want = context.DeadlineExceeded
+					want = context.Canceled
 				}
 				select {
 				case err := <-done:
 					if !errors.Is(err, want) {
 						t.Fatalf("Call err = %v, want %v", err, want)
 					}
-				case <-time.After(3 * time.Second):
+				case <-time.After(10 * time.Second):
 					t.Fatal("Call did not return: its request write ignores ctx")
+				}
+				if name == "deadline" {
+					select {
+					case <-entered:
+					default:
+						t.Fatalf("the deadline passed after %v without the write beginning, so this run did not exercise the blocked write", time.Since(start))
+					}
 				}
 				if !client.writeMu.TryLock() {
 					t.Fatal("writeMu is still held after the Call returned")
 				}
 				client.writeMu.Unlock()
-				if _, err := client.Call(context.Background(), "x/after", nil); err == nil {
-					t.Fatal("a Call after a half-written frame succeeded; the transport should be closed")
+				// The pipe took part of the frame, so the transport is closed and
+				// refuses the next request at once. A call that instead waited
+				// out its ctx would mean the transport was left open.
+				afterCtx, afterCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer afterCancel()
+				if _, err := client.Call(afterCtx, "x/after", nil); err == nil || errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("a Call after a half-written frame = %v; the transport should be closed and refuse it at once", err)
 				}
 				client.pendMu.Lock()
 				left := len(client.pending)
