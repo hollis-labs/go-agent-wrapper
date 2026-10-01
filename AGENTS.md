@@ -12,8 +12,9 @@ and reports what happened.
 - `README.md` is the current status and the full event vocabulary.
 - `ROADMAP.md` records what is deferred and why.
 - `wrapper/` owns `Run`: runtime dispatch, session drive, event translation.
-- `adapters/` holds native and ACP adapters; `adapters/selection.go` chooses one
-  from provider, runtime kind and launch mode.
+- `launch/` is `Select`: a runtime by go-providers registry id and
+  agent-contracts-leaf mode in, its native or ACP adapter out, from a closed
+  factory table. `adapters/` holds the adapters themselves.
 - `acp/` owns ACP v1 negotiation, create-or-resume, cancellation and close.
 - `policy/` defines the advisory observer surface.
 - `filters/` adapts `go-harness-filters` rules onto agent text and tool
@@ -50,6 +51,13 @@ observability surface into an enforcement one, which is a different product.
 A failed advertised ACP resume is returned as an error, never downgraded into
 silently starting a fresh session — a caller that asked to resume and got a new
 session would lose history without being told.
+
+Runtimes, modes and defaults are the go-providers registry's; the wrapper keeps
+no runtime list and no LaunchMode/RuntimeKind enum (D-73). Every registry
+(runtime, mode) has a launch factory or a recorded reason it is not driven
+(`TestFactoriesFollowTheRegistry`), and every registry runtime launches through
+`launch.Select` + `New` + `Run` against a providertest fake
+(`TestLaunchEveryRegistryRuntimeThroughSelect`).
 
 Every live-provider test must go through `internal/testgate.RequireLiveProvider`,
 and `TestEveryInstalledProviderTestUsesTheSharedGate` fails the build if one

@@ -1,5 +1,7 @@
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
 github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
+github.com/hollis-labs/agent-contracts-leaf v0.3.0 h1:tOAbq1y2Qtkk/S81hpSTlE3ZIsXWacSWkad1NfTMEvY=
+github.com/hollis-labs/agent-contracts-leaf v0.3.0/go.mod h1:Yp3iEG7I1qHxGL+Ad085RDVP5xUM/dbL0nFxzCAQ9/w=
 github.com/hollis-labs/agentkit v0.11.0 h1:ydvpcWgB78WVaqNKYvPWKUKLXWxDALKLk7Qjjh4+w90=
 github.com/hollis-labs/agentkit v0.11.0/go.mod h1:kF7XaAFStYmH4MjiNqULpaXsovD4vxR0g/hQ8UTUE3s=
 github.com/hollis-labs/go-harness-filters v0.1.1 h1:uTAF+ejKhje+rXMEOwTHsO7ig2fCAQnkANXgZBAyYZA=
@@ -12,8 +14,8 @@ github.com/hollis-labs/go-materialize v0.1.0 h1:JQ7nKIlKIaWvuiN1yPpad0dQaJTLocuQ
 github.com/hollis-labs/go-materialize v0.1.0/go.mod h1:ubDxYOfG+hCX0PXQaVm8ssmJoc6ZCDh8iSO46pj0PK0=
 github.com/hollis-labs/go-permission v0.1.0 h1:eOlb2pPmEkh9D5zlVgWwOd4ryycEQYiLT1cLMEG6y2c=
 github.com/hollis-labs/go-permission v0.1.0/go.mod h1:OXz5GXvR7vFAb6TVoGDOESIEecC0V40524NdN0jiOrs=
-github.com/hollis-labs/go-providers v0.30.0 h1:ClqU2WG3cJr9uhygUGftDNkS+T83J6kwvJcnOioVWYI=
-github.com/hollis-labs/go-providers v0.30.0/go.mod h1:5R5edyANZAxU2f+y+vpjwQJuN6KM0nNwbRUDmH2yQJ8=
+github.com/hollis-labs/go-providers v0.32.0 h1:LlCxfUSlmPt9gTxE1JI5FgdglSW3+FTWEhoAemE2PxA=
+github.com/hollis-labs/go-providers v0.32.0/go.mod h1:eDiOX1hTWT60bO+2PVtOoJnTwqz4tKawsw7X0S5B9M0=
 github.com/hollis-labs/go-runner v0.7.0 h1:nJIDnZHBVn1Ii8hITTxLsGMVaEI9AWipar85qo8QkY8=
 github.com/hollis-labs/go-runner v0.7.0/go.mod h1:+PgCa0CxAImd63sZgLb8Zw0uasyDWyHRdcE2sH8Zc7Q=
 github.com/hollis-labs/go-runtime-events v0.1.2 h1:ChyjCVidjeAVf+dUJjiJTdX/LYujkJILKuLi+cTDNJM=

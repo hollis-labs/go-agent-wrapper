@@ -13,8 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hollis-labs/agent-contracts-leaf/runtimes"
 	"github.com/hollis-labs/go-agent-wrapper/activity"
-	"github.com/hollis-labs/go-agent-wrapper/adapters"
+	"github.com/hollis-labs/go-agent-wrapper/launch"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -38,9 +39,9 @@ IFS= read -r line || :
 `
 	binary := writeShellFixtureLauncher(t, root, "fake claude with spaces", []byte(body))
 	t.Setenv("LEAK_ME", "ambient-secret")
-	adapter, err := adapters.Select(adapters.Selection{
-		Provider: adapters.ProviderClaude, RuntimeKind: adapters.RuntimeKindCLI,
-		LaunchMode: adapters.LaunchStreamingStdio, DeveloperMode: true, Binary: binary,
+	adapter, err := launch.Select(launch.Selection{
+		Runtime: "claude",
+		Mode:    runtimes.ModeStreamingStdio, DeveloperMode: true, Binary: binary,
 		ExtraArgs: []string{"--label", "value with spaces;still-data"},
 	})
 	if err != nil {
@@ -120,8 +121,8 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"empty environment"
 `
 	binary := writeShellFixtureLauncher(t, root, "empty-environment-claude", []byte(body))
 	t.Setenv("LEAK_ME", "ambient-secret")
-	adapter, err := adapters.Select(adapters.Selection{
-		Provider: adapters.ProviderClaude, LaunchMode: adapters.LaunchStreamingStdio,
+	adapter, err := launch.Select(launch.Selection{
+		Runtime: "claude", Mode: runtimes.ModeStreamingStdio,
 		Binary: binary, ExtraArgs: []string{probe},
 	})
 	if err != nil {
@@ -161,8 +162,8 @@ trap 'exit 0' TERM INT
 while :; do /bin/sleep 1; done
 `
 	binary := writeShellFixtureLauncher(t, root, "blocking-claude", []byte(body))
-	adapter, err := adapters.Select(adapters.Selection{
-		Provider: adapters.ProviderClaude, LaunchMode: adapters.LaunchStreamingStdio, Binary: binary,
+	adapter, err := launch.Select(launch.Selection{
+		Runtime: "claude", Mode: runtimes.ModeStreamingStdio, Binary: binary,
 	})
 	if err != nil {
 		t.Fatalf("Select: %v", err)
@@ -209,17 +210,17 @@ func TestSelectedSubprocessPerTurnEnvironmentArgsEventsAndCleanup(t *testing.T) 
 
 	tests := []struct {
 		name       string
-		provider   adapters.Provider
+		provider   runtimes.ID
 		scriptLine string
 	}{
 		{
 			name:       "codex",
-			provider:   adapters.ProviderCodex,
+			provider:   runtimes.Codex,
 			scriptLine: `printf '%s\n' '{"type":"item.message","role":"assistant","content":"selected codex"}' '{"type":"turn.completed","turn_id":"turn-fixture"}'`,
 		},
 		{
 			name:       "opencode",
-			provider:   adapters.ProviderOpenCode,
+			provider:   runtimes.OpenCode,
 			scriptLine: `printf '%s\n' '{"type":"step_start","sessionID":"ses_fixture","part":{"type":"step-start"}}' '{"type":"text","sessionID":"ses_fixture","part":{"type":"text","text":"selected opencode"}}' '{"type":"step_finish","sessionID":"ses_fixture","part":{"type":"step-finish","reason":"stop","tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}'`,
 		},
 	}
@@ -243,10 +244,10 @@ func TestSelectedSubprocessPerTurnEnvironmentArgsEventsAndCleanup(t *testing.T) 
 			t.Setenv("LEAK_ME", "ambient-secret")
 			prompt := "prompt with spaces; $(touch " + injectionMarker + ")"
 			extra := []string{"--literal", "arg with spaces", "$(touch " + injectionMarker + ")", "semi;colon"}
-			adapter, err := adapters.Select(adapters.Selection{
-				Provider: tc.provider, RuntimeKind: adapters.RuntimeKindCLI,
-				LaunchMode: adapters.LaunchSubprocessPerTurn,
-				Binary:     binary, ExtraArgs: extra,
+			adapter, err := launch.Select(launch.Selection{
+				Runtime: string(tc.provider),
+				Mode:    runtimes.ModeSubprocessPerTurn,
+				Binary:  binary, ExtraArgs: extra,
 			})
 			if err != nil {
 				t.Fatalf("Select: %v", err)
@@ -334,7 +335,7 @@ func TestSelectedSubprocessPerTurnCancellationReapsProcess(t *testing.T) {
 		t.Skip("subprocess fixture and liveness probe use POSIX process signals")
 	}
 
-	for _, providerID := range []adapters.Provider{adapters.ProviderCodex, adapters.ProviderOpenCode} {
+	for _, providerID := range []runtimes.ID{runtimes.Codex, runtimes.OpenCode} {
 		t.Run(string(providerID), func(t *testing.T) {
 			root := t.TempDir()
 			pidFile := filepath.Join(root, "pid")
@@ -344,8 +345,8 @@ func TestSelectedSubprocessPerTurnCancellationReapsProcess(t *testing.T) {
 				`trap 'printf terminated > "$TERM_FILE"; exit 0' TERM INT` + "\n" +
 				`while :; do /bin/sleep 1; done` + "\n"
 			binary := writeShellFixtureLauncher(t, root, "blocking-provider", []byte(body))
-			adapter, err := adapters.Select(adapters.Selection{
-				Provider: providerID, LaunchMode: adapters.LaunchSubprocessPerTurn, Binary: binary,
+			adapter, err := launch.Select(launch.Selection{
+				Runtime: string(providerID), Mode: runtimes.ModeSubprocessPerTurn, Binary: binary,
 			})
 			if err != nil {
 				t.Fatalf("Select: %v", err)

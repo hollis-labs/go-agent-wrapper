@@ -4,6 +4,58 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.15.0 — 2026-10-01
+
+Apps pick any agent runtime by id and mode through one call, native or ACP
+(CW-20260930-0134, EP-20260930-0001). Pairs with agentkit v0.12.0 and
+go-providers v0.32.0, and adds a dependency on agent-contracts-leaf v0.3.0.
+
+### Added
+
+- **Package `launch`.** `launch.Select(launch.Selection{Runtime, Mode, ...})`
+  returns the adapter for any runtime in the go-providers registry, by id or
+  alias:
+  - Native factories wrap the go-providers adapter: Claude streaming-stdio
+    and subprocess-per-turn; Codex app-server and exec; OpenCode run and
+    http-sse; Antigravity per-turn.
+  - ACP factories wrap claudeacp, codexacp, opencodeacp, copilotacp (stdio
+    and TCP, with `Selection.Port`) and piacp.
+  - An unset mode is the registry's default: Claude streaming-stdio, Codex
+    jsonrpc-stdio (D-74), OpenCode and Antigravity subprocess-per-turn,
+    Copilot and Pi acp-stdio.
+  - The factory set is closed. `launch.Supported` lists it, and a registry
+    mode it does not drive (Claude's PTY TUI) is `ErrUnsupportedSelection`.
+  - All six runtimes launch through `launch.Select` + `wrapper.New` + `Run` in
+    `TestLaunchEveryRegistryRuntimeThroughSelect`, against go-providers
+    `providertest` fakes replaying captured CLI output.
+
+### Changed
+
+- The `wrapper.Runtime*` `Process.Runtime` tokens take their values from
+  agent-contracts-leaf `runtimes.Mode`. The values are unchanged, and
+  `adapter` keeps its spelling.
+
+### Removed
+
+- **Breaking:** `adapters.Select`, `adapters.Selection`, `adapters.Provider`
+  and its constants, `adapters.RuntimeKind` (`cli`/`api`) and
+  `adapters.LaunchMode` with its constants (D-73, no aliases per D-22). Use
+  `launch.Select` with `Runtime` (a registry id such as
+  `string(runtimes.Codex)`) and `Mode` (a `runtimes.Mode`). The old launch
+  modes map like this:
+
+  | Old | New |
+  |---|---|
+  | `LaunchAppServer` | `runtimes.ModeJSONRPCStdio` |
+  | `LaunchServeHTTP` | `runtimes.ModeHTTPSSE` |
+  | `LaunchStreamingStdio` | `runtimes.ModeStreamingStdio` |
+  | `LaunchSubprocessPerTurn` | `runtimes.ModeSubprocessPerTurn` |
+  | `LaunchDefault` | an empty `Mode` |
+
+  `RuntimeKindAPI` has no replacement: an API provider is not a CLI runtime
+  the wrapper launches. Callers are Nanite `internal/runtime/agent/factory.go`
+  and Torque `internal/runtime/agent/boot.go` (Sprint 4).
+
 ## v0.14.0 — 2026-10-01
 
 Codex app-server approvals are answered from a permission posture instead of
