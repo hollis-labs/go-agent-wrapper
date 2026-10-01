@@ -27,11 +27,15 @@ and reports what happened.
 ```bash
 gofmt -l .
 go vet ./...
+golangci-lint run --new-from-rev=663610c999ffca9979acfb2e5ef6b9ce0cee6422
 go test -race -count=1 ./...
-govulncheck ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 ```
 
-CI runs all four. Live provider tests are skipped unless
+CI runs all five, with golangci-lint pinned at v2.11.4. `.golangci.yml` is the
+portfolio go-baseline config; findings that predate it are ratcheted (only lines
+changed since that commit are linted), and a plain `golangci-lint run` shows the
+backlog. Live provider tests are skipped unless
 `GO_AGENT_WRAPPER_LIVE_PROVIDER_TESTS=1`, so a default run exercises no real
 CLI.
 
