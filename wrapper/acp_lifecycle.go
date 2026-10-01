@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -122,6 +123,7 @@ func (w *Wrapper) runACP(
 		return err
 	}
 	launch.SandboxPolicy = protected
+	launch.ProtectedPaths = slices.Clone(w.cfg.ProtectedPaths)
 	session, err := manager.Launch(ctx, acp.SessionConfig{
 		ID: w.sessionID, Client: adapter.ACPClient(), Launch: launch,
 		Commit: func(session *acp.Session) error {
@@ -299,17 +301,23 @@ func (w *Wrapper) requestACPInterrupt(
 	return err
 }
 
-// acpProtectedPolicy folds Config.ProtectedPaths into the ACP launch's
-// resolved sandbox policy (CW-20260930-0237). The ACP launcher applies only
-// resolved policies, so without one, or with a disabled one, there is
-// nothing to merge into and no protect-only sandbox to install: the launch
-// is refused rather than run with the control plane writable.
+// acpProtectedPolicy checks that an ACP launch can enforce
+// Config.ProtectedPaths and folds them into a required resolved policy, so a
+// conflict is refused before anything launches. Without a required policy
+// the launcher puts the child under acp.ProtectOnlyProfileID
+// (CW-20261001-0162); the paths travel in LaunchParams.ProtectedPaths either
+// way. A backend that cannot write-protect paths refuses the launch rather
+// than run it with the control plane writable.
 func acpProtectedPolicy(policy *sandboxprofile.ResolvedAccessPolicy, paths []string) (*sandboxprofile.ResolvedAccessPolicy, error) {
 	if len(paths) == 0 {
 		return policy, nil
 	}
+	caps := sandboxprofile.ResolveBackendCapabilities("", sandboxprofile.BackendAuto)
+	if !caps.Supported || !slices.Contains(caps.Capabilities, sandboxprofile.CapWriteProtect) {
+		return nil, fmt.Errorf("%w: the %s sandbox backend on %s cannot write-protect paths", ErrProtectedPathsUnsupported, caps.Backend, caps.GOOS)
+	}
 	if policy == nil || policy.Mode == sandboxprofile.ConfinementDisabled {
-		return nil, fmt.Errorf("%w: an ACP launch applies only a resolved SandboxPolicy (or a prepared access policy), and none is set; set one to protect %q, or see CW-20261001-0162 for a protect-only ACP sandbox", ErrProtectedPathsUnsupported, paths)
+		return policy, nil
 	}
 	merged, err := policy.WithProtected(paths...)
 	if err != nil {
