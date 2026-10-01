@@ -4,6 +4,27 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.21.1 — 2026-10-01
+
+### Fixed
+
+- **An ACP agent that exits during launch could panic the host** with "send
+  on closed channel" (CW-20261001-0129). When `Client.Launch` or the host
+  `Commit` failed, `Manager.Launch` finished the session from its own
+  goroutine and closed `Session.Events()` while `drain` could still be
+  forwarding a client event to it. With an immediately-exiting copilot
+  binary it panicked 1 run in 4. Closing `done` first would not have fixed
+  it: once both channels are closed, the send case in drain's select is
+  still ready, and select picks between ready cases at random. Now every
+  send on `Events()` holds the mutex that its close takes, and skips the
+  send once the channel is closed (the pattern the NDJSON and Copilot
+  clients already use). A finished session also stops observing: a late
+  `turn.completed` can no longer move a closed session back to `ready`.
+  `drain` keeps reading and discarding the client's events until the client
+  closes them, so a client is never left blocked. `done` still closes last,
+  so when `Wait` or `Close` returns, `Events()` and `Diagnostics()` are
+  closed and no `OnDiagnostic` callback is running.
+
 ## v0.21.0 — 2026-10-01
 
 `Config.PermissionPosture` is the launch's posture, not only the Codex
