@@ -70,14 +70,14 @@ func (g *cliAdapterGlue) BuildArgs(_, _, _ string) []string {
 func (g *cliAdapterGlue) ParseLine(line []byte) ([]llmtypes.StreamEvent, error) {
 	var f wireFrame
 	if err := json.Unmarshal(line, &f); err != nil {
-		return nil, nil
+		return nil, nil //nolint:nilerr // a line ParseLine cannot parse is skipped, not an error (provider.CLIAdapter contract)
 	}
 	if f.Method != "session/update" {
 		return nil, nil
 	}
 	var su sessionUpdateParams
 	if err := json.Unmarshal(f.Params, &su); err != nil {
-		return nil, nil
+		return nil, nil //nolint:nilerr // a line ParseLine cannot parse is skipped, not an error (provider.CLIAdapter contract)
 	}
 	upd, ok := parseSessionUpdate(su.Update)
 	if !ok {

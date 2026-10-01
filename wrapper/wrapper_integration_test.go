@@ -64,7 +64,7 @@ func (f *fakeCLI) ParseLine(line []byte) ([]llmtypes.StreamEvent, error) {
 		// Format: "tool_use:<JSON of llmtypes.ToolUseBlock>"
 		var tu llmtypes.ToolUseBlock
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(s, "tool_use:")), &tu); err != nil {
-			return nil, nil
+			return nil, nil //nolint:nilerr // a line ParseLine cannot parse is skipped, not an error (provider.CLIAdapter contract)
 		}
 		return []llmtypes.StreamEvent{{
 			Type:    llmtypes.EventToolUse,

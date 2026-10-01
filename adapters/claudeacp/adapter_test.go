@@ -1,6 +1,7 @@
 package claudeacp
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 
@@ -88,7 +89,7 @@ func TestAdapterResolveWithExtraArgs(t *testing.T) {
 
 func TestAdapterResolveRejectsPTY(t *testing.T) {
 	_, err := New().Resolve(adapters.ResolveContext{PTY: true})
-	if err != ErrPTYUnsupported {
+	if !errors.Is(err, ErrPTYUnsupported) {
 		t.Fatalf("Resolve(PTY=true): err=%v, want ErrPTYUnsupported", err)
 	}
 }

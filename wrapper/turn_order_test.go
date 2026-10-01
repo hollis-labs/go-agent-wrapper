@@ -291,7 +291,7 @@ func (c codexAppServerShapeCLI) ParseLine(line []byte) ([]llmtypes.StreamEvent, 
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(line, &n); err != nil {
-		return nil, nil
+		return nil, nil //nolint:nilerr // a line ParseLine cannot parse is skipped, not an error (provider.CLIAdapter contract)
 	}
 	switch n.Method {
 	case "item/agentMessage/delta":

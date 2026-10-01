@@ -409,7 +409,7 @@ func TestClientStdio_LaunchPromptEvents(t *testing.T) {
 
 func TestClient_PromptBeforeLaunch(t *testing.T) {
 	c := NewClient(adapters.TransportStdio)
-	if err := c.Prompt(context.Background(), "hi"); err != ErrNotLaunched {
+	if err := c.Prompt(context.Background(), "hi"); !errors.Is(err, ErrNotLaunched) {
 		t.Errorf("Prompt before Launch = %v, want ErrNotLaunched", err)
 	}
 }
@@ -769,7 +769,7 @@ func TestClient_DoubleLaunchRejected(t *testing.T) {
 	}
 	defer func() { _ = c.Close(context.Background()) }()
 
-	if err := c.Launch(ctx, acp.LaunchParams{Cwd: t.TempDir()}); err != ErrAlreadyLaunched {
+	if err := c.Launch(ctx, acp.LaunchParams{Cwd: t.TempDir()}); !errors.Is(err, ErrAlreadyLaunched) {
 		t.Errorf("second Launch = %v, want ErrAlreadyLaunched", err)
 	}
 }

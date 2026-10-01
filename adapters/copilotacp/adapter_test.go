@@ -1,6 +1,7 @@
 package copilotacp
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
@@ -91,7 +92,7 @@ func TestAdapter_Resolve_TCP(t *testing.T) {
 
 func TestAdapter_Resolve_RejectsPTY(t *testing.T) {
 	a := New()
-	if _, err := a.Resolve(adapters.ResolveContext{PTY: true}); err != ErrPTYUnsupported {
+	if _, err := a.Resolve(adapters.ResolveContext{PTY: true}); !errors.Is(err, ErrPTYUnsupported) {
 		t.Errorf("Resolve with PTY = %v, want ErrPTYUnsupported", err)
 	}
 }

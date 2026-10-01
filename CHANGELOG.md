@@ -4,6 +4,24 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.25.1 — 2026-10-01
+
+Lint findings, part 1 (CW-20261001-0066): nilerr and errorlint.
+
+### Changed
+
+- **Errors from `snapshot` and from the child environment now wrap their
+  cause**, as well as their sentinel (`ErrShadowStoreUnavailable`,
+  `ErrInvalidEnvironment`), so `errors.Is` and `errors.As` reach it. The
+  message text is unchanged.
+
+### Internal
+
+- The `ParseLine` skips of unparseable lines in `adapters/copilotacp` and
+  three tests are deliberate (the `provider.CLIAdapter` contract), and are
+  marked `//nolint:nilerr` with that reason.
+- Tests compare sentinel errors with `errors.Is`.
+
 ## v0.25.0 — 2026-10-01
 
 An ACP launch honours `Config.ProtectedPaths` without a resolved

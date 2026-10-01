@@ -113,10 +113,10 @@ func NewShadowGit(baseDir string, opts ...Option) (*ShadowGit, error) {
 	}
 	abs, err := filepath.Abs(baseDir)
 	if err != nil {
-		return nil, fmt.Errorf("%w: resolve base directory %q: %v", ErrShadowStoreUnavailable, baseDir, err)
+		return nil, fmt.Errorf("%w: resolve base directory %q: %w", ErrShadowStoreUnavailable, baseDir, err)
 	}
 	if err := os.MkdirAll(abs, 0o700); err != nil {
-		return nil, fmt.Errorf("%w: create base directory %q: %v", ErrShadowStoreUnavailable, abs, err)
+		return nil, fmt.Errorf("%w: create base directory %q: %w", ErrShadowStoreUnavailable, abs, err)
 	}
 	sg := &ShadowGit{
 		baseDir:           abs,
@@ -129,7 +129,7 @@ func NewShadowGit(baseDir string, opts ...Option) (*ShadowGit, error) {
 		opt(sg)
 	}
 	if _, err := exec.LookPath(sg.gitBin); err != nil {
-		return nil, fmt.Errorf("%w: git binary %q not runnable: %v", ErrShadowStoreUnavailable, sg.gitBin, err)
+		return nil, fmt.Errorf("%w: git binary %q not runnable: %w", ErrShadowStoreUnavailable, sg.gitBin, err)
 	}
 	return sg, nil
 }
@@ -509,7 +509,7 @@ func (sg *ShadowGit) Purge(_ context.Context, targetID string) error {
 
 	dir := sg.shadowKeyDir(targetID)
 	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("%w: purge target %q: %v", ErrShadowStoreUnavailable, targetID, err)
+		return fmt.Errorf("%w: purge target %q: %w", ErrShadowStoreUnavailable, targetID, err)
 	}
 	return nil
 }
@@ -541,26 +541,26 @@ func (sg *ShadowGit) ensureShadowRepo(ctx context.Context, targetID string) (str
 
 	if fi, err := os.Stat(gitDir); err == nil && fi.IsDir() {
 		if err := sg.verifyMeta(metaPath, targetID); err != nil {
-			return "", fmt.Errorf("%w: target %q: %v", ErrShadowStoreUnavailable, targetID, err)
+			return "", fmt.Errorf("%w: target %q: %w", ErrShadowStoreUnavailable, targetID, err)
 		}
 		return gitDir, nil
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return "", fmt.Errorf("%w: stat shadow git dir for target %q: %v", ErrShadowStoreUnavailable, targetID, err)
+		return "", fmt.Errorf("%w: stat shadow git dir for target %q: %w", ErrShadowStoreUnavailable, targetID, err)
 	}
 
 	if err := os.MkdirAll(root, 0o700); err != nil {
-		return "", fmt.Errorf("%w: create shadow store for target %q: %v", ErrShadowStoreUnavailable, targetID, err)
+		return "", fmt.Errorf("%w: create shadow store for target %q: %w", ErrShadowStoreUnavailable, targetID, err)
 	}
 	if out, err := sg.runGitRaw(ctx, root, nil, "-c", "init.defaultBranch=snapshot", "init", "--quiet", "--bare", gitDir); err != nil {
-		return "", fmt.Errorf("%w: init shadow git dir for target %q: %v (%s)", ErrShadowStoreUnavailable, targetID, err, out)
+		return "", fmt.Errorf("%w: init shadow git dir for target %q: %w (%s)", ErrShadowStoreUnavailable, targetID, err, out)
 	}
 	meta := shadowMeta{TargetID: targetID, CreatedAt: time.Now().UTC()}
 	b, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("%w: encode shadow meta for target %q: %v", ErrShadowStoreUnavailable, targetID, err)
+		return "", fmt.Errorf("%w: encode shadow meta for target %q: %w", ErrShadowStoreUnavailable, targetID, err)
 	}
 	if err := os.WriteFile(metaPath, b, 0o600); err != nil {
-		return "", fmt.Errorf("%w: write shadow meta for target %q: %v", ErrShadowStoreUnavailable, targetID, err)
+		return "", fmt.Errorf("%w: write shadow meta for target %q: %w", ErrShadowStoreUnavailable, targetID, err)
 	}
 	return gitDir, nil
 }
@@ -590,7 +590,7 @@ func (sg *ShadowGit) openShadowRepo(targetID string) (string, error) {
 		return "", fmt.Errorf("%w: no shadow store found for target %q under %q", ErrShadowStoreUnavailable, targetID, sg.baseDir)
 	}
 	if err := sg.verifyMeta(filepath.Join(sg.shadowKeyDir(targetID), "meta.json"), targetID); err != nil {
-		return "", fmt.Errorf("%w: target %q: %v", ErrShadowStoreUnavailable, targetID, err)
+		return "", fmt.Errorf("%w: target %q: %w", ErrShadowStoreUnavailable, targetID, err)
 	}
 	return gitDir, nil
 }
