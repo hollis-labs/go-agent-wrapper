@@ -38,7 +38,7 @@ func TestEveryInstalledProviderTestUsesTheSharedGate(t *testing.T) {
 		if entry.IsDir() || path == source || !strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		contents, err := os.ReadFile(path)
+		contents, err := os.ReadFile(path) //nolint:gosec // G304: a test source file this test found by walking the repository
 		if err != nil {
 			return err
 		}
@@ -63,7 +63,7 @@ func TestEveryInstalledProviderTestUsesTheSharedGate(t *testing.T) {
 			t.Fatalf("make installed-provider test path relative: %v", err)
 		}
 		t.Run(name, func(t *testing.T) {
-			contents, err := os.ReadFile(path)
+			contents, err := os.ReadFile(path) //nolint:gosec // G304: a test source file this test found by walking the repository
 			if err != nil {
 				t.Fatalf("read installed-provider test: %v", err)
 			}

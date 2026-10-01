@@ -69,7 +69,7 @@ func runSelected(ctx context.Context, scenario, root string) ([]scenarioResult, 
 	results := make([]scenarioResult, 0, len(order))
 	for _, name := range order {
 		scenarioBase := filepath.Join(base, name)
-		if err := os.MkdirAll(scenarioBase, 0o755); err != nil {
+		if err := mkdirAll(scenarioBase); err != nil {
 			return nil, err
 		}
 		result, err := runners[name](ctx, scenarioBase)
@@ -83,7 +83,7 @@ func runSelected(ctx context.Context, scenario, root string) ([]scenarioResult, 
 
 func scenarioRoot(root string) (string, func(), error) {
 	if root != "" {
-		if err := os.MkdirAll(root, 0o755); err != nil {
+		if err := mkdirAll(root); err != nil {
 			return "", nil, err
 		}
 		return root, func() {}, nil
@@ -104,7 +104,7 @@ func runCairn(ctx context.Context, base string) (scenarioResult, error) {
 	if err := writeFile(filepath.Join(sourceRoot, "templates", "prompt.md"), []byte("synthetic prompt\n"), 0o644); err != nil {
 		return scenarioResult{}, err
 	}
-	if err := os.MkdirAll(filepath.Join(sourceRoot, "empty-dir"), 0o755); err != nil {
+	if err := mkdirAll(filepath.Join(sourceRoot, "empty-dir")); err != nil {
 		return scenarioResult{}, err
 	}
 	fsTree, err := artifact.NewResolver(artifact.ResolverOptions{}).ResolveArtifacts(ctx, artifact.SourceRequest{
@@ -246,7 +246,7 @@ func runTorque(ctx context.Context, base string) (scenarioResult, error) {
 	if err := writeFile(filepath.Join(copiedRoot, "task-assets", "notes.md"), []byte("copied task notes\n"), 0o644); err != nil {
 		return scenarioResult{}, err
 	}
-	if err := os.MkdirAll(filepath.Join(copiedRoot, "task-assets", "empty"), 0o755); err != nil {
+	if err := mkdirAll(filepath.Join(copiedRoot, "task-assets", "empty")); err != nil {
 		return scenarioResult{}, err
 	}
 	copied, err := artifact.NewResolver(artifact.ResolverOptions{}).ResolveArtifacts(ctx, artifact.SourceRequest{
@@ -380,14 +380,21 @@ func handlePaths(handle *materialize.Handle) []string {
 }
 
 func writeFile(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := mkdirAll(filepath.Dir(path)); err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, mode)
 }
 
+// mkdirAll makes the synthetic scenario trees. Their directories are 0755, as
+// a consumer's are, because the scenarios assert that those modes carry
+// through the resolver (the empty-dir entries, install.sh's 0755).
+func mkdirAll(path string) error {
+	return os.MkdirAll(path, 0o755) //nolint:gosec // G301: a synthetic conformance tree whose scenarios assert 0755 directories
+}
+
 func mustContainFile(path, want string) string {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: a file a scenario just wrote under its own root
 	if err != nil {
 		return fmt.Sprintf("read %s: %v", path, err)
 	}

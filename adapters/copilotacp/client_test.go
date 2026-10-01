@@ -326,7 +326,7 @@ printf '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}\n'
 IFS= read -r _ 2>/dev/null
 `
 	script := filepath.Join(dir, "fake-copilot.sh")
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil { //nolint:gosec // G306: a fixture script that must be executable
 		t.Fatalf("write fake copilot script: %v", err)
 	}
 	return script
