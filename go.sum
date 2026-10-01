@@ -4,6 +4,8 @@ github.com/hollis-labs/agent-contracts-leaf v0.3.0 h1:tOAbq1y2Qtkk/S81hpSTlE3ZIs
 github.com/hollis-labs/agent-contracts-leaf v0.3.0/go.mod h1:Yp3iEG7I1qHxGL+Ad085RDVP5xUM/dbL0nFxzCAQ9/w=
 github.com/hollis-labs/agentkit v0.11.0 h1:ydvpcWgB78WVaqNKYvPWKUKLXWxDALKLk7Qjjh4+w90=
 github.com/hollis-labs/agentkit v0.11.0/go.mod h1:kF7XaAFStYmH4MjiNqULpaXsovD4vxR0g/hQ8UTUE3s=
+github.com/hollis-labs/agentkit v0.12.0 h1:wn8ZgguzPDSZG4kV7mB1IV5PJwq7J7LUmdi/pNBtfQc=
+github.com/hollis-labs/agentkit v0.12.0/go.mod h1:qqM7Fi3KX/41iMuGczqrc+bSoUGTqiLvTkmOmsGwsPY=
 github.com/hollis-labs/go-harness-filters v0.1.1 h1:uTAF+ejKhje+rXMEOwTHsO7ig2fCAQnkANXgZBAyYZA=
 github.com/hollis-labs/go-harness-filters v0.1.1/go.mod h1:84dThT2Ro93bk7Lzpr9KNsRDY4hUcIvYoBtmIB6IEzM=
 github.com/hollis-labs/go-llm-contracts v0.3.0 h1:qVKulEixvxf5iJmUMzDfRoL00gfS6/r0TmAJ1zNX0Dc=
@@ -22,6 +24,8 @@ github.com/hollis-labs/go-runtime-events v0.1.2 h1:ChyjCVidjeAVf+dUJjiJTdX/LYujk
 github.com/hollis-labs/go-runtime-events v0.1.2/go.mod h1:QLoJ1xs+P2KoVuiz4wi+r+JZdE4dqm28I0YfauXAUs0=
 github.com/hollis-labs/go-sandbox v0.4.0 h1:1Dv++5ApL09CiDVVD8ny9W6fUeHt9GIotn0LOp8lxd0=
 github.com/hollis-labs/go-sandbox v0.4.0/go.mod h1:MzF8Y0T3TmCHALvHi6vTkIZimc+rlWfu7OQUksYx6R8=
+github.com/hollis-labs/go-sandbox v0.4.1 h1:Ul2hSUK5f8shvpORBuy33GEUelD7bu9v4tNKVqzmn9k=
+github.com/hollis-labs/go-sandbox v0.4.1/go.mod h1:cZVYQKfEze0jFkt7iyvvUTAc7M+7tppRxpq/h8VYUYg=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=

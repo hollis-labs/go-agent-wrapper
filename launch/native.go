@@ -11,55 +11,44 @@ import (
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 )
 
-// nativeSpec is how the wrapper drives one native (runtime, mode): the
-// go-providers adapter it wraps (and the Claude developer variant) and the
-// wire protocol the wrapper's runtime dispatch keys on. An empty protocol
-// is the subprocess-per-turn adapter runtime.
+// nativeSpec is how the wrapper drives one native (runtime, mode): the wire
+// protocol its runtime dispatch keys on. An empty protocol is the
+// subprocess-per-turn adapter runtime. Which go-providers adapter serves the
+// pair is go-providers' provider.NewAdapter, the one constructor table shared
+// with agentkit's planting path.
 type nativeSpec struct {
-	adapter   func() provider.CLIAdapter
-	developer func() provider.CLIAdapter
 	protocol  adapters.Protocol
 	transport adapters.Transport
 	interrupt adapters.InterruptCapability
 	channel   runtimeevents.SourceChannel
 }
 
-func perTurn(adapter, developer func() provider.CLIAdapter, channel runtimeevents.SourceChannel) nativeSpec {
-	return nativeSpec{adapter: adapter, developer: developer, interrupt: adapters.InterruptProcess, channel: channel}
+func perTurn(channel runtimeevents.SourceChannel) nativeSpec {
+	return nativeSpec{interrupt: adapters.InterruptProcess, channel: channel}
 }
 
 // nativeSpecs is every native (runtime, mode) the wrapper launches.
-// Claude's PTY is the registry's but deliberately absent: it is a human TUI
-// path, not one the wrapper drives.
+// Claude's PTY is the registry's (and provider.NewAdapter builds it) but
+// deliberately absent: it is a human TUI path, not one the wrapper drives.
 var nativeSpecs = map[Key]nativeSpec{
 	{runtimes.Claude, runtimes.ModeStreamingStdio}: {
-		adapter:   func() provider.CLIAdapter { return provider.NewClaudeAdapterStreamingStdio() },
-		developer: func() provider.CLIAdapter { return provider.NewClaudeAdapterDevStreamingStdio() },
-		protocol:  adapters.ProtocolClaudeStreamJSON, transport: adapters.TransportStdio,
+		protocol: adapters.ProtocolClaudeStreamJSON, transport: adapters.TransportStdio,
 		interrupt: adapters.InterruptProcess, channel: runtimeevents.ChannelClaudeStreamJSON,
 	},
-	{runtimes.Claude, runtimes.ModeSubprocessPerTurn}: perTurn(
-		func() provider.CLIAdapter { return provider.NewClaudeAdapter() },
-		func() provider.CLIAdapter { return provider.NewClaudeAdapterDev() },
-		runtimeevents.ChannelClaudeStreamJSON),
+	{runtimes.Claude, runtimes.ModeSubprocessPerTurn}: perTurn(runtimeevents.ChannelClaudeStreamJSON),
 	{runtimes.Codex, runtimes.ModeJSONRPCStdio}: {
-		adapter:  func() provider.CLIAdapter { return provider.NewCodexAdapterAppServer() },
 		protocol: adapters.ProtocolCodexAppServer, transport: adapters.TransportStdio,
 		interrupt: adapters.InterruptProcess, channel: runtimeevents.ChannelJSONRPC,
 	},
-	{runtimes.Codex, runtimes.ModeSubprocessPerTurn}: perTurn(
-		func() provider.CLIAdapter { return provider.NewCodexAdapter() }, nil, runtimeevents.ChannelStdio),
-	{runtimes.OpenCode, runtimes.ModeSubprocessPerTurn}: perTurn(
-		func() provider.CLIAdapter { return provider.NewOpencodeAdapter() }, nil, runtimeevents.ChannelStdio),
+	{runtimes.Codex, runtimes.ModeSubprocessPerTurn}:    perTurn(runtimeevents.ChannelStdio),
+	{runtimes.OpenCode, runtimes.ModeSubprocessPerTurn}: perTurn(runtimeevents.ChannelStdio),
 	{runtimes.OpenCode, runtimes.ModeHTTPSSE}: {
-		adapter:  func() provider.CLIAdapter { return provider.NewOpencodeAdapterServeHTTP() },
 		protocol: adapters.ProtocolOpenCodeNative, transport: adapters.TransportHTTPSSE,
 		interrupt: adapters.InterruptTurn, channel: runtimeevents.ChannelOpenCodePlugin,
 	},
 	// agy -p: one process per turn; its stream-json stdin mode does not
 	// report turn ends reliably.
-	{runtimes.Antigravity, runtimes.ModeSubprocessPerTurn}: perTurn(
-		func() provider.CLIAdapter { return provider.NewAntigravityAdapter() }, nil, runtimeevents.ChannelStdio),
+	{runtimes.Antigravity, runtimes.ModeSubprocessPerTurn}: perTurn(runtimeevents.ChannelStdio),
 }
 
 var nativeFactories = func() map[Key]factory {
@@ -71,9 +60,15 @@ var nativeFactories = func() map[Key]factory {
 }()
 
 func newNative(key Key, spec nativeSpec, sel Selection) (*nativeAdapter, error) {
-	base := spec.adapter
-	if sel.DeveloperMode && spec.developer != nil {
-		base = spec.developer
+	if _, err := provider.NewAdapter(key.Runtime, key.Mode); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrUnsupportedSelection, err)
+	}
+	base := func() provider.CLIAdapter {
+		cli, _ := provider.NewAdapter(key.Runtime, key.Mode)
+		if claude, ok := cli.(*provider.ClaudeAdapter); ok && sel.DeveloperMode {
+			claude.SkipPermissions = true
+		}
+		return cli
 	}
 	if sel.CLIAdapter != nil {
 		cli := sel.CLIAdapter
