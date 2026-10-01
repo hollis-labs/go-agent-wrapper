@@ -4,6 +4,36 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.14.0 — 2026-10-01
+
+Codex app-server approvals are answered from a permission posture instead of
+refused (CW-20260930-0139).
+
+### Added
+
+- **`Config.PermissionPosture`** (go-permission `Mode`: `default`,
+  `accept-edits`, `plan`, `yolo`; zero value `default`). On the native Codex
+  app-server runtime the `JsonRpcRequestHook` now answers server-initiated
+  approval requests through agentkit's `turn.CodexApprovalResponder`
+  instead of refusing every one with -32601. `default` approves the MCP tool
+  calls the launch planted and declines sandbox escalations (commands, file
+  changes outside the writable roots); `accept-edits` also approves file
+  changes; `plan` declines all three; `yolo` approves all three. Requests the
+  responder cannot decide for a human (user-input questions, permission
+  profiles, dynamic tool calls, other elicitations) are still refused with a
+  JSON-RPC error in every posture. `New` rejects an unknown mode.
+- `agent.permission.resolved` now carries `posture`, `reason` and, for an
+  approval, `kind` (`mcp_tool_call`, `file_change`, `command_execution`),
+  alongside `method`, `allowed` and `error`.
+
+### Changed
+
+- **Behavior change:** with the zero-value posture, a Codex app-server
+  session's MCP tool-call approvals are granted where they were refused.
+  Set `PermissionPosture: permission.ModePlan` to keep refusing them.
+- Requires `agentkit` v0.11.0 (was v0.9.0), which brings `go-sandbox` v0.4.0
+  (was v0.3.0); adds `go-permission` v0.1.0. `go-providers` stays at
+  v0.30.0, the newest tag (agentkit v0.11.0 asks for v0.29.0).
 ## v0.13.1 — 2026-10-01
 
 Fix: one terminal event per native turn (CW-20260930-0137 slice a; root cause

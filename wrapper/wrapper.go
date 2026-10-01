@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"github.com/hollis-labs/agentkit/agentlaunch"
+	"github.com/hollis-labs/agentkit/agentruntime/turn"
 	"github.com/hollis-labs/agentkit/agentsessions"
 	llmtypes "github.com/hollis-labs/go-llm-types"
 	"github.com/hollis-labs/go-materialize/materialize"
+	permission "github.com/hollis-labs/go-permission"
 	pevents "github.com/hollis-labs/go-providers/provider/events"
 	sandboxprofile "github.com/hollis-labs/go-sandbox/sandbox"
 
@@ -166,6 +168,24 @@ type Config struct {
 	// don't understand resume ignore it silently.
 	SessionIDPreset string
 
+	// PermissionPosture is the session's permission posture, as
+	// go-permission's Mode (default / accept-edits / plan / yolo). On the
+	// native Codex app-server runtime it decides how the wrapper answers
+	// Codex's server-initiated approval requests, through agentkit's
+	// [turn.CodexApprovalResponder]: default approves the MCP tool calls the
+	// launch planted and declines sandbox escalations (commands, file changes
+	// outside the writable roots); accept-edits also approves file changes;
+	// plan declines all of them; yolo approves all of them. A request the
+	// responder cannot decide for a human is answered with a JSON-RPC error
+	// in every mode. Each request still emits agent.permission.requested and
+	// agent.permission.resolved.
+	//
+	// The zero value is [permission.ModeDefault]. [New] rejects an unknown
+	// mode. It does not change provider launch flags (Codex only asks when
+	// its planted approval policy asks rather than refusing outright), and
+	// ACP sessions use ACPBestEffortPermissionRequestResponder instead.
+	PermissionPosture permission.Mode
+
 	// SystemPrompt is prepended to the first prompt of an ACP session. It is
 	// currently ignored by non-ACP runtime paths.
 	SystemPrompt string
@@ -293,6 +313,9 @@ func New(cfg Config) (*Wrapper, error) {
 	}
 	if cfg.Activity == nil {
 		return nil, errors.New("wrapper: Config.Activity is required")
+	}
+	if err := (turn.CodexApprovalResponder{Mode: cfg.PermissionPosture}).Validate(); err != nil {
+		return nil, fmt.Errorf("wrapper: Config.PermissionPosture: %w", err)
 	}
 	if _, _, err := cfg.Environment.resolve(nil); err != nil {
 		return nil, err
@@ -580,6 +603,12 @@ func (w *Wrapper) Run(ctx context.Context) error {
 
 	workspaceDir, logPath := resolveWorkspaceLogPath(w.cfg.Workdir, w.sessionID, w.cfg.WorkspaceDir, w.cfg.LogPath)
 
+	posture := w.cfg.PermissionPosture
+	if posture == "" {
+		posture = permission.ModeDefault
+	}
+	approvals := turn.CodexApprovalResponder{Mode: posture}
+
 	session, err := runtime.Start(ctx, agentsessions.StartOptions{
 		Workdir:           w.cfg.Workdir,
 		WorkspaceDir:      workspaceDir,
@@ -636,14 +665,22 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			payload := map[string]any{"method": method, "params": params}
 			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindAgentPermissionRequested, source, payload,
 				runtimeevents.WithID(requestID), runtimeevents.WithTurnID(turnID))
-			rpcErr := &agentsessions.JsonRpcError{
-				Code:    -32601,
-				Message: "go-agent-wrapper: no approval handler configured for server-initiated request " + method,
+			outcome := approvals.Decide(method, params)
+			resolved := map[string]any{
+				"method":  method,
+				"allowed": outcome.Allowed,
+				"posture": string(posture),
+				"reason":  outcome.Reason,
 			}
-			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindAgentPermissionResolved, source,
-				map[string]any{"method": method, "allowed": false, "error": rpcErr.Message},
+			if outcome.Kind != "" {
+				resolved["kind"] = string(outcome.Kind)
+			}
+			if outcome.Err != nil {
+				resolved["error"] = outcome.Err.Message
+			}
+			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindAgentPermissionResolved, source, resolved,
 				runtimeevents.WithParentID(requestID), runtimeevents.WithTurnID(turnID))
-			return nil, rpcErr
+			return outcome.Response()
 		},
 	})
 	if err != nil {
