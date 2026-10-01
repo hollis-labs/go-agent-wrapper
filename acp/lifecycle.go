@@ -446,7 +446,7 @@ func classifyTurnCompletion(payload json.RawMessage) OutcomeKind {
 		StopReason string `json:"stop_reason"`
 	}
 	_ = json.Unmarshal(payload, &body)
-	if strings.EqualFold(body.StopReason, "cancelled") || strings.EqualFold(body.StopReason, "canceled") {
+	if strings.EqualFold(body.StopReason, "cancelled") || strings.EqualFold(body.StopReason, "canceled") { //nolint:misspell // ACP's stopReason spelling; the American form is accepted too
 		return OutcomeCanceled
 	}
 	return ""

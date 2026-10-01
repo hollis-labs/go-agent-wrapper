@@ -567,6 +567,7 @@ func TestNDJSONBridgeClient_PermissionRequestDefaultsToCancelledAndUnblocksChild
 	skipUnlessSh(t)
 	forEachComponent(t, func(t *testing.T, component string) {
 		marker := filepath.Join(t.TempDir(), "permission-response.json")
+		//nolint:misspell // the fixture child checks ACP's wire outcome "cancelled"
 		extra := `    session/prompt)
       printf '{"jsonrpc":"2.0","id":99,"method":"session/request_permission","params":{"sessionId":"ses_new","options":[{"optionId":"allow_once","name":"Allow once","kind":"allow_once"}],"toolCall":{"toolCallId":"call_1","rawInput":{"command":"echo hi"}}}}\n'
       IFS= read -r permission_response
@@ -587,7 +588,7 @@ func TestNDJSONBridgeClient_PermissionRequestDefaultsToCancelledAndUnblocksChild
 		defer func() { _ = c.Close(context.Background()) }()
 
 		// The fake child cannot return this prompt until it receives the
-		// permission response and verifies the cancelled outcome.
+		// permission response and verifies the canceled outcome.
 		if err := c.Prompt(ctx, "request a tool"); err != nil {
 			t.Fatalf("Prompt: %v", err)
 		}
@@ -608,8 +609,8 @@ func TestNDJSONBridgeClient_PermissionRequestDefaultsToCancelledAndUnblocksChild
 		if err := json.Unmarshal(response, &frame); err != nil {
 			t.Fatalf("decode recorded permission response: %v", err)
 		}
-		if string(frame.ID) != "99" || frame.Result.Outcome.Outcome != "cancelled" {
-			t.Fatalf("permission response id/outcome = %s/%q, want 99/cancelled; frame=%s", frame.ID, frame.Result.Outcome.Outcome, response)
+		if string(frame.ID) != "99" || frame.Result.Outcome.Outcome != wireCancelled {
+			t.Fatalf("permission response id/outcome = %s/%q, want 99/%s; frame=%s", frame.ID, frame.Result.Outcome.Outcome, wireCancelled, response)
 		}
 
 		var requested, resolved bool

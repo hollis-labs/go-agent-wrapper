@@ -219,4 +219,6 @@
 //     above) — pi-acp does not currently emit it.
 //   - CLIAdapter()'s ParseLine remains a deliberate pass-through; Wrapper uses
 //     ClientAdapter for real ACP driving.
+//
+//nolint:misspell // quotes the wire stopReason and outcome "cancelled"
 package piacp

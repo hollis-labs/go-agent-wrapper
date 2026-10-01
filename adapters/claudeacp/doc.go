@@ -108,7 +108,7 @@
 // server-initiated request) is a standard ACP `{options, sessionId,
 // toolCall: {toolCallId, rawInput, ...}}` shape, structurally identical
 // to [adapters/opencodeacp]'s own — this package reuses the exact same
-// shared best-effort responder handling, with a cancelled default when none is
+// shared best-effort responder handling, with a canceled default when none is
 // configured. Live-verified that Claude executes ordinary tool calls (a
 // real Bash command) without ever invoking `session/request_permission`
 // or the declared-false `fs`/`terminal` client capabilities — consistent
@@ -133,7 +133,7 @@
 // force-cancel backstop armed alongside it in case the SDK's own
 // `interrupt()` doesn't make a wedged query yield in time. Then
 // live-verified directly: a real, deliberately long (2000-word-essay)
-// prompt was cancelled after observing 3 real `agent_message_chunk`
+// prompt was canceled after observing 3 real `agent_message_chunk`
 // deltas; the `session/prompt` response (`{"stopReason":"cancelled",
 // "usage":{...all zero...}}`) arrived 7ms after `session/cancel` was
 // sent — not after the model would have naturally finished. This is a
@@ -163,4 +163,6 @@
 // through [acp.Manager]. [Adapter.CLIAdapter] remains
 // compatibility/introspection glue only; Wrapper deliberately selects
 // ClientAdapter first for ProtocolACP.
+//
+//nolint:misspell // quotes the wire stopReason "cancelled"
 package claudeacp

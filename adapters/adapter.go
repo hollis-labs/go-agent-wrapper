@@ -117,7 +117,7 @@ const (
 	InterruptTurn InterruptCapability = "turn"
 	// InterruptSteer is reserved for a future capability tier —
 	// mid-turn steering (injecting new instructions without fully
-	// cancelling the turn). Not used by any current Adapter or
+	// canceling the turn). Not used by any current Adapter or
 	// agentsessions backend.
 	InterruptSteer InterruptCapability = "steer"
 )
