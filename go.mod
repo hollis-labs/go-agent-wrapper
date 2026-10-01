@@ -4,12 +4,12 @@ go 1.26.6
 
 require (
 	github.com/hollis-labs/agent-contracts-leaf v0.3.0
-	github.com/hollis-labs/agentkit v0.20.4
+	github.com/hollis-labs/agentkit v0.21.0
 	github.com/hollis-labs/go-harness-filters v0.1.1
 	github.com/hollis-labs/go-llm-types v0.5.1
 	github.com/hollis-labs/go-materialize v0.1.0
 	github.com/hollis-labs/go-permission v0.1.0
-	github.com/hollis-labs/go-providers v0.41.0
+	github.com/hollis-labs/go-providers v0.42.0
 	github.com/hollis-labs/go-runtime-events v0.2.1
 	github.com/hollis-labs/go-sandbox v0.6.0
 )

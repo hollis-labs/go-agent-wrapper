@@ -6,7 +6,33 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.25.4 — 2026-10-01
 
-NDJSON request writes honor the caller's ctx (CW-20261001-0211).
+NDJSON request writes honor the caller's ctx (CW-20261001-0211), and the
+dependencies move to the latest set so hosts take one consistent pair.
+
+### Changed
+
+- **Dependencies:**
+
+  | Module | From | To |
+  |---|---|---|
+  | agentkit | v0.20.4 | v0.21.0 |
+  | go-providers | v0.41.0 | v0.42.0 |
+
+  The rest of the set was already current: go-sandbox v0.6.0, go-runner
+  v0.8.2, go-llm-contracts v0.4.0, go-llm-types v0.5.1. What the new versions
+  bring:
+  - **agentkit v0.20.5:** an OpenCode serve compaction summary no longer
+    reaches the turn as reply text.
+  - **agentkit v0.20.6:** OpenCode serve reasoning reaches the turn as
+    thought, not reply text.
+  - **agentkit v0.21.0:** `StartOptions.ExtraArgs` go at the adapter's
+    convention slot. For codex exec, exec-only flags (`-s`, `--cd`,
+    `--add-dir`) now land before `resume <id>`, so they work on turn 2.
+  - **go-providers v0.42.0:** `provider.ExtraArgsBuilder`, which agentkit
+    v0.21.0 uses.
+
+  No wrapper code changed for this. The wrapper's prepared path already
+  placed extras at the convention slot through the launch template.
 
 ### Fixed
 
