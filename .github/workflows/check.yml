@@ -10,9 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          # Full history: the lint ratchet below diffs against a base commit.
-          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -42,16 +39,12 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      # .golangci.yml is the portfolio go-baseline config. Lint findings that
-      # predate it (243 at 663610c, listed in the PR that added the config) are
-      # ratcheted: only lines changed since that commit are linted, so new
-      # code meets the standard while the backlog is cleaned up separately.
-      # Drop --new-from-rev once the full run is clean.
+      # .golangci.yml is the portfolio go-baseline config. The whole tree is
+      # clean against it, so any finding fails the build.
       - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.4
           install-mode: goinstall
-          args: --new-from-rev=663610c999ffca9979acfb2e5ef6b9ce0cee6422
 
       - name: go test -race
         run: go test -race -count=1 ./...

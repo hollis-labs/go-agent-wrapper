@@ -469,12 +469,11 @@ proxy; `go.mod` contains no `replace` directive.
 go test -race ./...   # tests
 go vet ./...          # vet
 gofmt -l .            # formatting check (no output = clean)
-golangci-lint run --new-from-rev=663610c999ffca9979acfb2e5ef6b9ce0cee6422  # lint (CI ratchet)
-go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...                     # vulnerability scan
+golangci-lint run     # lint (the whole tree is clean; CI fails on any finding)
+go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...  # vulnerability scan
 ```
 
-CI pins golangci-lint v2.11.4 and lints only lines changed since the commit
-above; a plain `golangci-lint run` lists the findings that predate the config.
+CI pins golangci-lint v2.11.4 and runs it over the whole tree.
 
 The default suite is deterministic and never launches an installed Claude,
 Codex, Copilot, OpenCode, Pi, or Antigravity process merely because its CLI
