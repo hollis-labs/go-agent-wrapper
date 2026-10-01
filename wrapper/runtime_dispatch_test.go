@@ -174,3 +174,16 @@ func TestLegacyRuntimeToken(t *testing.T) {
 		})
 	}
 }
+
+// The Process.Runtime tokens are a wire contract: deriving them from the leaf
+// vocabulary must not change a single value.
+func TestRuntimeTokensAreUnchanged(t *testing.T) {
+	for got, want := range map[string]string{
+		RuntimePTY: "pty", RuntimeStreamingStdio: "streaming-stdio", RuntimeJSONRPCStdio: "jsonrpc-stdio",
+		RuntimeHTTPSSE: "http-sse", RuntimeAdapter: "adapter", RuntimeACPStdio: "acp-stdio", RuntimeACPTCP: "acp-tcp",
+	} {
+		if got != want {
+			t.Errorf("runtime token %q, want %q", got, want)
+		}
+	}
+}

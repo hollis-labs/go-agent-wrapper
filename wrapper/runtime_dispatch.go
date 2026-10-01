@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hollis-labs/agent-contracts-leaf/runtimes"
 	"github.com/hollis-labs/agentkit/agentsessions"
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
@@ -15,12 +16,15 @@ import (
 // [runtimeevents.Process.Runtime] — a plain string field in the
 // separate go-runtime-events package, out of scope for this split —
 // stays exactly what it was before the split, for any downstream
-// consumer that already parses it.
+// consumer that already parses it. Where a token names a transport mode its
+// value is the agent-contracts-leaf runtimes.Mode spelling (D-73), which it
+// always equalled; "adapter" (the subprocess-per-turn shape) keeps its own
+// wire spelling.
 const (
-	RuntimePTY            = "pty"
-	RuntimeStreamingStdio = "streaming-stdio"
-	RuntimeJSONRPCStdio   = "jsonrpc-stdio"
-	RuntimeHTTPSSE        = "http-sse"
+	RuntimePTY            = string(runtimes.ModePTY)
+	RuntimeStreamingStdio = string(runtimes.ModeStreamingStdio)
+	RuntimeJSONRPCStdio   = string(runtimes.ModeJSONRPCStdio)
+	RuntimeHTTPSSE        = string(runtimes.ModeHTTPSSE)
 
 	// RuntimeAdapter is the legacy token for the subprocess-per-turn
 	// fallback shape (no lifecycle flag in [agentsessions.Capabilities]).
@@ -37,11 +41,11 @@ const (
 	// unmapped until this task (08) gave it a dispatch entry. It exists
 	// purely as a stable [runtimeevents.Process.Runtime] string for
 	// ACP-driven adapters, not as backward-compat scaffolding.
-	RuntimeACPStdio = "acp-stdio"
+	RuntimeACPStdio = string(runtimes.ModeACPStdio)
 
 	// RuntimeACPTCP is the stable runtime token for a wrapper-owned ACP
 	// client connected over TCP (currently Copilot CLI's daemon mode).
-	RuntimeACPTCP = "acp-tcp"
+	RuntimeACPTCP = string(runtimes.ModeACPTCP)
 )
 
 // runtimeCaps maps an adapter-declared Protocol+Transport pair to the

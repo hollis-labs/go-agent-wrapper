@@ -12,8 +12,9 @@ import (
 	"os/signal"
 	"path/filepath"
 
+	"github.com/hollis-labs/agent-contracts-leaf/runtimes"
 	"github.com/hollis-labs/go-agent-wrapper/activity"
-	"github.com/hollis-labs/go-agent-wrapper/adapters"
+	"github.com/hollis-labs/go-agent-wrapper/launch"
 	"github.com/hollis-labs/go-agent-wrapper/wrapper"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
@@ -43,11 +44,10 @@ func run() error {
 		return fmt.Errorf("workdir %q is not a directory", *workdir)
 	}
 
-	adapter, err := adapters.Select(adapters.Selection{
-		Provider:    adapters.ProviderClaude,
-		RuntimeKind: adapters.RuntimeKindCLI,
-		LaunchMode:  adapters.LaunchStreamingStdio,
-		Binary:      *claude,
+	adapter, err := launch.Select(launch.Selection{
+		Runtime: string(runtimes.Claude),
+		Mode:    runtimes.ModeStreamingStdio,
+		Binary:  *claude,
 	})
 	if err != nil {
 		return fmt.Errorf("select Claude adapter: %w", err)

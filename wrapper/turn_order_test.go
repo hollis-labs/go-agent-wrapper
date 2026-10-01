@@ -8,12 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hollis-labs/agent-contracts-leaf/runtimes"
 	llmtypes "github.com/hollis-labs/go-llm-types"
 	"github.com/hollis-labs/go-providers/provider"
 
 	"github.com/hollis-labs/go-agent-wrapper/activity"
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	"github.com/hollis-labs/go-agent-wrapper/adapters/claude"
+	"github.com/hollis-labs/go-agent-wrapper/launch"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -197,10 +199,9 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":20,"cached_input
 `))
 	t.Setenv("CODEX_CLI_PATH", script)
 
-	adapter, err := adapters.Select(adapters.Selection{
-		Provider:    adapters.ProviderCodex,
-		RuntimeKind: adapters.RuntimeKindCLI,
-		LaunchMode:  adapters.LaunchSubprocessPerTurn,
+	adapter, err := launch.Select(launch.Selection{
+		Runtime: "codex",
+		Mode:    runtimes.ModeSubprocessPerTurn,
 	})
 	if err != nil {
 		t.Fatalf("Select: %v", err)

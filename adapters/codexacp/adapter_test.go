@@ -170,3 +170,19 @@ func TestCLIAdapterParseLineIsPassThrough(t *testing.T) {
 		t.Errorf("ParseLine = %v, want nil (deliberate pass-through — see package doc)", evs)
 	}
 }
+
+// A direct binary runs the installed bridge itself: no npx, no -y, no package
+// spec; WithBinary replaces only npx.
+func TestDirectBinarySkipsNpxAndPackage(t *testing.T) {
+	spec, err := New(WithDirectBinary("/usr/local/bin/codex-acp"), WithExtraArgs("--x")).Resolve(adapters.ResolveContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Binary != "/usr/local/bin/codex-acp" || len(spec.Args) != 1 || spec.Args[0] != "--x" {
+		t.Fatalf("direct binary spec = %q %q", spec.Binary, spec.Args)
+	}
+	npx, _ := New(WithBinary("/opt/npx")).Resolve(adapters.ResolveContext{})
+	if npx.Binary != "/opt/npx" || len(npx.Args) < 2 || npx.Args[0] != "-y" {
+		t.Fatalf("WithBinary spec = %q %q, want npx with -y <package>", npx.Binary, npx.Args)
+	}
+}

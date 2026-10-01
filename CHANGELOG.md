@@ -4,6 +4,114 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.15.0 — 2026-10-01
+
+Apps pick any agent runtime by id and mode through one call, native or ACP
+(CW-20260930-0134, EP-20260930-0001). Pairs with agentkit v0.12.2 and
+go-providers v0.34.1, takes go-sandbox v0.4.1, and adds a dependency on
+agent-contracts-leaf v0.3.0. go-providers v0.34.1 is a security fix
+(CW-20261001-0069): an untrusted turn is never parsed as a CLI flag, because
+claude print, codex exec and opencode run take the prompt last, after `--`.
+So their argv now ends in `-- <prompt>`.
+
+### Added
+
+- **Package `launch`.** `launch.Select(launch.Selection{Runtime, Mode, ...})`
+  returns the adapter for any runtime in the go-providers registry, by id or
+  alias:
+  - Native factories wrap the go-providers adapter: Claude streaming-stdio
+    and subprocess-per-turn; Codex app-server and exec; OpenCode run and
+    http-sse; Antigravity per-turn.
+  - ACP factories wrap claudeacp, codexacp, opencodeacp, copilotacp (stdio
+    and TCP, with `Selection.Port`) and piacp.
+  - An unset mode is the registry's default: Claude streaming-stdio, Codex
+    jsonrpc-stdio (D-74), OpenCode and Antigravity subprocess-per-turn,
+    Copilot and Pi acp-stdio.
+  - The factory set is closed. `launch.Supported` lists it, and a registry
+    mode it does not drive (Claude's PTY TUI) is `ErrUnsupportedSelection`.
+  - Native adapters come from go-providers' `provider.NewAdapter`, the one
+    constructor table shared with agentkit's planting path. The wrapper keeps
+    only its dispatch facts (protocol, transport, channel) per pair.
+  - All six runtimes launch through `launch.Select` + `wrapper.New` + `Run` in
+    `TestLaunchEveryRegistryRuntimeThroughSelect`, against go-providers
+    `providertest` fakes replaying captured CLI output. 5 of 6 complete a
+    turn. For Codex app-server, only the spawn, its argv and the first
+    payload are verified: the wrapper does not drive the Codex thread
+    protocol, the host does through agentkit's `turn`.
+    `TestLiveLaunchEveryInstalledRuntimeThroughSelect` does the same against
+    installed CLIs behind the shared live-provider gate.
+
+### Changed
+
+- **Selected native adapters are no longer wrapped.** `Selection.Binary` and
+  `Selection.ExtraArgs` are set on the go-providers adapter's own `Binary` and
+  `ExtraArgs` fields (go-providers v0.34.0), copied so a host's adapter is
+  never mutated. As a result:
+  - every optional interface survives selection (`EventParser`,
+    `SessionLostClassifier`, `AuthFailureClassifier`, `Preflighter`,
+    `SessionResumeVerifier`, `BootDirProvider`), pinned by
+    `TestNativeAdaptersKeepTheirOptionalInterfaces`;
+  - a pinned binary reaches `Detect`.
+
+  **Argv change:** `ExtraArgs` now land at each convention's extra slot
+  instead of after everything:
+  - before Claude's and agy's variadic `--add-dir`;
+  - before codex exec's `--json`;
+  - before opencode run's trailing message.
+
+  A host-supplied *custom* `CLIAdapter` cannot take `Binary`/`ExtraArgs`
+  without being wrapped, so that combination is now `ErrInvalidSelection`.
+- **More events from Select-built sessions** (additive). Because the adapter
+  reaches agentkit unwrapped:
+  - sessions now emit `agent.tool_result`, `agent.subagent_spawn` and
+    provider heartbeats;
+  - agentkit's session-lost, auth-failure and resume-verify handling
+    switches on.
+
+  Consumers that switch exhaustively on event kinds will see new ones.
+- `codexacp.WithDirectBinary` / `WithClientDirectBinary` run an installed
+  `codex-acp` directly, with no npx, `-y` or package spec, as claudeacp and
+  piacp already could. `launch.Select` uses it for `Selection.Binary` on
+  Codex ACP. `WithBinary` still replaces only `npx`.
+- The `wrapper.Runtime*` `Process.Runtime` tokens take their values from
+  agent-contracts-leaf `runtimes.Mode`. The values are unchanged, and
+  `adapter` keeps its spelling.
+
+### Removed
+
+- **Breaking:** `adapters.Select`, `adapters.Selection`, `adapters.Provider`
+  and its constants, `adapters.RuntimeKind` (`cli`/`api`) and
+  `adapters.LaunchMode` with its constants (D-73, no aliases per D-22). Use
+  `launch.Select` with `Runtime` (a registry id such as
+  `string(runtimes.Codex)`) and `Mode` (a `runtimes.Mode`). The old launch
+  modes map like this:
+
+  | Old | New |
+  |---|---|
+  | `LaunchAppServer` | `runtimes.ModeJSONRPCStdio` |
+  | `LaunchServeHTTP` | `runtimes.ModeHTTPSSE` |
+  | `LaunchStreamingStdio` | `runtimes.ModeStreamingStdio` |
+  | `LaunchSubprocessPerTurn` | `runtimes.ModeSubprocessPerTurn` |
+  | `LaunchDefault` | an empty `Mode` |
+
+  `RuntimeKindAPI` has no replacement: an API provider is not a CLI runtime
+  the wrapper launches. Callers are Nanite `internal/runtime/agent/factory.go`
+  and Torque `internal/runtime/agent/boot.go` (Sprint 4).
+- **Breaking:** `ErrUnsupportedSelection` and `ErrInvalidSelection` moved to
+  package `launch`. `Select` returns `adapters.Adapter`, not
+  `adapters.RuntimeAdapter`: an ACP adapter is not a RuntimeAdapter in the
+  native sense. A native result still implements `RuntimeAdapter`; type-assert
+  for it.
+
+### Migration notes
+
+- **Data migration:** stored mode strings `app-server` and `serve-http`, and
+  any other old launch-mode spelling, now fail at runtime with
+  `ErrUnsupportedSelection`. They are not translated. Nanite's and Torque's
+  persisted profiles need a data migration to the `runtimes.Mode` spellings
+  (`jsonrpc-stdio`, `http-sse`, `subprocess-per-turn`, `streaming-stdio`)
+  before they adopt this release.
+
 ## v0.14.0 — 2026-10-01
 
 Codex app-server approvals are answered from a permission posture instead of

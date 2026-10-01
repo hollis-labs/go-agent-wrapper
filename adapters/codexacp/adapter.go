@@ -25,6 +25,7 @@ import (
 // introduces.
 type Adapter struct {
 	bridgeBinary     string
+	directBinary     string
 	bridgeVersion    string
 	bridgeVersionSet bool // distinguishes "not overridden" from an explicit WithBridgeVersion("") (track latest) — a bare zero-value string can't tell those apart.
 	bridgePkgSpec    string
@@ -39,6 +40,10 @@ type Option func(*Adapter)
 // this Adapter constructs spawn to run the bridge — "npx" by default.
 // See [WithClientBinary] on [Client] for the matching low-level option.
 func WithBinary(path string) Option { return func(a *Adapter) { a.bridgeBinary = path } }
+
+// WithDirectBinary runs an installed `codex-acp` directly: no npx, no `-y`,
+// no package spec, only [WithExtraArgs]. See [WithClientDirectBinary].
+func WithDirectBinary(path string) Option { return func(a *Adapter) { a.directBinary = path } }
 
 // WithBridgeVersion pins a specific codex-acp npm package version other
 // than this package's own verified default. Pass "" to explicitly track
@@ -86,6 +91,9 @@ func (a *Adapter) newClient() *Client {
 	var opts []ClientOption
 	if a.bridgeBinary != "" {
 		opts = append(opts, WithClientBinary(a.bridgeBinary))
+	}
+	if a.directBinary != "" {
+		opts = append(opts, WithClientDirectBinary(a.directBinary))
 	}
 	if a.bridgeVersionSet {
 		opts = append(opts, WithClientBridgeVersion(a.bridgeVersion))

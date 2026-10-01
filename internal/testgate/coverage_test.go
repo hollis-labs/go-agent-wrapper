@@ -23,6 +23,12 @@ func TestEveryInstalledProviderTestUsesTheSharedGate(t *testing.T) {
 		`exec.LookPath("opencode")`,
 		`exec.LookPath("pi")`,
 		`exec.LookPath("npx")`,
+		`exec.LookPath("agy")`,
+		`exec.LookPath("pi-acp")`,
+		// A go-providers registry descriptor resolving its runtime's
+		// installed binary (registry.Descriptor.LookPath): a test that
+		// finds real CLIs through the registry is a live test too.
+		`.LookPath()`,
 	}
 	var files []string
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {

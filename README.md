@@ -58,10 +58,12 @@ End-to-end launch path is wired:
   native or ACP spawn. Its typed inherit/merge/replace modes, inherited-key
   allowlist, ordered overrides, and final unset list make secret egress and
   precedence inspectable without an `env -i` shell wrapper.
-- `adapters.Select` chooses a native adapter from provider, Runtime kind, and
-  launch mode. It covers Claude streaming-stdio (including the explicit
-  developer-mode variant) and Codex/OpenCode subprocess-per-turn while
-  keeping Claude on streaming-stdio and Codex on app-server by default; OpenCode defaults to subprocess-per-turn.
+- `launch.Select` picks any runtime by id and mode through one call and
+  returns its adapter, native or ACP. Runtimes, aliases, supported modes and
+  defaults come from the go-providers registry (Claude streaming-stdio, Codex
+  app-server, OpenCode subprocess-per-turn, Antigravity subprocess-per-turn,
+  Copilot and Pi ACP); ACP is selectable for Claude, Codex and OpenCode, and
+  Copilot also over TCP.
 - ACP adapters run through a wrapper-owned `acp.Manager`: `Wrapper.Run`
   validates ACP v1 negotiation, performs optional agent authentication,
   capability-gated create-or-resume, deterministic mode/config application,
@@ -147,11 +149,10 @@ explicit. A strict replacement environment is the usual migration from a
 generated `env -i` script:
 
 ```go
-adapter, err := adapters.Select(adapters.Selection{
-    Provider:    adapters.ProviderCodex,
-    RuntimeKind: adapters.RuntimeKindCLI,
-    LaunchMode:  adapters.LaunchSubprocessPerTurn,
-    Binary:      "/absolute/path/to/codex",
+adapter, err := launch.Select(launch.Selection{
+    Runtime: "codex",
+    Mode:    runtimes.ModeSubprocessPerTurn,
+    Binary:  "/absolute/path/to/codex",
 })
 if err != nil {
     return err
@@ -186,25 +187,24 @@ reserved `GO_AGENT_WRAPPER_EMPTY_ENVIRONMENT=1` marker; this prevents the
 current runtime dependencies' empty-slice fallback from restoring the ambient
 environment. Subprocess-per-turn launches preserve a genuinely empty slice.
 
-`adapters.LaunchDefault` (an unset mode) resolves to streaming stdio for Claude,
-app-server for Codex and subprocess-per-turn for OpenCode. OpenCode's serve-http
-runtime is deferred until its SSE and permission behavior is probed, so it is
-available only by requesting `LaunchServeHTTP` explicitly; it is not the default.
-Codex is an open difference between layers: agentkit's `runtimebind` package,
-when a host resolves a runtime through it instead, defaults Codex to
-subprocess-per-turn, so a host that cares should request the Codex mode
-explicitly. Hosts that
-need the Nanite-compatible native shapes request `LaunchStreamingStdio` for
-Claude and `LaunchSubprocessPerTurn` for Codex/OpenCode. `DeveloperMode` is
-defined only for factory-created Claude adapters. A host with a previously
+An unset `Selection.Mode` is the registry's default for the runtime: streaming
+stdio for Claude, app-server (`jsonrpc-stdio`, D-74) for Codex,
+subprocess-per-turn for OpenCode and Antigravity, `acp-stdio` for Copilot and
+Pi. agentkit's `runtimebind` reads the same registry, so the layers agree.
+OpenCode's `http-sse` runtime is deferred until its SSE and permission behavior
+is probed, so it is available only when requested. A mode the registry lists
+but the wrapper does not drive (Claude's PTY TUI) is `ErrUnsupportedSelection`.
+`DeveloperMode` is defined only for Claude's native modes. A host with a previously
 configured `provider.CLIAdapter` can pass it in `Selection.CLIAdapter`; that
 adapter remains authoritative for provider-specific settings, while the
 Selection still supplies the wrapper descriptor/lifecycle shape. Known
 go-providers adapter types are rejected when their configured shape contradicts
-the selected launch mode.
+the selected mode.
 
-ACP protocol selection remains in the provider ACP packages. The same
-`Config.Environment` contract is forwarded to their `acp.LaunchParams`.
+For an ACP mode, `Selection.Binary` is the process the ACP client spawns (the
+Claude or Codex bridge, copilot, opencode, pi-acp) and `Selection.Port` is
+Copilot's TCP port. The same `Config.Environment` contract is forwarded to
+their `acp.LaunchParams`.
 
 ## Subpackages
 
@@ -213,7 +213,8 @@ ACP protocol selection remains in the provider ACP packages. The same
 | `wrapper/` | Top-level `Config`, `Wrapper`, and `Run` — the launch boundary itself. Dispatches native runtimes to `agentkit/agentsessions` and owns ACP stdio/TCP lifecycles through `acp.Manager`. Plumbs all activity into `runtimeevents.Event` via `activity.Bridge`. |
 | `acp/` | ACP client contract plus authoritative `Manager`/`Session` registration, liveness, prompt/cancel/close, normalized outcomes, provider session-id readback, and redacted diagnostics. |
 | `activity/` | Bridge from wrapper lifecycle to the shared `go-runtime-events` schema. |
-| `adapters/` | Provider-integration contract. Base `Adapter` interface is neutral about go-providers; optional `RuntimeAdapter` exposes a `provider.CLIAdapter`; `Select` provides typed native provider/runtime/launch-mode selection. |
+| `launch/` | `Select`: one call that picks a runtime by registry id and mode and returns its native or ACP adapter, from a closed table of launch factories keyed by (runtime, mode). |
+| `adapters/` | Provider-integration contract. Base `Adapter` interface is neutral about go-providers; optional `RuntimeAdapter` exposes a `provider.CLIAdapter`. |
 | `adapters/claude/` | Claude Code streaming-stdio adapter (`claude -p --input-format stream-json --output-format stream-json --verbose`). |
 | `adapters/codex/` | Codex app-server adapter (`codex app-server`) — JSON-RPC 2.0 over stdio. |
 | `adapters/opencode/` | OpenCode serve-http adapter (`opencode serve --port 0 --hostname 127.0.0.1`) — HTTP/SSE. |
@@ -368,7 +369,7 @@ the misleading enforcement contract.
 
 The complete symbol and constant mapping is in [CHANGELOG.md](./CHANGELOG.md).
 Hosts may also adopt the new wrapper-owned `acp.Manager`, explicit
-`Config.Environment`, typed `adapters.Select`, and best-effort ACP permission
+`Config.Environment`, typed `launch.Select`, and best-effort ACP permission
 responder. Remove any consumer-side replacements for `go-harness-filters` and
 `go-runtime-events`: this release uses their published v0.1.1 and v0.1.2 tags.
 
