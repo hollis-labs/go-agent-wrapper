@@ -467,7 +467,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		Confidence: runtimeevents.ConfidenceExact,
 	}
 	rawSource := runtimeevents.Source{
-		Channel:    rawSourceChannel(desc.Protocol, desc.Transport),
+		Channel:    rawSourceChannel(desc.Transport),
 		Confidence: runtimeevents.ConfidenceExact,
 	}
 	w.sessMu.Lock()

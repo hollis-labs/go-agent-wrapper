@@ -2,7 +2,6 @@ package wrapper
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -194,7 +193,7 @@ func (w *Wrapper) runACP(
 			}
 			var payload any
 			if len(ev.Payload) > 0 {
-				payload = json.RawMessage(ev.Payload)
+				payload = ev.Payload
 			}
 			_ = w.cfg.Activity.Emit(ctx, ev.Kind, source, payload, opts...)
 			switch ev.Kind {
