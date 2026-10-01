@@ -65,19 +65,24 @@ var nativeSpecs = map[Key]nativeSpec{
 var nativeFactories = func() map[Key]factory {
 	out := make(map[Key]factory, len(nativeSpecs))
 	for k, spec := range nativeSpecs {
-		out[k] = func(sel Selection) (adapters.Adapter, error) { return newNative(k, spec, sel), nil }
+		out[k] = func(sel Selection) (adapters.Adapter, error) { return newNative(k, spec, sel) }
 	}
 	return out
 }()
 
-func newNative(key Key, spec nativeSpec, sel Selection) *nativeAdapter {
-	cliFactory := spec.adapter
+func newNative(key Key, spec nativeSpec, sel Selection) (*nativeAdapter, error) {
+	base := spec.adapter
 	if sel.DeveloperMode && spec.developer != nil {
-		cliFactory = spec.developer
+		base = spec.developer
 	}
 	if sel.CLIAdapter != nil {
 		cli := sel.CLIAdapter
-		cliFactory = func() provider.CLIAdapter { return cli }
+		base = func() provider.CLIAdapter { return cli }
+	}
+	// Probe once so a host adapter that cannot take the Binary/ExtraArgs
+	// fails Select, not the first spawn.
+	if _, err := configure(base(), sel.Binary, sel.ExtraArgs); err != nil {
+		return nil, err
 	}
 	return &nativeAdapter{
 		runtime: key.Runtime,
@@ -87,10 +92,56 @@ func newNative(key Key, spec nativeSpec, sel Selection) *nativeAdapter {
 			Channels:  []runtimeevents.SourceChannel{spec.channel},
 			Delivery:  adapters.DeliveryCapabilitiesForRuntime(string(key.Runtime), spec.protocol, spec.transport, spec.interrupt, false),
 		},
-		cliFactory: cliFactory,
-		binary:     sel.Binary,
-		extraArgs:  sel.ExtraArgs,
+		cliFactory: func() provider.CLIAdapter {
+			cli, _ := configure(base(), sel.Binary, sel.ExtraArgs)
+			return cli
+		},
+	}, nil
+}
+
+// configure sets the selection's Binary and ExtraArgs on the adapter's own
+// fields, so the adapter the wrapper hands agentsessions is the go-providers
+// adapter itself, never a wrapper that would hide its optional interfaces
+// (EventParser, SessionLostClassifier, AuthFailureClassifier, Preflighter,
+// SessionResumeVerifier, BootDirProvider). A built-in adapter is copied, so
+// a host's adapter is never mutated; ExtraArgs land at the convention's extra
+// slot (go-providers BuildArgs). A custom adapter type cannot take them and
+// is ErrInvalidSelection unless neither is set.
+func configure(cli provider.CLIAdapter, binary string, extra []string) (provider.CLIAdapter, error) {
+	if binary == "" && len(extra) == 0 {
+		return cli, nil
 	}
+	switch typed := cli.(type) {
+	case *provider.ClaudeAdapter:
+		c := *typed
+		c.Binary, c.ExtraArgs = pin(c.Binary, binary), appendArgs(c.ExtraArgs, extra)
+		return &c, nil
+	case *provider.CodexAdapter:
+		c := *typed
+		c.Binary, c.ExtraArgs = pin(c.Binary, binary), appendArgs(c.ExtraArgs, extra)
+		return &c, nil
+	case *provider.OpencodeAdapter:
+		c := *typed
+		c.Binary, c.ExtraArgs = pin(c.Binary, binary), appendArgs(c.ExtraArgs, extra)
+		return &c, nil
+	case *provider.AntigravityAdapter:
+		c := *typed
+		c.Binary, c.ExtraArgs = pin(c.Binary, binary), appendArgs(c.ExtraArgs, extra)
+		return &c, nil
+	default:
+		return nil, fmt.Errorf("%w: Binary/ExtraArgs need a go-providers adapter, not %T; set them on the adapter itself", ErrInvalidSelection, cli)
+	}
+}
+
+func pin(current, binary string) string {
+	if binary != "" {
+		return binary
+	}
+	return current
+}
+
+func appendArgs(current, extra []string) []string {
+	return append(append([]string(nil), current...), extra...)
 }
 
 // validateCLIAdapter checks a host-supplied adapter against the selection: its
@@ -121,13 +172,12 @@ func validateCLIAdapter(key Key, cli provider.CLIAdapter) error {
 }
 
 // nativeAdapter is the adapter Select returns for a native mode. Its
-// go-providers CLIAdapter is what the wrapper hands agentkit/agentsessions.
+// go-providers CLIAdapter, configured with the selection's Binary and
+// ExtraArgs, is what the wrapper hands agentkit/agentsessions, unwrapped.
 type nativeAdapter struct {
 	runtime    runtimes.ID
 	descriptor adapters.Descriptor
 	cliFactory func() provider.CLIAdapter
-	binary     string
-	extraArgs  []string
 }
 
 func (a *nativeAdapter) Name() string { return string(a.runtime) }
@@ -153,32 +203,8 @@ func (a *nativeAdapter) Resolve(rc adapters.ResolveContext) (adapters.Spec, erro
 	}, nil
 }
 
-func (a *nativeAdapter) CLIAdapter() provider.CLIAdapter {
-	return &configuredCLIAdapter{
-		CLIAdapter: a.cliFactory(),
-		binary:     a.binary,
-		extraArgs:  append([]string(nil), a.extraArgs...),
-	}
-}
-
-// configuredCLIAdapter decorates a go-providers adapter with the selection's
-// Binary pin and ExtraArgs.
-type configuredCLIAdapter struct {
-	provider.CLIAdapter
-	binary    string
-	extraArgs []string
-}
-
-func (a *configuredCLIAdapter) BuildArgs(prompt, systemPrompt, cliSessionID string) []string {
-	args := a.CLIAdapter.BuildArgs(prompt, systemPrompt, cliSessionID)
-	return append(append([]string(nil), args...), a.extraArgs...)
-}
-
-func (a *configuredCLIAdapter) Detect() (string, bool) {
-	if a.binary != "" {
-		return a.binary, true
-	}
-	return a.CLIAdapter.Detect()
-}
+// CLIAdapter returns a fresh go-providers adapter per call, so the wrapper
+// can set per-session state on it without affecting other sessions.
+func (a *nativeAdapter) CLIAdapter() provider.CLIAdapter { return a.cliFactory() }
 
 var _ adapters.RuntimeAdapter = (*nativeAdapter)(nil)

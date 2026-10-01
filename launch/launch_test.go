@@ -180,9 +180,11 @@ func TestSelectBinaryAndExtraArgsStayStructured(t *testing.T) {
 		t.Fatalf("Detect = (%q, %v), want (%q, true)", got, ok, binary)
 	}
 	args := cli.BuildArgs("prompt with spaces; still one arg", "", "")
+	// The extras sit at codex exec's extra slot, before --json, not after it.
 	want := []string{
-		"exec", "prompt with spaces; still one arg", "--json", "--skip-git-repo-check",
+		"exec", "prompt with spaces; still one arg",
 		"--label", "a value with spaces", "$(touch /tmp/never)", "'quoted' && false",
+		"--json", "--skip-git-repo-check",
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args = %#v, want %#v", args, want)
@@ -194,6 +196,49 @@ func TestSelectBinaryAndExtraArgsStayStructured(t *testing.T) {
 	extra[0] = "mutated"
 	if got := native.CLIAdapter().BuildArgs("prompt with spaces; still one arg", "", ""); !reflect.DeepEqual(got, want) {
 		t.Fatalf("fresh CLI adapter args = %#v, want %#v", got, want)
+	}
+}
+
+// The adapter Select hands the wrapper is the go-providers adapter itself,
+// with Binary and ExtraArgs set on its own fields, so every optional
+// interface the registry declares for the mode survives selection
+// (CW-20260930-0137's capability-forwarding half).
+func TestNativeAdaptersKeepTheirOptionalInterfaces(t *testing.T) {
+	implements := map[runtimes.Capability]func(provider.CLIAdapter) bool{
+		runtimes.CapTypedEvents:           func(c provider.CLIAdapter) bool { _, ok := c.(provider.EventParser); return ok },
+		runtimes.CapSessionLostClassifier: func(c provider.CLIAdapter) bool { _, ok := c.(provider.SessionLostClassifier); return ok },
+		runtimes.CapAuthClassifier:        func(c provider.CLIAdapter) bool { _, ok := c.(provider.AuthFailureClassifier); return ok },
+		runtimes.CapPreflight:             func(c provider.CLIAdapter) bool { _, ok := c.(provider.Preflighter); return ok },
+		runtimes.CapResumeKeepsID: func(c provider.CLIAdapter) bool {
+			v, ok := c.(provider.SessionResumeVerifier)
+			return ok && v.ResumeKeepsSessionID()
+		},
+	}
+	for key := range nativeSpecs {
+		for _, sel := range []Selection{
+			{Runtime: string(key.Runtime), Mode: key.Mode},
+			{Runtime: string(key.Runtime), Mode: key.Mode, Binary: "/opt/pinned", ExtraArgs: []string{"--x"}},
+		} {
+			adapter, err := Select(sel)
+			if err != nil {
+				t.Fatalf("%s: %v", key, err)
+			}
+			cli := adapter.(adapters.RuntimeAdapter).CLIAdapter()
+			if _, ok := cli.(provider.BootDirProvider); !ok {
+				t.Errorf("%s (binary %q): %T lost BootDirProvider", key, sel.Binary, cli)
+			}
+			d, _ := registry.Lookup(string(key.Runtime))
+			for _, c := range d.Capabilities(key.Mode) {
+				if check, ok := implements[c]; ok && !check(cli) {
+					t.Errorf("%s (binary %q): %T does not implement declared %s", key, sel.Binary, cli, c)
+				}
+			}
+			if sel.Binary != "" {
+				if got, _ := cli.Detect(); got != sel.Binary {
+					t.Errorf("%s: Detect = %q, want the pinned binary", key, got)
+				}
+			}
+		}
 	}
 }
 
@@ -241,12 +286,40 @@ func TestSelectPreservesMatchingConfiguredCLIAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Select: %v", err)
 	}
-	decorated, ok := adapter.(adapters.RuntimeAdapter).CLIAdapter().(*configuredCLIAdapter)
-	if !ok {
-		t.Fatalf("CLIAdapter type is not *configuredCLIAdapter")
+	if got := adapter.(adapters.RuntimeAdapter).CLIAdapter(); got != configured {
+		t.Fatalf("CLIAdapter = %T %p, want the host's adapter itself", got, got)
 	}
-	if decorated.CLIAdapter != configured {
-		t.Fatal("Select replaced the host-configured CLI adapter")
+
+	// With a Binary pin the host adapter is copied, not mutated or wrapped.
+	pinned, err := Select(Selection{
+		Runtime: "codex", Mode: runtimes.ModeSubprocessPerTurn,
+		CLIAdapter: configured, Binary: "/opt/codex", ExtraArgs: []string{"--x"},
+	})
+	if err != nil {
+		t.Fatalf("Select pinned: %v", err)
+	}
+	cli, ok := pinned.(adapters.RuntimeAdapter).CLIAdapter().(*provider.CodexAdapter)
+	if !ok || cli == configured || cli.ApprovalPolicy != "on-request" || cli.Binary != "/opt/codex" || !slices.Equal(cli.ExtraArgs, []string{"--x"}) {
+		t.Fatalf("pinned CLIAdapter = %#v", cli)
+	}
+	if configured.Binary != "" || configured.ExtraArgs != nil {
+		t.Fatal("Select mutated the host's adapter")
+	}
+}
+
+type customCLI struct{ provider.CLIAdapter }
+
+func (customCLI) Name() string { return "codex" }
+
+// A custom adapter cannot take Binary/ExtraArgs without being wrapped, which
+// would hide its interfaces; Select refuses instead.
+func TestSelectRefusesToWrapACustomAdapter(t *testing.T) {
+	custom := customCLI{provider.NewCodexAdapter()}
+	if _, err := Select(Selection{Runtime: "codex", Mode: runtimes.ModeSubprocessPerTurn, CLIAdapter: custom}); err != nil {
+		t.Fatalf("custom adapter alone: %v", err)
+	}
+	if _, err := Select(Selection{Runtime: "codex", Mode: runtimes.ModeSubprocessPerTurn, CLIAdapter: custom, Binary: "/opt/codex"}); !errors.Is(err, ErrInvalidSelection) {
+		t.Fatalf("custom adapter with Binary = %v, want ErrInvalidSelection", err)
 	}
 }
 

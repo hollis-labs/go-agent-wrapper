@@ -8,7 +8,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Apps pick any agent runtime by id and mode through one call, native or ACP
 (CW-20260930-0134, EP-20260930-0001). Pairs with agentkit v0.12.0 and
-go-providers v0.32.0, and adds a dependency on agent-contracts-leaf v0.3.0.
+go-providers v0.34.0, and adds a dependency on agent-contracts-leaf v0.3.0.
 
 ### Added
 
@@ -31,6 +31,24 @@ go-providers v0.32.0, and adds a dependency on agent-contracts-leaf v0.3.0.
 
 ### Changed
 
+- **Selected native adapters are no longer wrapped.** `Selection.Binary` and
+  `Selection.ExtraArgs` are set on the go-providers adapter's own `Binary` and
+  `ExtraArgs` fields (go-providers v0.34.0), copied so a host's adapter is
+  never mutated. As a result:
+  - every optional interface survives selection (`EventParser`,
+    `SessionLostClassifier`, `AuthFailureClassifier`, `Preflighter`,
+    `SessionResumeVerifier`, `BootDirProvider`), pinned by
+    `TestNativeAdaptersKeepTheirOptionalInterfaces`;
+  - a pinned binary reaches `Detect`.
+
+  **Argv change:** `ExtraArgs` now land at each convention's extra slot
+  instead of after everything:
+  - before Claude's and agy's variadic `--add-dir`;
+  - before codex exec's `--json`;
+  - before opencode run's trailing message.
+
+  A host-supplied *custom* `CLIAdapter` cannot take `Binary`/`ExtraArgs`
+  without being wrapped, so that combination is now `ErrInvalidSelection`.
 - The `wrapper.Runtime*` `Process.Runtime` tokens take their values from
   agent-contracts-leaf `runtimes.Mode`. The values are unchanged, and
   `adapter` keeps its spelling.
