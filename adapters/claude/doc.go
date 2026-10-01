@@ -14,6 +14,6 @@
 //	claude -p --input-format stream-json --output-format stream-json --verbose
 //
 // PTY allocation is intentionally rejected — Claude's streaming-stdio
-// mode is incompatible with a PTY parent. Callers that need a Claude
-// PTY session should use a different (forthcoming) PTY-shaped adapter.
+// mode is incompatible with a PTY parent. The wrapper does not drive
+// Claude's PTY TUI: launch.Select returns ErrUnsupportedSelection for it.
 package claude

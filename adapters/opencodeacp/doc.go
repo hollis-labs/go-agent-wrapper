@@ -62,9 +62,10 @@
 //
 // # Wrapper-owned lifecycle
 //
-// [Client] spawns and owns its `opencode acp` subprocess directly via
-// os/exec — real request/response correlation (an id-keyed pending map)
-// and real notification dispatch, entirely self-contained. [Adapter] exposes
+// [Client] delegates to the shared [acp.NDJSONBridgeClient], which spawns and
+// owns the `opencode acp` subprocess (request/response correlation,
+// notification dispatch, termination); this package supplies only command
+// resolution and translate.go's session/update mapping. [Adapter] exposes
 // a fresh client through [acp.ClientAdapter], and wrapper.Wrapper owns its full
 // initialize/auth/config, create-or-resume, prompt/cancel, liveness, and
 // cleanup lifecycle through [acp.Manager]. The provider.CLIAdapter remains

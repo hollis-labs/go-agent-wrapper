@@ -95,8 +95,8 @@
 // observed live for a plain shell tool call (Codex executed it directly,
 // consistent with docs/engineering/architecture/17-acp.md's documented
 // expectation that Codex/Claude do their own fs/terminal work regardless
-// of declared client capabilities) but IS wired per
-// [Client.handleServerRequest] for correctness, using the shared best-effort
+// of declared client capabilities) but IS wired through the shared
+// [acp.NDJSONBridgeClient]'s request handler, using the shared best-effort
 // responder when configured and the established cancelled default otherwise.
 // The plain-shell bypass means the responder is not a general execution gate.
 //
@@ -111,13 +111,12 @@
 // (`CodexAppServerClient.turnInterrupt`: `sendRequest({method:
 // "turn/interrupt", params})`) to the spawned `codex app-server`
 // subprocess — the same native interrupt mechanism
-// docs/engineering/architecture/17-acp.md names as the real one, genuine
-// surface Codex's own app-server exposes but which neither
-// agentkit/agentsessions nor go-agent-wrapper's own native
-// [adapters/codex] currently calls (that adapter's Stop() is
-// stdin-close + SIGTERM/SIGKILL only — [adapters.InterruptProcess], see
-// its own Describe() doc comment). Live: a raw probe sent a real
-// 2000-word-essay prompt, waited for 10 real `agent_message_chunk`
+// docs/engineering/architecture/17-acp.md names as the real one. The
+// native app-server path sends the same request only for
+// wrapper.Wrapper.CancelTurn; the native [adapters/codex] descriptor
+// declares [adapters.InterruptProcess] because its Stop() is stdin-close +
+// SIGTERM/SIGKILL (see its Describe() doc comment). Live: a raw probe sent a
+// real 2000-word-essay prompt, waited for 10 real `agent_message_chunk`
 // deltas (proof generation was genuinely underway), then sent
 // `session/cancel` — the in-flight `session/prompt` response (carrying
 // `stopReason: "cancelled"`) arrived ~12ms later, not after the model
@@ -133,12 +132,14 @@
 //
 // # Wrapper-owned lifecycle
 //
-// [Client] spawns and owns its `npx ... @agentclientprotocol/codex-acp`
-// subprocess directly via os/exec, exactly mirroring
-// [adapters/opencodeacp.Client]'s own request/response correlation and
-// notification dispatch. [Adapter] exposes a fresh client through
-// [acp.ClientAdapter], and wrapper.Wrapper owns its initialize/auth/config,
-// create-or-resume, prompt/cancel, liveness, and cleanup through [acp.Manager].
+// [Client] delegates to the shared [acp.NDJSONBridgeClient], which spawns and
+// owns the `npx ... @agentclientprotocol/codex-acp` subprocess
+// (request/response correlation, notification dispatch, termination); this
+// package supplies command resolution, the CODEX_PATH environment, and
+// translate.go's session/update mapping. [Adapter] exposes a fresh client
+// through [acp.ClientAdapter], and wrapper.Wrapper owns its
+// initialize/auth/config, create-or-resume, prompt/cancel, liveness, and
+// cleanup through [acp.Manager].
 // The provider.CLIAdapter implementation remains compatibility/introspection
 // glue; Wrapper selects ClientAdapter for ProtocolACP.
 package codexacp

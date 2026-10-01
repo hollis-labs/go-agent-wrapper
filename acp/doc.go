@@ -18,7 +18,18 @@
 // turn cancellation, close, liveness snapshots, normalized terminal outcomes,
 // and automatic unregister/cleanup. Wrapper delegates ACP adapters to this
 // path directly for both stdio and TCP; it does not rely on agentkit's generic
-// capture-only JSON-RPC runtime.
+// capture-only JSON-RPC runtime. A Session's Events channel never blocks
+// teardown: a full buffer drops the event, the channel is closed exactly once
+// under a guard so nothing is sent after the close, and when Wait or Close
+// returns, Events and Diagnostics are closed.
+//
+// LaunchParams.MCPServers are rendered by SessionMCPServers into the
+// session/new and session/load "mcpServers" array; HTTP servers reach only
+// agents that advertise mcpCapabilities.http. LaunchParams.SandboxPolicy and
+// ProtectedPaths confine a locally spawned child (PrepareLaunchSandbox, with
+// ProtectOnlyProfileID when only paths are protected); CheckRemoteSandbox
+// refuses required confinement or protected paths for an endpoint the client
+// did not spawn.
 //
 // Two kinds of concrete Client implementation sit below this package's Client
 // interface:

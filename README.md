@@ -27,7 +27,7 @@ End-to-end launch path is wired:
 - Lifecycle events emitted: `session.ready`, `process.started`,
   `process.exited`, `session.processing`/`session.idle`, optional
   `session.heartbeat`, `turn.started`/`turn.completed`/`turn.failed`
-  (with monotonic per-session TurnIDs; a native turn ends in exactly one
+  (with a fresh TurnID per turn; a native turn ends in exactly one
   `turn.completed` or `turn.failed` carrying its TurnID and the turn's
   accumulated `usage`, followed by `session.idle`, and a turn still open
   when the process exits is closed as `turn.failed` with reason
@@ -36,13 +36,35 @@ End-to-end launch path is wired:
   `interrupt.requested`/`interrupt.acknowledged`.
 - `agent.delta`, `agent.tool_use`, `agent.tool_result`, and
   `agent.subagent_spawn` flow through the translator, as do JSON-RPC
-  permission request/resolution events where the adapter emits them. On the
-  native Codex app-server runtime, `Config.PermissionPosture` (go-permission's
-  `Mode`; zero value `default`) answers Codex's approval requests through
-  agentkit's `turn.CodexApprovalResponder`: `default` approves planted MCP
-  tool calls and declines sandbox escalations, `accept-edits` also approves
-  file changes, `plan` declines all, `yolo` approves all. If
-  `Config.PolicyObserver` is set,
+  permission request/resolution events where the adapter emits them.
+  Provider typed events also surface `session.lost` (`requested_id`,
+  `actual_id`, `reason`; tagged with the open turn but never opening one),
+  `session.auth_failed` (`error`) and `agent.permission_denied` (`action`,
+  `display_name`).
+- `agent.delta` carries `block_id` (stable across one content block or ACP
+  message, different for the next) and `phase` when the producer knows them:
+  native runtimes pass go-llm-types' `narration`/`final`/`thought`, ACP
+  adapters emit `message`/`thought`. Turn-terminal events carry `stop_reason`
+  normalized by `llmtypes.NormalizeStopReason` (`end_turn`, `max_tokens`,
+  `tool_use`, `turn_limit`, `refusal`, the cancellation value, `error`; any
+  other reason passes through as given). Native `usage` is go-llm-types'
+  `Usage` summed over the turn, `CostUSD` included; the Claude, Codex,
+  OpenCode and Pi ACP clients pass the agent's own `usage` object through on
+  `turn.completed`, and Copilot's carries only `stop_reason`.
+- On the native Codex app-server runtime, `Config.PermissionPosture`
+  (go-permission's `Mode`; zero value `default`) answers Codex's approval
+  requests through agentkit's `turn.CodexApprovalResponder`: `default`
+  approves planted MCP tool calls and declines sandbox escalations,
+  `accept-edits` also approves file changes, `plan` declines all, `yolo`
+  approves all. See
+  [Permission posture, prepared launches and protected paths](#permission-posture-prepared-launches-and-protected-paths).
+- `Wrapper.CancelTurn` ends the turn in flight and keeps the session: ACP
+  `session/cancel`, and natively Claude streaming-stdio's interrupt, Codex
+  app-server's `turn/interrupt` and OpenCode serve's abort. An interrupted
+  Claude or OpenCode turn ends `turn.failed` with reason `interrupted`; Codex
+  reports its own interrupted `turn/completed`. Other runtimes return
+  `ErrTurnCancelUnsupported`.
+- If `Config.PolicyObserver` is set,
   each translated tool-use event is handed to `policy.Observer.Observe`
   after `agent.tool_use` is emitted. A mapped recommendation emits a correlated
   `policy.nudge`/`rewrite`/`block`/`approval_requested` compatibility event;
@@ -63,7 +85,8 @@ End-to-end launch path is wired:
   defaults come from the go-providers registry (Claude streaming-stdio, Codex
   app-server, OpenCode subprocess-per-turn, Antigravity subprocess-per-turn,
   Copilot and Pi ACP); ACP is selectable for Claude, Codex and OpenCode, and
-  Copilot also over TCP.
+  Copilot also over TCP. `launch.Supported()` lists every (runtime, mode) a
+  factory launches.
 - ACP adapters run through a wrapper-owned `acp.Manager`: `Wrapper.Run`
   validates ACP v1 negotiation, performs optional agent authentication,
   capability-gated create-or-resume, deterministic mode/config application,
@@ -86,7 +109,7 @@ Module path: `github.com/hollis-labs/go-agent-wrapper`
 ## Install
 
 ```sh
-go get github.com/hollis-labs/go-agent-wrapper@v0.13.0
+go get github.com/hollis-labs/go-agent-wrapper@v0.25.0
 ```
 
 The module requires Go 1.26.6. Its dependency graph contains no local
@@ -206,6 +229,39 @@ Claude or Codex bridge, copilot, opencode, pi-acp) and `Selection.Port` is
 Copilot's TCP port. The same `Config.Environment` contract is forwarded to
 their `acp.LaunchParams`.
 
+## Permission posture, prepared launches and protected paths
+
+- `Config.PermissionPosture` is go-permission's `Mode` (`default`,
+  `accept-edits`, `plan`, `yolo`); `New` rejects any other value. On a native
+  launch that is not prepared, a non-empty posture is mapped through the
+  go-providers registry onto the runtime's own flags and environment (Claude
+  `--permission-mode`, Codex `sandbox_mode`/`approval_policy`, OpenCode
+  `OPENCODE_PERMISSION`, agy `--mode`); the zero value adds nothing. On the
+  Codex app-server it also answers approval requests, each emitting
+  `agent.permission_requested` and `agent.permission_resolved`. ACP sessions
+  use `ACPBestEffortPermissionRequestResponder` instead.
+- `Config.MCPAllow` narrows which MCP tool calls the `default` and
+  `accept-edits` postures approve on the Codex app-server. Entries are
+  `server` or `server/tool`, each half a `path.Match` pattern
+  (`mux/torque_*`); a call matching none is declined. Empty approves every MCP
+  tool the launch planted.
+- `Config.PreparedExecution` hands over an agentkit-prepared launch;
+  `Config.PrepareRequest` asks the wrapper to resolve one, defaulting its
+  roots from `Workdir` and the boot dir. Native and ACP runs then use its exact
+  argv, env, cwd and access policy without planting again. The two are
+  mutually exclusive, as are a prepared launch and `SandboxPolicy`; a
+  `Planter` alongside a materialized plan is `ErrPreparedPlantConflict`. The
+  plan's posture applies, and a different `Config.PermissionPosture` is
+  `ErrPostureConflict`. Native MCP servers come from the plan's MCPSpec,
+  planted by agentkit.
+- `Config.ProtectedPaths` lists absolute control-plane directories the agent
+  must not write. Native launches, prepared or not, fold them into the one
+  sandbox around the child (`SandboxPolicy` or `SandboxProfile`, else a
+  minimal host-filesystem profile). ACP launches merge them into the resolved
+  or prepared policy, or run the child under `acp.ProtectOnlyProfileID`. A launch that cannot
+  enforce them fails (`ErrProtectedPathsUnsupported` on ACP), and an ACP
+  endpoint the wrapper did not spawn is refused.
+
 ## Subpackages
 
 | Path | What it owns |
@@ -222,9 +278,12 @@ their `acp.LaunchParams`.
 | `adapters/opencodeacp/`, `adapters/copilotacp/` | Native ACP clients; Copilot supports both stdio and TCP. |
 | `classifybridge/` | Adapts `go-harness-filters/classify.Classifier` into `policy.Observer` findings. |
 | `policy/` | Post-hoc observations, advisory findings, and an optional `Store` interface for app-provided rule backing. |
-| `plant/` | Pre-exec planting contract (boot dirs, MCP config, provider settings, hooks/plugins). Called by `Run` before the agentkit runtime is constructed. |
-| `sandbox/` | Sandbox profile application contract — composes `go-sandbox`. Called by `Run` after `Start` against the session's PID. |
-| `filters/` | Integration point for the `go-harness-filters` pipeline. |
+| `plant/` | Pre-exec planting contract (boot dirs, MCP config, provider settings, hooks/plugins). `SharedPlanter` delegates to the shared materialization engine. Called by `Run` before the agentkit runtime is constructed. |
+| `sandbox/` | Post-start `Applier` contract, called by `Run` after `Start` against the session's PID. Pre-spawn go-sandbox confinement is `Config.SandboxPolicy`/`SandboxProfile`/`ProtectedPaths`. |
+| `filters/` | Integration point for the `go-harness-filters` pipeline; `RepairPipeline` adapts its repair rules. |
+| `snapshot/` | Filesystem snapshot primitive: capture, diff, preview, and selective restore of granted paths through a shadow git store. |
+| `sidebyside/` | Live native-vs-ACP Claude comparison tests (opt-in, see Development). |
+| `internal/testgate/` | The live-provider opt-in gate every installed-provider test calls. |
 
 ## Policy observation is not enforcement
 
@@ -315,6 +374,15 @@ Pass any shipped ACP adapter to `wrapper.Config.Adapter`; no direct
 `Wrapper.Stop` to close the whole session. A shared `Config.ACPManager` exposes
 lookup, liveness, cancel, close, and shutdown across wrappers.
 
+`Config.ACPMCPServers` are sent as the `session/new`/`session/load`
+`mcpServers` array (rendered by `acp.SessionMCPServers`, always present):
+stdio servers as `{name, command, args, env: [{name, value}]}`, HTTP servers
+as `{type: "http", name, url, headers: [{name, value}]}`. HTTP servers reach
+only agents that advertise `agentCapabilities.mcpCapabilities.http` at
+`initialize`; the rest are dropped and named through `OnACPDiagnostic`.
+pi-acp accepts the field but does not pass it to Pi, so Pi sessions get no
+MCP servers.
+
 Manager readiness is published only after the provider session ID and wrapper
 control reference are committed. Once `Prompt` accepts and writes a request,
 the asynchronous turn belongs to the ACP session rather than the caller's
@@ -322,6 +390,11 @@ short-lived context; explicit `CancelTurn`, `Stop`, transport loss, or provider
 completion ends it. After `Run` returns, `ACPSnapshot` no longer exposes the
 dead session and control calls cannot target it; `ProviderSessionID` remains
 available for postmortem correlation.
+
+`acp.Session.Events` never stalls teardown: a full buffer drops the event
+rather than blocking, and the channel is closed exactly once, guarded so that
+nothing is sent after the close. When `Wait` or `Close` returns, `Events` and
+`Diagnostics` are closed and no `OnDiagnostic` callback is still running.
 
 Unexpected transport EOF, non-zero child-process exit, and malformed protocol
 streams are returned as typed `acp.LifecycleError` outcomes. A clean child exit
@@ -349,41 +422,33 @@ sockets, or claim message consumption. Receipt stages are limited to operations
 this layer can observe, such as `turn_submitted`, `turn_cancel_requested`, and
 `lifecycle_stop_issued`.
 
-## Upgrade from v0.8.1
+## Upgrading from v0.8.1 or earlier
 
-v0.9.0 intentionally replaces the action-shaped policy API with names that
-describe its real post-execution, observational behavior. There are no
-deprecated aliases: stale integrations fail at compile time instead of keeping
-the misleading enforcement contract.
-
-| v0.8.1 | v0.9.0 |
-|---|---|
-| `wrapper.Config.Policy` | `wrapper.Config.PolicyObserver` |
-| `policy.Engine.Decide` | `policy.Observer.Observe` |
-| `policy.Request` / `policy.Decision` | `policy.Observation` / `policy.Finding` |
-| `policy.Mode` | `policy.Recommendation` |
-| `Decision.Mode` | `Finding.Recommendation` |
-| `Decision.Replacement` | `Finding.SuggestedReplacement` |
-| `policy.ObserveOnly` | `policy.NoOpObserver` |
-| `classifybridge.Engine` | `classifybridge.Observer` |
-
-The complete symbol and constant mapping is in [CHANGELOG.md](./CHANGELOG.md).
-Hosts may also adopt the new wrapper-owned `acp.Manager`, explicit
-`Config.Environment`, typed `launch.Select`, and best-effort ACP permission
-responder. Remove any consumer-side replacements for `go-harness-filters` and
-`go-runtime-events`: this release uses their published v0.1.1 and v0.1.2 tags.
+v0.9.0 renamed the action-shaped policy API to observational names
+(`Config.Policy` became `Config.PolicyObserver`, `policy.Engine.Decide`
+became `policy.Observer.Observe`, and so on) with no deprecated aliases, so
+stale integrations fail at compile time. [CHANGELOG.md](./CHANGELOG.md) has
+the complete symbol mapping.
 
 ## Dependencies
 
-- `github.com/hollis-labs/agentkit` (v0.9.0) — sessions, launch,
-  runtime, context, broker.
-- `github.com/hollis-labs/go-runtime-events` (v0.1.2) —
+- `github.com/hollis-labs/agentkit` (v0.20.1) — sessions, launch,
+  runtime, context, broker, prepared execution.
+- `github.com/hollis-labs/go-providers` (v0.40.0) — provider adapters and
+  the runtime registry (runtimes, modes, defaults, posture mapping).
+- `github.com/hollis-labs/agent-contracts-leaf` (v0.3.0) — the `runtimes`
+  id and mode vocabulary.
+- `github.com/hollis-labs/go-runtime-events` (v0.2.1) —
   runtime activity event envelope.
+- `github.com/hollis-labs/go-llm-types` (v0.5.1) — stream events, usage and
+  the stop-reason vocabulary.
+- `github.com/hollis-labs/go-permission` (v0.1.0) — permission posture modes.
+- `github.com/hollis-labs/go-materialize` (v0.1.0) — artifact trees and the
+  materialization engine behind `plant.SharedPlanter`.
 - `github.com/hollis-labs/go-harness-filters` (v0.1.1) —
-  classify + directive + repair (used via `classifybridge/`).
-- `github.com/hollis-labs/go-sandbox` (v0.3.0) — sandbox profiles.
+  classify + directive + repair (used via `classifybridge/` and `filters/`).
+- `github.com/hollis-labs/go-sandbox` (v0.5.1) — sandbox policies and profiles.
 - `github.com/hollis-labs/go-runner` (v0.7.0, indirect) — process supervision.
-- `github.com/hollis-labs/go-providers` (v0.30.0) — provider adapters.
 
 All requirements are released versions fetched through the public Go module
 proxy; `go.mod` contains no `replace` directive.
@@ -410,15 +475,27 @@ CI pins golangci-lint v2.11.4 and lints only lines changed since the commit
 above; a plain `golangci-lint run` lists the findings that predate the config.
 
 The default suite is deterministic and never launches an installed Claude,
-Codex, Copilot, OpenCode, or Pi process merely because its CLI (or `npx`) is on
-`PATH`. Real-provider tests are a separate, explicit operator action:
+Codex, Copilot, OpenCode, Pi, or Antigravity process merely because its CLI
+(or `npx`) is on `PATH`. Real-provider tests are a separate, explicit operator
+action:
 
 ```sh
 GO_AGENT_WRAPPER_LIVE_PROVIDER_TESTS=1 \
   go test -race ./adapters/claudeacp ./adapters/codexacp \
     ./adapters/copilotacp ./adapters/opencodeacp ./adapters/piacp \
-    ./sidebyside -run '^(TestLive|TestReal)'
+    ./sidebyside ./wrapper -run '^(TestLive|TestReal)'
 ```
+
+Every such test calls `internal/testgate.RequireLiveProvider`, which accepts
+only the exact value `1`. In `./wrapper`,
+`TestLiveLaunchEveryInstalledRuntimeThroughSelect` launches each installed
+registry runtime in its default mode, and the live MCP tests check that the
+same stdio and HTTP echo servers yield working tools: over ACP through
+`Config.ACPMCPServers` (`TestLiveMCPToolsOverACP`, `mcp_live_test.go`) and
+natively from a prepared launch plan (`TestLiveMCPToolsNative`, plus
+`TestLiveMCPToolsCodexAppServer` answering approvals from
+`PermissionPosture`/`MCPAllow`, in `mcp_live_native_test.go`). A runtime that
+is not installed is skipped.
 
 Those tests additionally require the named provider binaries, bridge runtimes,
 credentials, account quota, and model configuration. Opting in keeps genuine

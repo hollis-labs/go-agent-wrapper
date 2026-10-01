@@ -22,8 +22,9 @@
 //
 // PTY allocation is rejected — HTTP/SSE cannot run under a PTY parent.
 //
-// For OpenCode's "run" mode (each turn spawns a fresh subprocess), request
-// [adapters.LaunchSubprocessPerTurn] from [adapters.Select]; the agentkit
-// adapter runtime can also be used directly, without a wrapper-level adapter
-// declaration.
+// For OpenCode's "run" mode (each turn spawns a fresh subprocess), the
+// registry's default for OpenCode, call launch.Select with Runtime
+// "opencode" and Mode runtimes.ModeSubprocessPerTurn (or no Mode); the
+// agentkit adapter runtime can also be used directly, without a
+// wrapper-level adapter declaration.
 package opencode

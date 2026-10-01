@@ -57,8 +57,9 @@
 // `clientCapabilities: {fs: {readTextFile: false, writeTextFile: false},
 // terminal: false}` shape [adapters/opencodeacp] already uses — same ACP
 // wire convention, confirmed to round-trip cleanly against Claude's
-// bridge too. `session/new` takes `{cwd, mcpServers: []}` and returns a
-// real `sessionId`, live-verified. `session/prompt`'s `stopReason` +
+// bridge too. `session/new` takes `{cwd, mcpServers}` (the session's servers,
+// rendered by [acp.SessionMCPServers]; live-verified with an empty array) and
+// returns a real `sessionId`. `session/prompt`'s `stopReason` +
 // `usage` response shape decodes generically the same way
 // [adapters/opencodeacp]'s does (Claude's usage object carries
 // `inputTokens`/`outputTokens`/`cachedReadTokens`/`cachedWriteTokens`/
@@ -90,7 +91,7 @@
 //     intermediate refinements (streaming input completion, a
 //     human-readable title) carrying neither `status` nor `rawOutput` at
 //     all, and only the final one carrying both. This package's
-//     [Client.handleNotification] therefore emits a
+//     translate.go handleNotification therefore emits a
 //     [runtimeevents.KindAgentToolResult] event for every `tool_call_update`
 //     frame regardless of whether it is the terminal one (matching
 //     [adapters/opencodeacp]'s own unconditional-per-frame forwarding
@@ -126,8 +127,9 @@
 // mid-turn interrupt call, per docs/engineering/architecture/17-acp.md's
 // own framing of what "a real capability improvement over Nanite's
 // current native Claude adapter" would look like (the native, non-ACP
-// [adapters/claude] does stdin-close + SIGTERM/SIGKILL only — no
-// wire-level interrupt at all) — with an `AbortController`-based
+// [adapters/claude] declares InterruptProcess: its Stop() is stdin-close +
+// SIGTERM/SIGKILL, and only wrapper.Wrapper.CancelTurn sends Claude's
+// stream-json interrupt) — with an `AbortController`-based
 // force-cancel backstop armed alongside it in case the SDK's own
 // `interrupt()` doesn't make a wedged query yield in time. Then
 // live-verified directly: a real, deliberately long (2000-word-essay)
@@ -152,12 +154,13 @@
 //
 // # Wrapper-owned lifecycle
 //
-// [Client] spawns and owns its bridge subprocess directly via os/exec —
-// real request/response correlation (an id-keyed pending map) and real
-// notification dispatch, entirely self-contained, mirroring
-// [adapters/opencodeacp.Client]'s own structure. [Adapter] exposes a fresh
-// client through [acp.ClientAdapter], and wrapper.Wrapper owns that client's
-// full handshake, prompt/cancel, liveness, and cleanup through [acp.Manager].
-// [Adapter.CLIAdapter] remains compatibility/introspection glue only; Wrapper
-// deliberately selects ClientAdapter first for ProtocolACP.
+// [Client] delegates to the shared [acp.NDJSONBridgeClient], which spawns and
+// owns the bridge subprocess (request/response correlation, notification
+// dispatch, termination, permission dispatch); this package supplies only
+// command resolution and translate.go's session/update mapping. [Adapter]
+// exposes a fresh client through [acp.ClientAdapter], and wrapper.Wrapper
+// owns that client's full handshake, prompt/cancel, liveness, and cleanup
+// through [acp.Manager]. [Adapter.CLIAdapter] remains
+// compatibility/introspection glue only; Wrapper deliberately selects
+// ClientAdapter first for ProtocolACP.
 package claudeacp

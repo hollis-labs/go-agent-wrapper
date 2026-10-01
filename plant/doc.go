@@ -26,5 +26,12 @@
 // 0700 under hooks/<provider>/<name>, and RecoveryPrompt is written as
 // recovery.md with mode 0600. Legacy entries carry wrapper-owned
 // artifact ownership so create/reconcile conflicts are detected by the
-// shared engine instead of being silently overwritten.
+// shared engine instead of being silently overwritten. ProviderSettings keys
+// are go-providers registry runtime ids or aliases, and each file lands at
+// that runtime's native-config path in the go-providers layout.
+//
+// A prepared launch (wrapper.Config.PreparedExecution or PrepareRequest)
+// whose plan is already materialized by agentkit, including its MCP
+// servers, does not run a wrapper Planter: configuring one alongside it is
+// wrapper.ErrPreparedPlantConflict.
 package plant

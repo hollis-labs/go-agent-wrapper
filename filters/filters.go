@@ -4,8 +4,8 @@ import "context"
 
 // Pipeline runs the harness filter chain against a unit of wrapper IO
 // (agent text, tool output, command output, envelope content). The
-// wrapper calls Process at IO observation points; concrete pipelines
-// live in (planned) go-harness-filters.
+// wrapper calls Process at IO observation points; concrete rules live
+// in go-harness-filters ([RepairPipeline] adapts its repair rules).
 //
 // Process is called from the wrapper's IO loop and must not block on
 // network or LLM calls in the common path. Pipelines that need

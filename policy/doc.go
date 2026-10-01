@@ -32,7 +32,9 @@
 // agent can block while awaiting a response. It is not routed through Observer.
 // Four current direct ACP clients (Claude, Codex, OpenCode, and Pi) default that
 // request to a well-formed cancelled outcome; Copilot currently returns a
-// JSON-RPC method-not-handled error. A future host-supplied responder may use
-// that genuine control point, but only for providers and operation classes that
-// choose to ask. It must not be presented as a general enforcement boundary.
+// JSON-RPC method-not-handled error. A host-supplied responder
+// (wrapper.Config.ACPBestEffortPermissionRequestResponder) answers that
+// genuine control point instead, but only for providers and operation classes
+// that choose to ask. It must not be presented as a general enforcement
+// boundary.
 package policy
