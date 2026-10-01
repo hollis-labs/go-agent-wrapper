@@ -4,6 +4,46 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.25.4 — 2026-10-01
+
+NDJSON request writes honor the caller's ctx (CW-20261001-0211).
+
+### Fixed
+
+- **A stalled agent no longer pins `Call` and `Prompt` writes.**
+  - **Before:** `NDJSONBridgeClient.beginCall` wrote the request frame with
+    no deadline, so `Call` and `Prompt` honored their ctx only while
+    awaiting the response. An agent that stopped reading stdin and filled
+    the pipe blocked the write. Canceling ctx did not release it, and
+    because it held the writer lock, every later write queued behind it.
+    `Notify` and the permission responses were already bounded; request
+    writes were not.
+  - **Now:** the frame write is bounded by the ctx. This applies to the
+    claude, codex, opencode and pi ACP clients, which share the NDJSON
+    client.
+    - It writes nothing once ctx has ended, and a caller queued behind a
+      stalled write leaves when its own ctx ends.
+    - A ctx that ends mid-write interrupts it: through the write deadline
+      when stdin has one, otherwise by closing the transport, as `Notify`
+      does.
+    - If the interrupted write had put part of a frame on the wire, the
+      transport is closed, because the agent would read a line it cannot
+      parse. If nothing was written, the transport stays open and the
+      request was never sent.
+    - `Prompt` passes its ctx to the write only. The response is still
+      awaited on the client's lifetime.
+  - A ctx that never ends still leaves the write bounded only by the
+    transport closing, as before. There is no hidden default deadline, so a
+    slow-but-alive agent is not cut off.
+- **A `Call` that gives up waiting no longer leaves its request registered
+  as pending.** A response that arrives later is ignored like one for any
+  unknown id.
+- **Tested** on all four components: a real child that answers the
+  handshake and then stops reading stdin, plus fake stdins for a queued
+  caller, a partial frame, a stdin with no write deadline, an ended ctx, and
+  `Prompt`. With the old write path they all fail, because the `Call` never
+  returns.
+
 ## v0.25.3 — 2026-10-01
 
 ### Fixed

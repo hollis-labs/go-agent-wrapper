@@ -1056,15 +1056,15 @@ func (c *NDJSONBridgeClient) writeLineCtx(ctx context.Context, v any) error {
 		return errors.New(c.cfg.Component + ": not launched (no stdin)")
 	}
 	ctxErr := func(err error) error { return fmt.Errorf("%s: write request: %w", c.cfg.Component, err) }
-	if err := ctx.Err(); err != nil {
-		return ctxErr(err)
+	if endedErr := ctx.Err(); endedErr != nil {
+		return ctxErr(endedErr)
 	}
-	if err := c.lockWrite(ctx); err != nil {
-		return ctxErr(err)
+	if lockErr := c.lockWrite(ctx); lockErr != nil {
+		return ctxErr(lockErr)
 	}
 	defer c.writeMu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return ctxErr(err)
+	if endedErr := ctx.Err(); endedErr != nil {
+		return ctxErr(endedErr)
 	}
 
 	// The interrupt runs only once ctx has ended, so a write it cuts short
