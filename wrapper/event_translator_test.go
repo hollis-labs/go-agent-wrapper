@@ -218,3 +218,89 @@ func TestTranslateProviderHeartbeat(t *testing.T) {
 		t.Errorf("last_activity_at = %v, want %v", got, ts)
 	}
 }
+
+// CW-20260930-0137 / CW-20260930-0228 §1: block boundaries and phase reach
+// agent.delta so consumers can separate blocks without per-provider rules.
+func TestTranslateDeltaCarriesBlockAndPhase(t *testing.T) {
+	_, payload, ok := translateStreamEvent(llmtypes.StreamEvent{
+		Type: llmtypes.EventDelta, Content: "A", BlockID: "msg_1:0", Phase: llmtypes.PhaseFinal,
+	})
+	p, _ := payload.(map[string]any)
+	if !ok || p["content"] != "A" || p["block_id"] != "msg_1:0" || p["phase"] != "final" {
+		t.Fatalf("delta payload = %v, ok=%v", p, ok)
+	}
+	_, payload, _ = translateStreamEvent(llmtypes.StreamEvent{Type: llmtypes.EventDelta, Content: "B"})
+	p, _ = payload.(map[string]any)
+	if _, has := p["block_id"]; has {
+		t.Errorf("unclassified delta has block_id: %v", p)
+	}
+	if _, has := p["phase"]; has {
+		t.Errorf("unclassified delta has phase: %v", p)
+	}
+	// Thinking uses the phase the ACP translators already emit.
+	_, payload, _ = translateStreamEvent(llmtypes.StreamEvent{
+		Type: llmtypes.EventThinking, ThinkingBlock: &llmtypes.ThinkingBlock{Thinking: "hmm"}, BlockID: "msg_1:1",
+	})
+	p, _ = payload.(map[string]any)
+	if p["phase"] != "thought" || p["block_id"] != "msg_1:1" || p["thinking"] == nil {
+		t.Errorf("thinking payload = %v", p)
+	}
+}
+
+func TestTranslateErrorCarriesStopReason(t *testing.T) {
+	_, payload, _ := translateStreamEvent(llmtypes.StreamEvent{Type: llmtypes.EventError, Error: "boom"})
+	p, _ := payload.(map[string]any)
+	if p["stop_reason"] != llmtypes.StopReasonError {
+		t.Errorf("turn.failed payload = %v, want stop_reason error", p)
+	}
+}
+
+func TestTranslateProviderSessionLostAuthFailedAndPermissionDenied(t *testing.T) {
+	kind, payload, ok := translateProviderEvent(pevents.SessionLost{RequestedID: "a", ActualID: "b", Reason: "new session"})
+	p, _ := payload.(map[string]any)
+	if !ok || kind != runtimeevents.KindSessionLost || p["requested_id"] != "a" || p["actual_id"] != "b" || p["reason"] != "new session" {
+		t.Errorf("session lost = %q %v %v", kind, p, ok)
+	}
+	kind, payload, ok = translateProviderEvent(pevents.PermissionDenied{Action: "Bash", DisplayName: "rm -rf x"})
+	p, _ = payload.(map[string]any)
+	if !ok || kind != runtimeevents.KindAgentPermissionDenied || p["action"] != "Bash" || p["display_name"] != "rm -rf x" {
+		t.Errorf("permission denied = %q %v %v", kind, p, ok)
+	}
+	kind, payload, ok = translateProviderEvent(pevents.AuthFailed{Message: "provider not authenticated"})
+	p, _ = payload.(map[string]any)
+	if !ok || kind != runtimeevents.KindSessionAuthFailed || p["error"] != "provider not authenticated" {
+		t.Errorf("auth failed = %q %v %v", kind, p, ok)
+	}
+	if !isTurnInternal(runtimeevents.KindAgentPermissionDenied) || !isTurnScoped(runtimeevents.KindSessionLost) || isTurnInternal(runtimeevents.KindSessionLost) {
+		t.Error("permission_denied must be turn-internal; session.lost turn-scoped but not turn-opening")
+	}
+}
+
+// CW-20260930-0222 L1: CostUSD is a per-event delta, so the turn's cost is
+// the sum.
+func TestMergeTurnUsageSumsCost(t *testing.T) {
+	total := mergeTurnUsage(nil, &llmtypes.Usage{OutputTokens: 1, CostUSD: 0.2})
+	total = mergeTurnUsage(total, &llmtypes.Usage{OutputTokens: 2, CostUSD: 0.016})
+	if total.CostUSD < 0.2159 || total.CostUSD > 0.2161 || total.OutputTokens != 3 {
+		t.Fatalf("total = %+v, want CostUSD 0.216 and OutputTokens 3", *total)
+	}
+}
+
+// CW-20260930-0228 §2: the terminal payload carries a normalised stop_reason,
+// and never overrides one the payload already names.
+func TestWithStopReason(t *testing.T) {
+	got, _ := withStopReason(nil, &llmtypes.Usage{StopReason: "length"}).(map[string]any)
+	if got["stop_reason"] != llmtypes.StopReasonMaxTokens {
+		t.Errorf("payload = %v, want stop_reason max_tokens", got)
+	}
+	failed := map[string]any{"error": "x", "stop_reason": "error"}
+	if got, _ := withStopReason(failed, &llmtypes.Usage{StopReason: "end_turn"}).(map[string]any); got["stop_reason"] != "error" {
+		t.Errorf("payload = %v, want the existing stop_reason kept", got)
+	}
+	if got := withStopReason(nil, &llmtypes.Usage{}); got != nil {
+		t.Errorf("no reported reason added one: %v", got)
+	}
+	if got := withStopReason(nil, nil); got != nil {
+		t.Errorf("nil usage added a stop_reason: %v", got)
+	}
+}
