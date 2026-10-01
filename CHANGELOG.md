@@ -4,6 +4,35 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.17.1 — 2026-10-01
+
+Takes agentkit v0.14.2 (was v0.14.0). It brings two fixes to the wrapper's
+native runtimes. In agentkit v0.14.1 (CW-20261001-0086), a child output line
+over 1 MiB no longer stops the session reader. In v0.14.2 (CW-20261001-0102),
+`ExtraArgs` and Claude's `--add-dir` go before `--` on non-template launches,
+not after it, where the agent read them as prompt text.
+
+### Fixed
+
+- **ACP transports no longer lose the child's last frame at exit**
+  (CW-20261001-0039).
+  - **Symptom:** a session/close reply written just before the child exited
+    could be discarded. The pending call then failed with "protocol stream
+    closed before response" (`acp.NDJSONBridgeClient`: claudeacp, codexacp,
+    opencodeacp, piacp) or "connection closed waiting for session/close
+    response" (copilotacp stdio).
+  - **Cause:** both read the child's stdout from `cmd.StdoutPipe()` while
+    `cmd.Wait()` ran concurrently, and Wait closes that pipe as soon as the
+    child exits. It is the same race agentkit fixed in CW-20261001-0046.
+  - **Fix:** the transports own the stdout pipe, and the stderr pipe when it
+    is read, via `os.Pipe`. After Wait, the reader drains to EOF, bounded by
+    one second, before the process exit is reported. The new
+    `internal/childoutput` package holds this logic.
+  - **Evidence:** the formerly flaky
+    `TestBestEffortPermissionResponderMayCallPromptAndCloseAllACPSubprocesses`
+    passes at `-race -count=100`. On main it failed 11 of 50 runs: 12
+    Close subtests, spread across all five clients.
+
 ## v0.17.0 — 2026-10-01
 
 One event vocabulary at the wrapper (CW-20260930-0137 event half; the wrapper

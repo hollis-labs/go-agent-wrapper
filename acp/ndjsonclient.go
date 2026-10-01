@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
+	"github.com/hollis-labs/go-agent-wrapper/internal/childoutput"
 	"github.com/hollis-labs/go-agent-wrapper/internal/closegate"
 	llmtypes "github.com/hollis-labs/go-llm-types"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
@@ -107,6 +109,15 @@ type NDJSONBridgeClient struct {
 	permissions    *BestEffortPermissionRequests
 	diagnosticMu   sync.Mutex
 	diagnostic     func(Diagnostic)
+
+	// The child's stdout and stderr read ends, owned here rather than by
+	// exec.Cmd so Wait cannot close them under the readers; waitProcess
+	// drains them (see internal/childoutput). readDone and stderrDone close
+	// when readLoop and drainStderr finish.
+	stdout     *os.File
+	stderr     *os.File
+	readDone   chan struct{}
+	stderrDone chan struct{}
 }
 
 var _ Client = (*NDJSONBridgeClient)(nil)
@@ -224,28 +235,40 @@ func (c *NDJSONBridgeClient) Launch(ctx context.Context, params LaunchParams) er
 	if err != nil {
 		return fmt.Errorf("%s: stdin pipe: %w", c.cfg.Component, err)
 	}
-	stdout, err := cmd.StdoutPipe()
+	// Own stdout rather than using cmd.StdoutPipe: Wait closes that as soon
+	// as the child exits, racing readLoop and discarding a reply the child
+	// wrote just before exiting (CW-20261001-0039).
+	stdout, err := childoutput.NewPipe()
 	if err != nil {
 		return fmt.Errorf("%s: stdout pipe: %w", c.cfg.Component, err)
 	}
+	cmd.Stdout = stdout.W
 	// Drain stderr rather than leaving it unread: bridges and native agents
 	// keep stdout a clean JSON-RPC channel by routing their own logging to
 	// stderr, and an unread stderr pipe can still block the child once its OS
-	// buffer fills.
-	stderr, err := cmd.StderrPipe()
+	// buffer fills. Owned for the same reason as stdout.
+	stderr, err := childoutput.NewPipe()
 	if err != nil {
+		stdout.Close()
 		return fmt.Errorf("%s: stderr pipe: %w", c.cfg.Component, err)
 	}
+	cmd.Stderr = stderr.W
 
 	sandboxOutcome, sandboxCleanup, err := PrepareLaunchSandbox(cmd, params)
 	if err != nil {
+		stdout.Close()
+		stderr.Close()
 		return fmt.Errorf("%s: sandbox: %w", c.cfg.Component, err)
 	}
 	if err := cmd.Start(); err != nil {
+		stdout.Close()
+		stderr.Close()
 		sandboxCleanup()
 		ReportLaunchSandboxStartFailed(params, sandboxOutcome, err)
 		return fmt.Errorf("%s: start %q: %w", c.cfg.Component, binary, err)
 	}
+	stdout.Started()
+	stderr.Started()
 	ReportLaunchSandboxStarted(params, sandboxOutcome)
 
 	c.mu.Lock()
@@ -253,6 +276,9 @@ func (c *NDJSONBridgeClient) Launch(ctx context.Context, params LaunchParams) er
 	c.stdin = stdin
 	c.waitDone = make(chan struct{})
 	c.sandboxCleanup = sandboxCleanup
+	c.stdout, c.stderr = stdout.R, stderr.R
+	readDone, stderrDone := make(chan struct{}), make(chan struct{})
+	c.readDone, c.stderrDone = readDone, stderrDone
 	c.terminated = make(chan struct{})
 	c.termination = NewTransportTermination(true)
 	c.lifetimeCtx, c.lifetimeStop = context.WithCancel(context.Background())
@@ -268,8 +294,14 @@ func (c *NDJSONBridgeClient) Launch(ctx context.Context, params LaunchParams) er
 		})
 	}
 
-	go c.drainStderr(stderr)
-	go c.readLoop(stdout)
+	go func() {
+		defer close(stderrDone)
+		c.drainStderr(stderr.R)
+	}()
+	go func() {
+		defer close(readDone)
+		c.readLoop(stdout.R)
+	}()
 	go c.waitProcess()
 	go c.coordinateTermination()
 
@@ -659,8 +691,15 @@ func (c *NDJSONBridgeClient) waitProcess() {
 	c.mu.Lock()
 	cmd := c.cmd
 	waitDone := c.waitDone
+	stdout, readDone := c.stdout, c.readDone
+	stderr, stderrDone := c.stderr, c.stderrDone
 	c.mu.Unlock()
 	err := cmd.Wait()
+	// Let the readers see everything the child wrote before its exit is
+	// reported: the last frame is often the reply a pending call awaits.
+	deadline := time.Now().Add(childoutput.DrainTimeout)
+	childoutput.Drain(stdout, readDone, deadline)
+	childoutput.Drain(stderr, stderrDone, deadline)
 	if c.sandboxCleanup != nil {
 		c.sandboxCleanup()
 	}
