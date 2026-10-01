@@ -4,6 +4,43 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.25.2 — 2026-10-01
+
+A coherent dependency refresh, so hosts take one consistent latest set
+(CW-20261001-0194). Dependencies and tests only; no wrapper code changes.
+
+### Changed
+
+- **Dependencies:**
+
+  | Module | From | To |
+  |---|---|---|
+  | agentkit | v0.20.1 | v0.20.4 |
+  | go-providers | v0.40.0 | v0.41.0 |
+  | go-sandbox | v0.5.1 | v0.6.0 |
+  | go-runner (indirect) | v0.7.0 | v0.8.2 |
+  | go-llm-contracts (indirect) | v0.3.0 | v0.4.0 |
+
+  What the new versions bring:
+  - **agentkit v0.20.2–v0.20.4:** lost-session events on per-turn
+    resumes; serve-http turns end only on their own session's errors; and
+    the fix that pairs agentkit with go-providers v0.41.0 (below).
+  - **go-providers v0.41.0:** codex exec resumes its thread, and
+    `CodexAdapter.IsSessionLost`.
+  - **go-sandbox v0.6.0:** `DenyUserServiceManager`.
+  - **go-runner v0.8.2:** resource-limit and long-line fixes.
+
+  go-llm-types (v0.5.1), go-runtime-events, go-harness-filters,
+  go-materialize, go-permission and agent-contracts-leaf are already at
+  their latest.
+- **Codex exec sessions now resume their thread from turn 2.** Before, each
+  turn started a new thread. This comes from go-providers v0.41.0 and
+  agentkit v0.20.4.
+- **Do not pair go-providers v0.41.0 with agentkit v0.20.3 or earlier.**
+  That combination breaks codex exec turn 2 under agentkit's
+  `AutoPlantBootDir`. This release pins the pair that works. The wrapper
+  itself does not set `AutoPlantBootDir`.
+
 ## v0.25.1 — 2026-10-01
 
 Lint findings, part 1 (CW-20261001-0066): nilerr and errorlint.
