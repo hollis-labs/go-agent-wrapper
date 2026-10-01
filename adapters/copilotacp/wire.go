@@ -114,6 +114,8 @@ type sessionPromptParams struct {
 // minor spec-compliance quirk in Copilot's own implementation, not a
 // bug in this client; StopReason is passed through
 // llmtypes.NormalizeStopReason into the emitted turn.completed stop_reason.
+//
+//nolint:misspell // lists ACP's wire stopReason values, "cancelled" among them
 type sessionPromptResult struct {
 	StopReason string `json:"stopReason"`
 }

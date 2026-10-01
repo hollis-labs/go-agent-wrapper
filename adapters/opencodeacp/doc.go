@@ -42,7 +42,7 @@
 // binary) — confirmed by a live round-trip.
 //
 // A configured [acp.BestEffortPermissionRequestResponder] services
-// `session/request_permission`; nil retains the established cancelled outcome.
+// `session/request_permission`; nil retains the established canceled outcome.
 // One real shell-tool shape executed internally without sending a permission,
 // fs, or terminal request, so the responder is explicitly not a general host
 // execution gate and coverage beyond that measured shape remains unknown.

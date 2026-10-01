@@ -65,7 +65,7 @@
 // LaunchParams.BestEffortPermissionRequestResponder is the shared optional
 // answer path for agent-initiated session/request_permission calls. It selects
 // only exact option IDs offered by the agent, fails closed on invalid input or
-// callback failure, and is cancelled with the active turn/session. Shipped
+// callback failure, and is canceled with the active turn/session. Shipped
 // clients invoke it away from their protocol readers and lifecycle locks. Its
 // name is intentional: ACP does not require an agent to request permission for
 // every operation, and measured Claude, Codex, OpenCode, and Pi tool paths can

@@ -97,7 +97,7 @@
 // expectation that Codex/Claude do their own fs/terminal work regardless
 // of declared client capabilities) but IS wired through the shared
 // [acp.NDJSONBridgeClient]'s request handler, using the shared best-effort
-// responder when configured and the established cancelled default otherwise.
+// responder when configured and the established canceled default otherwise.
 // The plain-shell bypass means the responder is not a general execution gate.
 //
 // # Real, verified Interrupt capability
@@ -142,4 +142,6 @@
 // cleanup through [acp.Manager].
 // The provider.CLIAdapter implementation remains compatibility/introspection
 // glue; Wrapper selects ClientAdapter for ProtocolACP.
+//
+//nolint:misspell // quotes the wire stopReason "cancelled"
 package codexacp

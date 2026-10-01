@@ -132,7 +132,7 @@ func TestLiveClientCancelAbortsMidGeneration(t *testing.T) {
 	}
 
 	// Wait for real generation activity (any delta — thought or message)
-	// before cancelling, so the test can't trivially "pass" by cancelling
+	// before canceling, so the test can't trivially "pass" by canceling
 	// before anything started.
 	var deltas int
 	waitDeadline := time.After(30 * time.Second)

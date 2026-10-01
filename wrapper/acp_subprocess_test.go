@@ -957,6 +957,7 @@ func reserveTCPPort(t *testing.T) int {
 
 func writeACPFixture(t *testing.T, dir, tracePath, mode string) string {
 	t.Helper()
+	//nolint:misspell // the fixture agent replies with ACP's wire stopReason "cancelled"
 	body := fmt.Sprintf(`#!/bin/sh
 trace=%s
 mode=%s

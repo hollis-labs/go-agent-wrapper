@@ -21,6 +21,9 @@ const validPermissionParams = `{
   "_meta":{"providerExtension":true}
 }`
 
+// wireCancelled is the spelling ACP puts on the wire for a canceled outcome.
+const wireCancelled = "cancelled" //nolint:misspell // ACP's own spelling
+
 func TestBestEffortPermissionRequestsDefaultAndSelections(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -30,7 +33,7 @@ func TestBestEffortPermissionRequestsDefaultAndSelections(t *testing.T) {
 		allowed    bool
 		diagnostic bool
 	}{
-		{name: "default", outcome: "cancelled"},
+		{name: "default", outcome: wireCancelled},
 		{
 			name: "allow",
 			responder: func(_ context.Context, request PermissionRequest) (PermissionSelection, error) {
@@ -51,14 +54,14 @@ func TestBestEffortPermissionRequestsDefaultAndSelections(t *testing.T) {
 			responder: func(_ context.Context, _ PermissionRequest) (PermissionSelection, error) {
 				return PermissionSelection{}, nil
 			},
-			outcome: "cancelled",
+			outcome: wireCancelled,
 		},
 		{
 			name: "unoffered option",
 			responder: func(_ context.Context, _ PermissionRequest) (PermissionSelection, error) {
 				return SelectPermissionOption("not-offered"), nil
 			},
-			outcome: "cancelled", diagnostic: true,
+			outcome: wireCancelled, diagnostic: true,
 		},
 		{
 			name: "responder cannot mutate offered options",
@@ -66,21 +69,21 @@ func TestBestEffortPermissionRequestsDefaultAndSelections(t *testing.T) {
 				request.Options[0].OptionID = "mutated"
 				return SelectPermissionOption("mutated"), nil
 			},
-			outcome: "cancelled", diagnostic: true,
+			outcome: wireCancelled, diagnostic: true,
 		},
 		{
 			name: "responder error is not echoed",
 			responder: func(_ context.Context, _ PermissionRequest) (PermissionSelection, error) {
 				return PermissionSelection{}, errors.New("password=callback-secret")
 			},
-			outcome: "cancelled", diagnostic: true,
+			outcome: wireCancelled, diagnostic: true,
 		},
 		{
 			name: "responder panic",
 			responder: func(_ context.Context, _ PermissionRequest) (PermissionSelection, error) {
 				panic("token=panic-secret")
 			},
-			outcome: "cancelled", diagnostic: true,
+			outcome: wireCancelled, diagnostic: true,
 		},
 	}
 
@@ -136,8 +139,8 @@ func TestBestEffortPermissionRequestsInvalidParamsFailClosed(t *testing.T) {
 		})
 		requests.BeginTurn()
 		resolution := requests.Respond(json.RawMessage(raw), func(PermissionResolution) error { return nil })
-		if resolution.Outcome != "cancelled" {
-			t.Fatalf("invalid request outcome = %q, want cancelled", resolution.Outcome)
+		if resolution.Outcome != wireCancelled {
+			t.Fatalf("invalid request outcome = %q, want %q", resolution.Outcome, wireCancelled)
 		}
 		diagnostic, ok := resolution.Diagnostic()
 		if !ok || strings.Contains(diagnostic.Message+diagnostic.Raw, "raw-secret") {
@@ -154,7 +157,7 @@ func TestBestEffortPermissionRequestsSessionMismatchFailsClosed(t *testing.T) {
 	requests.SetSessionID("another-session")
 	requests.BeginTurn()
 	resolution := requests.Respond(json.RawMessage(validPermissionParams), func(PermissionResolution) error { return nil })
-	if resolution.Outcome != "cancelled" || resolution.Reason != "session mismatch" {
+	if resolution.Outcome != wireCancelled || resolution.Reason != "session mismatch" {
 		t.Fatalf("session mismatch resolution = %+v", resolution)
 	}
 	if _, ok := resolution.Diagnostic(); !ok {
@@ -182,8 +185,8 @@ func TestBestEffortPermissionRequestsCancelGenerationAndRecoverNextTurn(t *testi
 	requests.CancelTurn()
 	select {
 	case resolution := <-resolutionCh:
-		if resolution.Outcome != "cancelled" {
-			t.Fatalf("cancelled turn outcome = %q, want cancelled", resolution.Outcome)
+		if resolution.Outcome != wireCancelled {
+			t.Fatalf("canceled turn outcome = %q, want %q", resolution.Outcome, wireCancelled)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("CancelTurn did not unblock responder coordination")
@@ -191,8 +194,8 @@ func TestBestEffortPermissionRequestsCancelGenerationAndRecoverNextTurn(t *testi
 
 	// A request arriving after cancellation must not invoke the responder.
 	late := requests.Respond(json.RawMessage(validPermissionParams), func(PermissionResolution) error { return nil })
-	if late.Outcome != "cancelled" || late.Reason != "turn not active" {
-		t.Fatalf("late cancelled-turn resolution = %+v", late)
+	if late.Outcome != wireCancelled || late.Reason != "turn not active" {
+		t.Fatalf("late canceled-turn resolution = %+v", late)
 	}
 	select {
 	case <-entered:
@@ -256,7 +259,7 @@ func TestBestEffortPermissionRequestsCloseDoesNotWaitForIgnoringCallback(t *test
 	requests.Close()
 	select {
 	case resolution := <-done:
-		if resolution.Outcome != "cancelled" {
+		if resolution.Outcome != wireCancelled {
 			t.Fatalf("Close resolution = %+v", resolution)
 		}
 		close(release)
@@ -442,7 +445,7 @@ func TestBestEffortPermissionRequestsBoundsIgnoringCallbacksAcrossTurns(t *testi
 	}
 	requests.BeginTurn()
 	recovered := requests.Respond(json.RawMessage(validPermissionParams), func(PermissionResolution) error { return nil })
-	if recovered.Outcome != PermissionOutcomeCancelled || recovered.Reason != "responder cancelled" {
+	if recovered.Outcome != PermissionOutcomeCancelled || recovered.Reason != "responder cancelled" { //nolint:misspell // the Reason string is emitted on agent.permission_resolved
 		t.Fatalf("responder capacity did not recover after callbacks exited: %+v", recovered)
 	}
 }
@@ -510,7 +513,7 @@ func TestBestEffortPermissionRequestsAdmissionGenerationSurvivesEndAndBeginFlood
 				t.Errorf("response admission = %+v", response.admission)
 			}
 			if response.resolution.Outcome != PermissionOutcomeCancelled {
-				t.Errorf("old-generation resolution = %+v, want cancelled", response.resolution)
+				t.Errorf("old-generation resolution = %+v, want %s", response.resolution, wireCancelled)
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatalf("only %d/%d old-generation responses completed", i, requestCount)

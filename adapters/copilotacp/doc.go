@@ -83,7 +83,7 @@
 // against a real Copilot CLI 1.0.12 stdio session: a prompt to run the
 // non-mutating `pwd` shell command produced exactly one permission request with
 // tool kind `execute` and allow-once/allow-always/reject-once options; returning
-// the zero selection cancelled it. That is evidence for this one shell shape,
+// the zero selection canceled it. That is evidence for this one shell shape,
 // not a claim about other tools or operation classes. Synthetic fixtures cover
 // response servicing over both stdio and TCP. A turn that genuinely
 // requires client-served fs/terminal access will fail or degrade rather
@@ -91,4 +91,6 @@
 // explicitly out of scope per the architecture doc's own call ("worth
 // flagging as a possible hidden cost rather than folding silently into
 // the adapter work").
+//
+//nolint:misspell // quotes the agent's own "Operation cancelled by user" message
 package copilotacp
