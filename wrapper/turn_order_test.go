@@ -11,6 +11,7 @@ import (
 	"github.com/hollis-labs/agent-contracts-leaf/runtimes"
 	llmtypes "github.com/hollis-labs/go-llm-types"
 	"github.com/hollis-labs/go-providers/provider"
+	"github.com/hollis-labs/go-providers/providertest"
 
 	"github.com/hollis-labs/go-agent-wrapper/activity"
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
@@ -43,10 +44,56 @@ func turnLifecycle(evs []runtimeevents.Event) []turnStep {
 			runtimeevents.KindTurnFailed,
 			runtimeevents.KindSessionIdle,
 			runtimeevents.KindProcessExited:
-			out = append(out, turnStep{Kind: ev.Kind, TurnID: ev.TurnID})
+			step := turnStep{Kind: ev.Kind, TurnID: ev.TurnID}
+			// A real turn streams several deltas (Claude's thinking,
+			// then its text); the order test pins where they fall, not
+			// how many there are.
+			if step.Kind == runtimeevents.KindAgentDelta && len(out) > 0 && out[len(out)-1] == step {
+				continue
+			}
+			out = append(out, step)
 		}
 	}
 	return out
+}
+
+// adapterUsage is the usage cli's own parser reads from line: the usage the
+// wrapper must carry on the turn's terminal event.
+func adapterUsage(t *testing.T, cli provider.CLIAdapter, line []byte) llmtypes.Usage {
+	t.Helper()
+	evs, err := cli.ParseLine(line)
+	if err != nil {
+		t.Fatalf("ParseLine: %v", err)
+	}
+	for _, ev := range evs {
+		if ev.Type == llmtypes.EventUsage && ev.Usage != nil {
+			return *ev.Usage
+		}
+	}
+	t.Fatalf("%s reports no usage in %s", cli.Name(), line)
+	return llmtypes.Usage{}
+}
+
+// fixtureFrame returns the first frame of a capture whose "type" is typ:
+// transcript steps are unwrapped from their "send".
+func fixtureFrame(t *testing.T, name, typ string) []byte {
+	t.Helper()
+	for _, line := range providertest.FixtureLines(t, name) {
+		var step struct {
+			Send json.RawMessage `json:"send"`
+		}
+		if json.Unmarshal(line, &step) == nil && len(step.Send) > 0 {
+			line = step.Send
+		}
+		var f struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(line, &f) == nil && f.Type == typ {
+			return line
+		}
+	}
+	t.Fatalf("%s has no %q frame", name, typ)
+	return nil
 }
 
 // wantOneTurn is the exact lifecycle of one turn that ends in terminal,
@@ -132,17 +179,11 @@ func runToExit(t *testing.T, cfg Config, drive func(w *Wrapper, sink *capturingS
 }
 
 // Claude, streaming stdio: the result line carries usage and ends the turn.
+// go-providers' live capture claude/stream_resume (claude 2.1.286).
 func TestNativeTurnOrder_ClaudeStreamingStdio(t *testing.T) {
-	skipUnlessSh(t)
 	dir := t.TempDir()
-	script := writeShellFixtureLauncher(t, dir, "fake-claude", []byte(`#!/bin/sh
-IFS= read -r line
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-order"}'
-printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}'
-printf '%s\n' '{"type":"result","subtype":"success","result":"hello","stop_reason":"end_turn","usage":{"input_tokens":11,"output_tokens":7,"cache_creation_input_tokens":2,"cache_read_input_tokens":3}}'
-while IFS= read -r line; do :; done
-`))
-	t.Setenv("CLAUDE_CLI_PATH", script)
+	fake := providertest.New(t, runtimes.Claude, providertest.Replay("claude/stream_resume"))
+	t.Setenv("CLAUDE_CLI_PATH", fake.Path)
 
 	evs := runToExit(t, Config{
 		App:               "test-turn-order",
@@ -153,9 +194,9 @@ while IFS= read -r line; do :; done
 	}, stopWhenIdle(t))
 
 	done := assertOneTurn(t, evs, runtimeevents.KindTurnCompleted)
-	want := llmtypes.Usage{InputTokens: 11, OutputTokens: 7, CacheCreationTokens: 2, CacheReadTokens: 3, StopReason: "end_turn"}
+	want := adapterUsage(t, provider.NewClaudeAdapterStreamingStdio(), fixtureFrame(t, "claude/stream_resume.transcript.jsonl", "result"))
 	if got := terminalUsage(t, done); got != want {
-		t.Errorf("turn.completed usage = %+v, want %+v", got, want)
+		t.Errorf("turn.completed usage = %+v, want the result's %+v", got, want)
 	}
 	var p struct {
 		StopReason string `json:"stop_reason"`
@@ -167,17 +208,17 @@ while IFS= read -r line; do :; done
 }
 
 // Claude, streaming stdio, a turn that ends in error: one tagged turn.failed,
-// no turn.completed, then idle.
+// no turn.completed, then idle. The frames are claude 2.1.286's own for a
+// model it cannot use (go-providers' capture claude/print_error_unknown_model):
+// an assistant message explaining, then an is_error result.
 func TestNativeTurnOrder_ClaudeStreamingStdioError(t *testing.T) {
-	skipUnlessSh(t)
 	dir := t.TempDir()
-	script := writeShellFixtureLauncher(t, dir, "fake-claude", []byte(`#!/bin/sh
-IFS= read -r line
-printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"partial"}]}}'
-printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"overloaded"}'
-while IFS= read -r line; do :; done
-`))
-	t.Setenv("CLAUDE_CLI_PATH", script)
+	steps := []providertest.Step{providertest.RecvLine()}
+	for _, line := range providertest.FixtureLines(t, "claude/print_error_unknown_model.jsonl") {
+		steps = append(steps, providertest.Stdout(string(line)))
+	}
+	fake := providertest.New(t, runtimes.Claude, providertest.Script(append(steps, providertest.AwaitEOF())...))
+	t.Setenv("CLAUDE_CLI_PATH", fake.Path)
 
 	evs := runToExit(t, Config{
 		App:               "test-turn-order",
@@ -188,27 +229,22 @@ while IFS= read -r line; do :; done
 	}, stopWhenIdle(t))
 
 	failed := assertOneTurn(t, evs, runtimeevents.KindTurnFailed)
-	if !strings.Contains(string(failed.Payload), "overloaded") {
+	if !strings.Contains(string(failed.Payload), "issue with the selected model") {
 		t.Errorf("turn.failed payload = %s, want the provider's error", failed.Payload)
 	}
 }
 
 // Codex, subprocess per turn (`codex exec --json`, the shape Nanite launches
-// Codex with): turn.completed carries usage and ends the turn.
+// Codex with): turn.completed carries usage and ends the turn. go-providers'
+// live capture codex/exec_turn1 (codex-cli 0.159.2).
 func TestNativeTurnOrder_CodexSubprocessPerTurn(t *testing.T) {
-	skipUnlessSh(t)
 	dir := t.TempDir()
-	script := writeShellFixtureLauncher(t, dir, "fake-codex", []byte(`#!/bin/sh
-printf '%s\n' '{"type":"thread.started","thread_id":"codex-order"}'
-printf '%s\n' '{"type":"turn.started"}'
-printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hello"}}'
-printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":9}}'
-`))
-	t.Setenv("CODEX_CLI_PATH", script)
+	fake := providertest.New(t, runtimes.Codex, providertest.Replay("codex/exec_turn1"))
 
 	adapter, err := launch.Select(launch.Selection{
 		Runtime: "codex",
 		Mode:    runtimes.ModeSubprocessPerTurn,
+		Binary:  fake.Path,
 	})
 	if err != nil {
 		t.Fatalf("Select: %v", err)
@@ -223,10 +259,9 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":20,"cached_input
 	})
 
 	done := assertOneTurn(t, evs, runtimeevents.KindTurnCompleted)
-	// go-providers v0.35.0: codex exec reports end_turn for a completed turn.
-	want := llmtypes.Usage{InputTokens: 20, OutputTokens: 9, CacheReadTokens: 5, StopReason: llmtypes.StopReasonEndTurn}
+	want := adapterUsage(t, provider.NewCodexAdapter(), fixtureFrame(t, "codex/exec_turn1.jsonl", "turn.completed"))
 	if got := terminalUsage(t, done); got != want {
-		t.Errorf("turn.completed usage = %+v, want %+v", got, want)
+		t.Errorf("turn.completed usage = %+v, want the turn.completed's %+v", got, want)
 	}
 }
 
