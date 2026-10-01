@@ -15,6 +15,7 @@ import (
 
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	"github.com/hollis-labs/go-agent-wrapper/internal/closegate"
+	llmtypes "github.com/hollis-labs/go-llm-types"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
@@ -482,7 +483,7 @@ func (c *NDJSONBridgeClient) finishTurn(turnID string, result json.RawMessage, c
 		c.emit(runtimeevents.Event{
 			Kind:    runtimeevents.KindTurnFailed,
 			TurnID:  turnID,
-			Payload: mustMarshal(map[string]any{"error": callErr.Error()}),
+			Payload: mustMarshal(map[string]any{"error": callErr.Error(), "stop_reason": llmtypes.StopReasonError}),
 		})
 		return
 	}
@@ -492,7 +493,10 @@ func (c *NDJSONBridgeClient) finishTurn(turnID string, result json.RawMessage, c
 		Usage      json.RawMessage `json:"usage,omitempty"`
 	}
 	_ = json.Unmarshal(result, &decoded)
-	payload := map[string]any{"stop_reason": decoded.StopReason}
+	// The shared stop-reason vocabulary: ACP's end_turn, max_tokens and
+	// refusal are already in it, as is its cancellation value;
+	// max_turn_requests becomes turn_limit.
+	payload := map[string]any{"stop_reason": llmtypes.NormalizeStopReason(decoded.StopReason)}
 	if len(decoded.Usage) > 0 {
 		var usage any
 		if err := json.Unmarshal(decoded.Usage, &usage); err == nil {

@@ -24,9 +24,9 @@ import (
 func translateStreamEvent(ev llmtypes.StreamEvent) (kind runtimeevents.EventKind, payload any, ok bool) {
 	switch ev.Type {
 	case llmtypes.EventDelta:
-		return runtimeevents.KindAgentDelta, map[string]any{
+		return runtimeevents.KindAgentDelta, withBlock(map[string]any{
 			"content": ev.Content,
-		}, true
+		}, ev.BlockID, ev.Phase), true
 
 	case llmtypes.EventToolUse:
 		p := map[string]any{}
@@ -37,7 +37,8 @@ func translateStreamEvent(ev llmtypes.StreamEvent) (kind runtimeevents.EventKind
 
 	case llmtypes.EventError:
 		return runtimeevents.KindTurnFailed, map[string]any{
-			"error": ev.Error,
+			"error":       ev.Error,
+			"stop_reason": llmtypes.StopReasonError,
 		}, true
 
 	case llmtypes.EventDone:
@@ -54,7 +55,7 @@ func translateStreamEvent(ev llmtypes.StreamEvent) (kind runtimeevents.EventKind
 		if ev.ThinkingBlock != nil {
 			p["thinking"] = ev.ThinkingBlock
 		}
-		return runtimeevents.KindAgentDelta, p, true
+		return runtimeevents.KindAgentDelta, withBlock(p, ev.BlockID, llmtypes.PhaseThinking), true
 
 	default:
 		// Unknown EventType — skip rather than emit a placeholder so
@@ -63,6 +64,22 @@ func translateStreamEvent(ev llmtypes.StreamEvent) (kind runtimeevents.EventKind
 		// yet model.
 		return "", nil, false
 	}
+}
+
+// withBlock adds block_id and phase to an agent.delta payload when the
+// producer knows them. block_id is stable across one content block and
+// changes at the next, so consumers separate blocks without provider rules.
+// phase is go-llm-types' value as is: narration, final, or thought (the
+// spelling the ACP translators also emit), so thinking reads the same on
+// every runtime.
+func withBlock(p map[string]any, blockID, phase string) map[string]any {
+	if blockID != "" {
+		p["block_id"] = blockID
+	}
+	if phase != "" {
+		p["phase"] = phase
+	}
+	return p
 }
 
 // translateProviderEvent converts richer provider/events.Event frames
@@ -85,6 +102,21 @@ func translateProviderEvent(ev pevents.Event) (kind runtimeevents.EventKind, pay
 				"tool": e.Tool,
 				"args": e.Args,
 			},
+		}, true
+	case pevents.SessionLost:
+		return runtimeevents.KindSessionLost, map[string]any{
+			"requested_id": e.RequestedID,
+			"actual_id":    e.ActualID,
+			"reason":       e.Reason,
+		}, true
+	case pevents.AuthFailed:
+		return runtimeevents.KindSessionAuthFailed, map[string]any{
+			"error": e.Message,
+		}, true
+	case pevents.PermissionDenied:
+		return runtimeevents.KindAgentPermissionDenied, map[string]any{
+			"action":       e.Action,
+			"display_name": e.DisplayName,
 		}, true
 	case pevents.Heartbeat:
 		last := e.LastActivityAt

@@ -154,6 +154,7 @@ func TestClientLaunchPromptEvents_FakeSubprocess(t *testing.T) {
 			var payload struct {
 				Content string `json:"content"`
 				Phase   string `json:"phase"`
+				BlockID string `json:"block_id"`
 			}
 			_ = json.Unmarshal(ev.Payload, &payload)
 			switch payload.Phase {
@@ -164,6 +165,10 @@ func TestClientLaunchPromptEvents_FakeSubprocess(t *testing.T) {
 				}
 			case "message":
 				messageSeen = true
+				// The chunk's messageId rides through as block_id.
+				if payload.BlockID != "msg_1" {
+					t.Errorf("message delta block_id = %q, want msg_1", payload.BlockID)
+				}
 			}
 		}
 	}
@@ -172,6 +177,18 @@ func TestClientLaunchPromptEvents_FakeSubprocess(t *testing.T) {
 	}
 	if !thoughtSeen || !messageSeen {
 		t.Errorf("expected both a thought and a message delta; thoughtSeen=%v messageSeen=%v", thoughtSeen, messageSeen)
+	}
+	for _, ev := range evs {
+		if ev.Kind != runtimeevents.KindTurnCompleted {
+			continue
+		}
+		var payload struct {
+			StopReason string `json:"stop_reason"`
+		}
+		_ = json.Unmarshal(ev.Payload, &payload)
+		if payload.StopReason != "end_turn" {
+			t.Errorf("turn.completed stop_reason = %q, want end_turn", payload.StopReason)
+		}
 	}
 
 	// tool_call_update: two frames in the fake script, only the second

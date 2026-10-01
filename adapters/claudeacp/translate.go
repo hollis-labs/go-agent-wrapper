@@ -57,10 +57,10 @@ func handleNotification(c *acp.NDJSONBridgeClient, method string, params json.Ra
 		c.Emit(runtimeevents.Event{
 			Kind:   runtimeevents.KindAgentDelta,
 			TurnID: turnID,
-			Payload: mustMarshal(map[string]any{
+			Payload: mustMarshal(acp.WithBlockID(map[string]any{
 				"content": v.Content.Text,
 				"phase":   "message",
-			}),
+			}, v.MessageID)),
 		})
 
 	case "agent_thought_chunk":
@@ -77,7 +77,8 @@ func handleNotification(c *acp.NDJSONBridgeClient, method string, params json.Ra
 		// native ACP session backend; this decode is deliberately shaped
 		// to avoid repeating it.
 		var v struct {
-			Content struct {
+			MessageID string `json:"messageId"`
+			Content   struct {
 				Type string `json:"type"`
 				Text string `json:"text"`
 			} `json:"content"`
@@ -88,10 +89,10 @@ func handleNotification(c *acp.NDJSONBridgeClient, method string, params json.Ra
 		c.Emit(runtimeevents.Event{
 			Kind:   runtimeevents.KindAgentDelta,
 			TurnID: turnID,
-			Payload: mustMarshal(map[string]any{
+			Payload: mustMarshal(acp.WithBlockID(map[string]any{
 				"content": v.Content.Text,
 				"phase":   "thought",
-			}),
+			}, v.MessageID)),
 		})
 
 	case "tool_call":
