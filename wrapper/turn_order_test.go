@@ -93,6 +93,19 @@ func terminalUsage(t *testing.T, ev runtimeevents.Event) llmtypes.Usage {
 	return *p.Usage
 }
 
+// stopWhenIdle ends a session once its turn has gone idle. The fake children
+// in these tests block on stdin after their last line rather than exiting
+// straight after printing it: agentkit's long-lived runtimes call cmd.Wait
+// while the reader may still be draining stdout, and Wait closes the pipe, so
+// a child that prints and exits at once can lose its last lines before the
+// wrapper reads them (CW-20261001-0046).
+func stopWhenIdle(t *testing.T) func(w *Wrapper, sink *capturingSink) {
+	return func(w *Wrapper, sink *capturingSink) {
+		sink.waitFor(t, runtimeevents.KindSessionIdle, 5*time.Second)
+		_ = w.Stop(context.Background())
+	}
+}
+
 func runToExit(t *testing.T, cfg Config, drive func(w *Wrapper, sink *capturingSink)) []runtimeevents.Event {
 	t.Helper()
 	sink := newCapturingSink()
@@ -125,6 +138,7 @@ IFS= read -r line
 printf '%s\n' '{"type":"system","subtype":"init","session_id":"claude-order"}'
 printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}'
 printf '%s\n' '{"type":"result","subtype":"success","result":"hello","stop_reason":"end_turn","usage":{"input_tokens":11,"output_tokens":7,"cache_creation_input_tokens":2,"cache_read_input_tokens":3}}'
+while IFS= read -r line; do :; done
 `))
 	t.Setenv("CLAUDE_CLI_PATH", script)
 
@@ -134,7 +148,7 @@ printf '%s\n' '{"type":"result","subtype":"success","result":"hello","stop_reaso
 		Workdir:           dir,
 		AutoFireFirstTurn: true,
 		FirstTurnPayload:  `{"type":"user","message":{"role":"user","content":"hi"}}`,
-	}, nil)
+	}, stopWhenIdle(t))
 
 	done := assertOneTurn(t, evs, runtimeevents.KindTurnCompleted)
 	want := llmtypes.Usage{InputTokens: 11, OutputTokens: 7, CacheCreationTokens: 2, CacheReadTokens: 3, StopReason: "end_turn"}
@@ -152,6 +166,7 @@ func TestNativeTurnOrder_ClaudeStreamingStdioError(t *testing.T) {
 IFS= read -r line
 printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"partial"}]}}'
 printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"overloaded"}'
+while IFS= read -r line; do :; done
 `))
 	t.Setenv("CLAUDE_CLI_PATH", script)
 
@@ -161,7 +176,7 @@ printf '%s\n' '{"type":"result","subtype":"error","is_error":true,"result":"over
 		Workdir:           dir,
 		AutoFireFirstTurn: true,
 		FirstTurnPayload:  `{"type":"user","message":{"role":"user","content":"hi"}}`,
-	}, nil)
+	}, stopWhenIdle(t))
 
 	failed := assertOneTurn(t, evs, runtimeevents.KindTurnFailed)
 	if !strings.Contains(string(failed.Payload), "overloaded") {
@@ -286,10 +301,7 @@ while IFS= read -r line; do :; done
 		Workdir:           dir,
 		AutoFireFirstTurn: true,
 		FirstTurnPayload:  `{"jsonrpc":"2.0","id":1,"method":"turn/start","params":{}}`,
-	}, func(w *Wrapper, sink *capturingSink) {
-		sink.waitFor(t, runtimeevents.KindSessionIdle, 5*time.Second)
-		_ = w.Stop(context.Background())
-	})
+	}, stopWhenIdle(t))
 
 	done := assertOneTurn(t, evs, runtimeevents.KindTurnCompleted)
 	want := llmtypes.Usage{InputTokens: 30, OutputTokens: 6, CacheReadTokens: 4}
@@ -300,14 +312,17 @@ while IFS= read -r line; do :; done
 
 // A child that exits with a turn open and no terminal event: the turn is
 // flushed as one tagged turn.failed carrying the usage it reported, then
-// idle, before process.exited.
+// idle, before process.exited. The child reports usage before its delta, so
+// once the delta is seen the usage has been taken, and it exits only when
+// the test sends a second line.
 func TestNativeTurnOrder_ExitMidTurnFlushesTurnFailed(t *testing.T) {
 	skipUnlessSh(t)
 	dir := t.TempDir()
 	script := writeShellFixtureLauncher(t, dir, "fake-codex-app-server", []byte(`#!/bin/sh
 IFS= read -r line
-printf '%s\n' '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"partial"}}'
 printf '%s\n' '{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"tokenUsage":{"last":{"inputTokens":8,"cachedInputTokens":0,"outputTokens":1}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"partial"}}'
+IFS= read -r line
 exit 3
 `))
 
@@ -317,7 +332,12 @@ exit 3
 		Workdir:           dir,
 		AutoFireFirstTurn: true,
 		FirstTurnPayload:  `{"jsonrpc":"2.0","id":1,"method":"turn/start","params":{}}`,
-	}, nil)
+	}, func(w *Wrapper, sink *capturingSink) {
+		sink.waitFor(t, runtimeevents.KindAgentDelta, 5*time.Second)
+		if err := w.SendInput(context.Background(), []byte(`{"jsonrpc":"2.0","method":"exit"}`)); err != nil {
+			t.Errorf("SendInput: %v", err)
+		}
+	})
 
 	failed := assertOneTurn(t, evs, runtimeevents.KindTurnFailed)
 	var p struct {
