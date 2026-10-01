@@ -336,6 +336,9 @@ func (c *NDJSONBridgeClient) Launch(ctx context.Context, params LaunchParams) er
 	}
 	ReportSkippedMCPServers(params.OnDiagnostic, skipped)
 
+	// A preset the agent cannot load is not resumed: it gets a new session. The
+	// host is told with session.lost (below), not left to infer it.
+	presetNotHonored := params.SessionIDPreset != "" && !initialize.LoadSession
 	if params.SessionIDPreset != "" && initialize.LoadSession {
 		if err := c.loadSession(ctx, params, mcpServers); err != nil {
 			_ = c.Close(context.Background())
@@ -357,6 +360,9 @@ func (c *NDJSONBridgeClient) Launch(ctx context.Context, params LaunchParams) er
 	c.systemPrompt = params.SystemPrompt
 	c.mu.Unlock()
 
+	if presetNotHonored {
+		c.emit(NewSessionLostEvent(params.SessionIDPreset, c.ProviderSessionID(), SessionLoadUnsupportedReason))
+	}
 	c.emit(runtimeevents.Event{Kind: runtimeevents.KindSessionReady})
 	return nil
 }

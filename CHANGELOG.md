@@ -50,6 +50,41 @@ The Copilot ACP client's request writes honor the caller's ctx
   `-race` on a loaded host building the frame can outlast a short ctx. With the
   unbounded write restored they all fail.
 
+## v0.25.5 — 2026-10-01
+
+An ACP launch that cannot resume says so (CW-20261001-0223).
+
+### Fixed
+
+- **A preset session on an agent without `loadSession` is reported as lost.**
+  - **Before:** `NDJSONBridgeClient.Launch`, given
+    `LaunchParams.SessionIDPreset` and an agent that does not advertise
+    `agentCapabilities.loadSession`, silently called `session/new`. The
+    session started fresh while the host still believed it had resumed
+    (Torque's `Session.Resumed` and `used_resume` said true).
+  - **Now:** it emits `session.lost` after the session is configured and
+    just before `session.ready`, with the same payload as the native
+    runtimes' `session.lost`:
+    - `requested_id`: the preset;
+    - `actual_id`: the session the agent started instead;
+    - `reason`: `agent does not support session/load; started a new session`
+      (`acp.SessionLoadUnsupportedReason`).
+    `Config.OnSessionID` already reported the new id, so a host can also
+    compare it with the preset. The wrapper forwards the event unchanged.
+  - **Unchanged:**
+    - an agent that advertises `loadSession` still gets `session/load`, and a
+      failed load is still a launch error, never a fallback to
+      `session/new`;
+    - a launch with no preset reports nothing;
+    - a launch that fails before it is ready reports nothing.
+  - New: `acp.NewSessionLostEvent` and `acp.SessionLoadUnsupportedReason`,
+    for other ACP clients to report the same thing.
+  - **Not covered:** `adapters/copilotacp` has the same silent fallback and
+    still does not report it. Its `LaunchParams.SessionIDPreset` doc says so.
+- **Tested** on the claude, codex, opencode and pi clients: with and
+  without `loadSession`, with and without a preset, and through the wrapper
+  with a real subprocess. With the emission removed, the new tests fail.
+
 ## v0.25.4 — 2026-10-01
 
 NDJSON request writes honor the caller's ctx (CW-20261001-0211), and the
