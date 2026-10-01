@@ -252,7 +252,7 @@ func TestRunCodexAppServerAppliesMCPAllow(t *testing.T) {
 	}{
 		{"listed tool approved", permission.ModeDefault, []string{"mux/torque_*", "mux/cerberus_ssh_exec"}, `{"action":"accept","content":{}}`, "mux/cerberus_ssh_exec"},
 		{"unlisted tool declined", permission.ModeDefault, []string{"mux/torque_*"}, `{"action":"decline"}`, ""},
-		{"accept-edits honours the list", permission.ModeAcceptEdits, []string{"tesseract"}, `{"action":"decline"}`, ""},
+		{"accept-edits applies the list", permission.ModeAcceptEdits, []string{"tesseract"}, `{"action":"decline"}`, ""},
 		{"no list approves as before", permission.ModeDefault, nil, `{"action":"accept","content":{}}`, ""},
 		{"yolo ignores the list", permission.ModeYolo, []string{"tesseract"}, `{"action":"accept","content":{}}`, ""},
 	}
