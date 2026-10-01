@@ -4,6 +4,49 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.25.0 — 2026-10-01
+
+An ACP launch honours `Config.ProtectedPaths` without a resolved
+`SandboxPolicy` (CW-20261001-0162). Takes go-sandbox v0.5.1 (was v0.5.0).
+
+### Security
+
+- **`acp.LaunchParams.ProtectedPaths`** and **`acp.ProtectOnlyProfileID`**.
+  `acp.PrepareLaunchSandbox` applies them to the spawned agent:
+  - With a required `SandboxPolicy`, they are merged into it.
+  - Without one, or with an explicitly disabled one, the child runs under
+    `protect-control-plane`, agentkit's minimal profile: the host
+    filesystem, writable, with these directories read-only. It is reported
+    through `SandboxOutcomeCallback` like a resolved policy.
+  - A backend that cannot write-protect paths refuses the launch.
+  - Both launchers that call `PrepareLaunchSandbox` get it: the NDJSON
+    bridge clients, and copilotacp over stdio and TCP. The profile shares
+    the host network, so the parent still reaches a local TCP agent.
+- **`acp.CheckRemoteSandbox`** refuses `ProtectedPaths`
+  (`ErrRemoteSandboxUnsupported`). A remote or pre-existing endpoint cannot
+  be kept from writing them, whatever its policy says.
+- **Wrapper ACP path:**
+  - `Config.ProtectedPaths` now reaches the launcher. An ACP launch with no
+    resolved policy is no longer refused.
+  - A required policy is still merged up front, so a conflict is refused
+    before anything starts.
+  - `ErrProtectedPathsUnsupported` now means only that the platform's
+    backend cannot write-protect paths, or that the paths conflict with
+    the policy.
+- **go-sandbox v0.5.1:** a host-filesystem profile now runs a symlinked
+  command at its own path. An ACP agent installed as a symlink, such as an
+  npm shim, keeps its argv[0].
+- **Tested:**
+  - A real ACP agent (`wrapper/testdata/acpfixture`) launched with
+    `ProtectedPaths` and no policy tries, at startup, to rewrite a file in a
+    protected directory. The write is refused, its own workdir write lands,
+    the session comes up, and `sandbox.applied` reports
+    `protect-control-plane` applied.
+  - This runs for opencode (NDJSON) and copilot over stdio and TCP.
+  - With the paths not forwarded, the same test fails because the write
+    lands.
+  - Unit tests cover the remote refusal and the bwrap argv.
+
 ## v0.23.0 — 2026-10-01
 
 Hosts can write-protect their control-plane directories from the agents the

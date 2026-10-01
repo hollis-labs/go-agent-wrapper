@@ -22,8 +22,8 @@ github.com/hollis-labs/go-runtime-events v0.2.1 h1:ik7AxHU5pPLvNXPIfYYC10czm3zou
 github.com/hollis-labs/go-runtime-events v0.2.1/go.mod h1:+4cNkz4YKLfhCtve9FjMRKOp/0SokwjJ5vGfZ0/mHRk=
 github.com/hollis-labs/go-safefs v0.1.0 h1:DOlOS/0OnLKgUXON9YiPTzZZyYhqogNUo9RoYpa7UOY=
 github.com/hollis-labs/go-safefs v0.1.0/go.mod h1:cy6lXh6KhPuIoQ9hGQSL+sd4N1dhJ1hE3sSCMXNB6JA=
-github.com/hollis-labs/go-sandbox v0.5.0 h1:VRuIVNKr6X/EFeNzOSPrhJkTWbfCyKwzPT16EYvRhKo=
-github.com/hollis-labs/go-sandbox v0.5.0/go.mod h1:cZVYQKfEze0jFkt7iyvvUTAc7M+7tppRxpq/h8VYUYg=
+github.com/hollis-labs/go-sandbox v0.5.1 h1:B4m18phhxfXHBihLYUGzRF0L3Q22QmKTUhJkH0XU1/U=
+github.com/hollis-labs/go-sandbox v0.5.1/go.mod h1:cZVYQKfEze0jFkt7iyvvUTAc7M+7tppRxpq/h8VYUYg=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=

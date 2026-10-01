@@ -11,7 +11,7 @@ require (
 	github.com/hollis-labs/go-permission v0.1.0
 	github.com/hollis-labs/go-providers v0.39.0
 	github.com/hollis-labs/go-runtime-events v0.2.1
-	github.com/hollis-labs/go-sandbox v0.5.0
+	github.com/hollis-labs/go-sandbox v0.5.1
 )
 
 require (

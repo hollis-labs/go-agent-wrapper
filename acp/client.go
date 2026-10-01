@@ -190,6 +190,14 @@ type LaunchParams struct {
 	// confinement because this library cannot verify their host guarantee.
 	SandboxPolicy *sandbox.ResolvedAccessPolicy
 
+	// ProtectedPaths are absolute host directories the spawned agent must not
+	// write (CW-20261001-0162). With a required SandboxPolicy they are merged
+	// into it. Without one, or with an explicitly disabled one, the child runs
+	// under ProtectOnlyProfileID: the host filesystem, writable, with these
+	// directories read-only. A remote or pre-existing endpoint cannot be
+	// protected and is refused.
+	ProtectedPaths []string
+
 	// SandboxOutcomeCallback receives sanitized process-confinement outcomes.
 	// The callback carries no argv or environment values.
 	SandboxOutcomeCallback func(sandbox.EnforcementOutcome)

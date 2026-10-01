@@ -155,9 +155,12 @@ type Config struct {
 	// rather than run with the control plane writable.
 	//
 	// On the ACP path they are merged into the resolved SandboxPolicy (or
-	// the prepared access policy). An ACP launch with ProtectedPaths and no
-	// resolved policy is refused with ErrProtectedPathsUnsupported: the ACP
-	// launcher has no protect-only sandbox yet (CW-20261001-0162).
+	// the prepared access policy). Without one, or with an explicitly
+	// disabled one, the ACP child runs under acp.ProtectOnlyProfileID, the
+	// same minimal host-filesystem profile (CW-20261001-0162). An ACP
+	// endpoint the wrapper does not spawn cannot be protected and is
+	// refused. Where the backend cannot write-protect paths, an ACP launch
+	// fails with ErrProtectedPathsUnsupported.
 	//
 	// go-sandbox's rules apply: directories only, real paths, existing
 	// before launch, no write grant inside one. Protection stops direct
