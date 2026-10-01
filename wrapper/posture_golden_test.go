@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"testing"
@@ -85,16 +84,16 @@ func TestNativeEmptyPostureMatchesV0_20_0(t *testing.T) {
 		got[string(c.id)] = g
 	}
 
-	path := filepath.Join("testdata", "native_empty_posture.json")
+	const path = "testdata/native_empty_posture.json"
 	if *updateNativePosture {
 		b, err := json.MarshalIndent(got, "", "  ")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.MkdirAll("testdata", 0o755); err != nil {
+		if err := os.MkdirAll("testdata", 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return
