@@ -20,6 +20,7 @@ import (
 	"github.com/hollis-labs/go-agent-wrapper/acp"
 	"github.com/hollis-labs/go-agent-wrapper/adapters"
 	"github.com/hollis-labs/go-agent-wrapper/internal/closegate"
+	llmtypes "github.com/hollis-labs/go-llm-types"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 	"github.com/hollis-labs/go-sandbox/sandbox"
 )
@@ -820,15 +821,15 @@ func (c *Client) awaitPromptResult(turnID string, ch chan wireFrame) {
 	f, ok := <-ch
 	var event runtimeevents.Event
 	if !ok {
-		payload, _ := json.Marshal(map[string]any{"error": "connection closed before session/prompt response"})
+		payload, _ := json.Marshal(map[string]any{"error": "connection closed before session/prompt response", "stop_reason": llmtypes.StopReasonError})
 		event = runtimeevents.Event{Kind: runtimeevents.KindTurnFailed, TurnID: turnID, Payload: payload}
 	} else if f.Error != nil {
-		payload, _ := json.Marshal(map[string]any{"error": f.Error.Message})
+		payload, _ := json.Marshal(map[string]any{"error": f.Error.Message, "stop_reason": llmtypes.StopReasonError})
 		event = runtimeevents.Event{Kind: runtimeevents.KindTurnFailed, TurnID: turnID, Payload: payload}
 	} else {
 		var res sessionPromptResult
 		_ = json.Unmarshal(f.Result, &res)
-		payload, _ := json.Marshal(map[string]any{"stop_reason": res.StopReason})
+		payload, _ := json.Marshal(map[string]any{"stop_reason": llmtypes.NormalizeStopReason(res.StopReason)})
 		event = runtimeevents.Event{Kind: runtimeevents.KindTurnCompleted, TurnID: turnID, Payload: payload}
 	}
 	c.endTurn()

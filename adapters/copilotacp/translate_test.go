@@ -154,3 +154,43 @@ func TestAcpUpdateToStreamEvent_ToolResultSkipped(t *testing.T) {
 		t.Error("acpUpdateToStreamEvent(tool_result) = ok=true, want false (no StreamEvent analog, deliberate skip)")
 	}
 }
+
+// CW-20260930-0137: messageId / thoughtId become block_id so consumers can
+// separate messages; phase uses the same message/thought values as the other
+// ACP translators.
+func TestAcpUpdateToRuntimeEvent_BlockIDAndPhase(t *testing.T) {
+	msg, ok := parseSessionUpdate(json.RawMessage(`{"sessionUpdate":"agent_message_chunk","messageId":"msg_7","content":{"type":"text","text":"hi"}}`))
+	if !ok || msg.blockID != "msg_7" {
+		t.Fatalf("message update = %+v, %v; want blockID msg_7", msg, ok)
+	}
+	ev, ok := acpUpdateToRuntimeEvent(msg, "turn_1")
+	if !ok {
+		t.Fatal("message delta not mapped")
+	}
+	var p map[string]any
+	_ = json.Unmarshal(ev.Payload, &p)
+	if p["block_id"] != "msg_7" || p["phase"] != "message" {
+		t.Errorf("message payload = %v, want block_id msg_7 and phase message", p)
+	}
+
+	thought, _ := parseSessionUpdate(json.RawMessage(`{"sessionUpdate":"agent_thought_chunk","thoughtId":"th_2","content":{"type":"text","text":"hmm"}}`))
+	ev, _ = acpUpdateToRuntimeEvent(thought, "turn_1")
+	p = nil
+	_ = json.Unmarshal(ev.Payload, &p)
+	if p["block_id"] != "th_2" || p["phase"] != "thought" || p["thinking"] != true {
+		t.Errorf("thought payload = %v, want block_id th_2, phase thought, thinking true", p)
+	}
+	se, _ := acpUpdateToStreamEvent(thought)
+	if se.BlockID != "th_2" || se.Phase != llmtypes.PhaseThinking {
+		t.Errorf("thought StreamEvent = %+v, want BlockID th_2 and PhaseThinking", se)
+	}
+
+	// The real captured chunk has no messageId: no block_id key at all.
+	plain, _ := parseSessionUpdate(rawUpdateField(t, realAgentMessageChunk))
+	ev, _ = acpUpdateToRuntimeEvent(plain, "turn_1")
+	p = nil
+	_ = json.Unmarshal(ev.Payload, &p)
+	if _, has := p["block_id"]; has {
+		t.Errorf("payload without messageId has block_id: %v", p)
+	}
+}

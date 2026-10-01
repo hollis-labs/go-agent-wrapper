@@ -62,15 +62,16 @@ func handleNotification(c *acp.NDJSONBridgeClient, method string, params json.Ra
 		c.Emit(runtimeevents.Event{
 			Kind:   runtimeevents.KindAgentDelta,
 			TurnID: turnID,
-			Payload: mustMarshal(map[string]any{
+			Payload: mustMarshal(acp.WithBlockID(map[string]any{
 				"content": v.Content.Text,
 				"phase":   "message",
-			}),
+			}, v.MessageID)),
 		})
 
 	case "agent_thought_chunk":
 		var v struct {
-			Thought string `json:"thought"`
+			MessageID string `json:"messageId"`
+			Thought   string `json:"thought"`
 		}
 		if err := json.Unmarshal(envelope.Update, &v); err != nil {
 			return
@@ -78,10 +79,10 @@ func handleNotification(c *acp.NDJSONBridgeClient, method string, params json.Ra
 		c.Emit(runtimeevents.Event{
 			Kind:   runtimeevents.KindAgentDelta,
 			TurnID: turnID,
-			Payload: mustMarshal(map[string]any{
+			Payload: mustMarshal(acp.WithBlockID(map[string]any{
 				"content": v.Thought,
 				"phase":   "thought",
-			}),
+			}, v.MessageID)),
 		})
 
 	case "tool_call":
