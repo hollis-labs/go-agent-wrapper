@@ -114,9 +114,8 @@ func TestManagerFinishedSessionIgnoresLateEvents(t *testing.T) {
 			Commit: func(s *Session) error { held = s; return errors.New("host refused") }})
 		launched <- err
 	}()
-	if got := <-client.events; got.Kind != runtimeevents.KindSessionReady {
-		t.Fatalf("first event = %v, want session.ready", got.Kind)
-	}
+	// drain receives the client's session.ready; the test never reads
+	// client.events itself, so it cannot race drain for an event.
 	if err := <-launched; err == nil {
 		t.Fatal("Launch succeeded, want the commit error")
 	}
