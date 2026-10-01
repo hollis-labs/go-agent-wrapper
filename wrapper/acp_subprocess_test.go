@@ -352,6 +352,7 @@ func TestAcceptedPromptEndsExactlyOnceOnExplicitCloseAllAdapters(t *testing.T) {
 						t.Fatalf("terminal TurnID = %q, want %q", event.TurnID, startedID)
 					}
 					terminals++
+				default:
 				}
 			}
 			if startedID == "" || terminals != 1 {
@@ -416,6 +417,7 @@ func TestConcurrentPromptCloseAdmissionAndWireOrderAllAdapters(t *testing.T) {
 							t.Fatalf("iteration %d terminal TurnID = %q, started = %q", iteration, event.TurnID, startedID)
 						}
 						terminals++
+					default:
 					}
 				}
 
@@ -542,6 +544,7 @@ func collectClientTurn(t *testing.T, client acp.Client, timeout time.Duration) c
 				result.terminal = event
 				result.terminals++
 				return result
+			default:
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for turn terminal: %+v", result)

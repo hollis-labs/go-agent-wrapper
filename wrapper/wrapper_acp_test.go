@@ -183,6 +183,7 @@ func (a *fakeACPCLIAdapter) ParseLine(line []byte) ([]llmtypes.StreamEvent, erro
 				out = append(out, llmtypes.StreamEvent{Type: llmtypes.EventDelta, Content: text})
 			case runtimeevents.KindTurnCompleted:
 				out = append(out, llmtypes.StreamEvent{Type: llmtypes.EventDone})
+			default:
 			}
 		default:
 			return out, nil

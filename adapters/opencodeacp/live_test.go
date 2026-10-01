@@ -82,6 +82,7 @@ loop:
 			case runtimeevents.KindTurnCompleted, runtimeevents.KindTurnFailed:
 				terminal = ev
 				break loop
+			default:
 			}
 		case <-deadline:
 			t.Fatal("timed out waiting for a real opencode acp turn to complete")

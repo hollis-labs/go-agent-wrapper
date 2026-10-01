@@ -52,6 +52,7 @@ func turnLifecycle(evs []runtimeevents.Event) []turnStep {
 				continue
 			}
 			out = append(out, step)
+		default:
 		}
 	}
 	return out
