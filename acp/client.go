@@ -210,9 +210,13 @@ type LaunchParams struct {
 	// an implementation should attempt to resume via ACP's
 	// `session/load`, mirroring wrapper.Config.SessionIDPreset's
 	// existing convention for non-ACP adapters. Implementations that
-	// don't advertise loadSession start a fresh session. Once loadSession
-	// is advertised, a failed load is returned rather than silently losing
-	// continuity through a session/new fallback.
+	// don't advertise loadSession start a fresh session, and say so: they
+	// emit session.lost (see [NewSessionLostEvent]) with the preset as the
+	// requested id and the new session as the actual one, just before
+	// session.ready. Once loadSession is advertised, a failed load is
+	// returned rather than silently losing continuity through a session/new
+	// fallback. NDJSONBridgeClient reports the fresh session this way;
+	// adapters/copilotacp does not yet (CW-20261001-0223).
 	SessionIDPreset string
 
 	// AuthMethodID, when non-empty, selects one agent-managed authentication

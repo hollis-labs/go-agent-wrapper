@@ -308,6 +308,17 @@ func TestNDJSONBridgeClient_CancelAndClosePreemptBackpressuredPermissionResponse
 // handshake. extra is spliced into the method switch.
 func scriptedAgent(t *testing.T, extra string) string {
 	t.Helper()
+	return scriptedAgentWithLoad(t, extra, true)
+}
+
+// scriptedAgentWithLoad is scriptedAgent for an agent that does, or does not,
+// advertise agentCapabilities.loadSession.
+func scriptedAgentWithLoad(t *testing.T, extra string, loadSession bool) string {
+	t.Helper()
+	capabilities := `{"loadSession":true,"sessionCapabilities":{"close":{}}}`
+	if !loadSession {
+		capabilities = `{"sessionCapabilities":{"close":{}}}`
+	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fake-agent.sh")
 	body := `#!/bin/sh
@@ -319,7 +330,7 @@ while IFS= read -r line; do
   printf '%s\n' "$method" >> "$log"
   case "$method" in
     initialize)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"close":{}}},"authMethods":[{"id":"agent","type":"agent"}]}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":` + capabilities + `,"authMethods":[{"id":"agent","type":"agent"}]}}\n' "$id"
       ;;
     session/new)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"ses_new"}}\n' "$id"
