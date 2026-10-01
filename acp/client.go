@@ -20,6 +20,10 @@ type InitializeResult struct {
 	AuthMethods     []AuthMethod
 	LoadSession     bool
 	SessionClose    bool
+	// MCPHTTP reports agentCapabilities.mcpCapabilities.http: the agent
+	// accepts HTTP MCP servers in session/new and session/load. Stdio
+	// servers need no capability.
+	MCPHTTP bool
 }
 
 // AuthMethod is one authentication choice advertised by an ACP agent.
@@ -42,7 +46,10 @@ func ParseInitializeResult(result json.RawMessage, supportedVersion int) (Initia
 			Type string `json:"type"`
 		} `json:"authMethods"`
 		AgentCapabilities struct {
-			LoadSession         bool `json:"loadSession"`
+			LoadSession     bool `json:"loadSession"`
+			MCPCapabilities struct {
+				HTTP bool `json:"http"`
+			} `json:"mcpCapabilities"`
 			SessionCapabilities struct {
 				Close json.RawMessage `json:"close"`
 			} `json:"sessionCapabilities"`
@@ -57,6 +64,7 @@ func ParseInitializeResult(result json.RawMessage, supportedVersion int) (Initia
 	parsed := InitializeResult{
 		ProtocolVersion: wire.ProtocolVersion,
 		LoadSession:     wire.AgentCapabilities.LoadSession,
+		MCPHTTP:         wire.AgentCapabilities.MCPCapabilities.HTTP,
 	}
 	for _, method := range wire.AuthMethods {
 		parsed.AuthMethods = append(parsed.AuthMethods, AuthMethod{ID: method.ID, Type: method.Type})
@@ -209,6 +217,13 @@ type LaunchParams struct {
 	// SessionModeID, when non-empty, is applied with `session/set_mode`
 	// after session/new or session/load completes.
 	SessionModeID string
+
+	// MCPServers are the MCP servers the agent connects to for this session,
+	// sent as session/new and session/load "mcpServers" (see
+	// SessionMCPServers). HTTP servers reach only agents that advertise
+	// mcpCapabilities.http; the rest are dropped and named through
+	// OnDiagnostic.
+	MCPServers []MCPServer
 
 	// SessionConfig applies ACP session configuration options after the
 	// session is created/loaded. Keys are config option ids and values are

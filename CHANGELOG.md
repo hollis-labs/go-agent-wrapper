@@ -4,6 +4,30 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.19.0 — 2026-10-01
+
+### Added
+
+- **ACP sessions carry MCP servers** (CW-20260930-0136). `Config.ACPMCPServers`
+  (`[]acp.MCPServer`, also `acp.LaunchParams.MCPServers`) is sent as
+  `mcpServers` on `session/new` and `session/load`, where every ACP client
+  used to send `[]`. That covers the NDJSON bridge and Copilot's own client.
+  An `acp.MCPServer` sets exactly one transport: `URL` with optional
+  `Headers` (streamable HTTP), or `Command` with `Args` and `Env` (stdio).
+  `acp.SessionMCPServers` renders the ACP SDK's wire shapes: http is
+  `{type:"http", name, url, headers:[{name,value}]}` and stdio is
+  `{name, command, args, env:[{name,value}]}`. Arrays are always present and
+  name/value entries are sorted. An empty or duplicate name, or not exactly
+  one transport, fails the launch.
+- `acp.InitializeResult.MCPHTTP` reports
+  `agentCapabilities.mcpCapabilities.http`. HTTP servers go only to agents
+  that advertise it (opencode and Copilot do). For any other agent they are
+  dropped, and `OnACPDiagnostic` names them; it never includes header values.
+- Known limit: pi-acp advertises `http: false` and does not pass session MCP
+  servers to Pi at all, so Pi sessions get none from here, stdio included.
+  Native runtimes take MCP servers from the launch plan through agentkit's
+  prepared plant (agentkit v0.15.0), not from this field.
+
 ## v0.18.0 — 2026-10-01
 
 ### Changed

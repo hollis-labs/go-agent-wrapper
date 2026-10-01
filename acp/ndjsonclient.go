@@ -329,15 +329,22 @@ func (c *NDJSONBridgeClient) Launch(ctx context.Context, params LaunchParams) er
 	c.sessionClose = initialize.SessionClose
 	c.mu.Unlock()
 
+	mcpServers, skipped, err := SessionMCPServers(params.MCPServers, initialize.MCPHTTP)
+	if err != nil {
+		_ = c.Close(context.Background())
+		return fmt.Errorf("%s: %w", c.cfg.Component, err)
+	}
+	ReportSkippedMCPServers(params.OnDiagnostic, skipped)
+
 	if params.SessionIDPreset != "" && initialize.LoadSession {
-		if err := c.loadSession(ctx, params); err != nil {
+		if err := c.loadSession(ctx, params, mcpServers); err != nil {
 			_ = c.Close(context.Background())
 			return fmt.Errorf("%s: session/load: %w", c.cfg.Component, err)
 		}
 		c.mu.Lock()
 		c.sessionID = params.SessionIDPreset
 		c.mu.Unlock()
-	} else if err := c.newSession(ctx, params); err != nil {
+	} else if err := c.newSession(ctx, params, mcpServers); err != nil {
 		_ = c.Close(context.Background())
 		return fmt.Errorf("%s: session/new: %w", c.cfg.Component, err)
 	}
@@ -401,10 +408,10 @@ func (c *NDJSONBridgeClient) configureSession(ctx context.Context, params Launch
 	return nil
 }
 
-func (c *NDJSONBridgeClient) newSession(ctx context.Context, params LaunchParams) error {
+func (c *NDJSONBridgeClient) newSession(ctx context.Context, params LaunchParams, mcpServers []any) error {
 	result, err := c.Call(ctx, "session/new", map[string]any{
 		"cwd":        params.Cwd,
-		"mcpServers": []any{},
+		"mcpServers": mcpServers,
 	})
 	if err != nil {
 		return err
@@ -424,11 +431,11 @@ func (c *NDJSONBridgeClient) newSession(ctx context.Context, params LaunchParams
 	return nil
 }
 
-func (c *NDJSONBridgeClient) loadSession(ctx context.Context, params LaunchParams) error {
+func (c *NDJSONBridgeClient) loadSession(ctx context.Context, params LaunchParams, mcpServers []any) error {
 	_, err := c.Call(ctx, "session/load", map[string]any{
 		"sessionId":  params.SessionIDPreset,
 		"cwd":        params.Cwd,
-		"mcpServers": []any{},
+		"mcpServers": mcpServers,
 	})
 	return err
 }

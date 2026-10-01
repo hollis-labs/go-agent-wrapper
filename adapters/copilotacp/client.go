@@ -290,6 +290,12 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 		_ = c.Close(ctx)
 		return fmt.Errorf("copilotacp: authenticate: %w", err)
 	}
+	mcpServers, skipped, mcpErr := acp.SessionMCPServers(params.MCPServers, initialize.MCPHTTP)
+	if mcpErr != nil {
+		_ = c.Close(ctx)
+		return fmt.Errorf("copilotacp: %w", mcpErr)
+	}
+	acp.ReportSkippedMCPServers(params.OnDiagnostic, skipped)
 	c.mu.Lock()
 	c.sessionClose = initialize.SessionClose
 	c.mu.Unlock()
@@ -299,7 +305,7 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 		if _, loadErr := c.call(ctx, "session/load", map[string]any{
 			"sessionId":  params.SessionIDPreset,
 			"cwd":        params.Cwd,
-			"mcpServers": []any{},
+			"mcpServers": mcpServers,
 		}); loadErr != nil {
 			_ = c.Close(ctx)
 			return fmt.Errorf("copilotacp: session/load: %w", loadErr)
@@ -307,7 +313,7 @@ func (c *Client) Launch(ctx context.Context, params acp.LaunchParams) error {
 		sessionID = params.SessionIDPreset
 	}
 	if sessionID == "" {
-		newParams := sessionNewParams{Cwd: params.Cwd, MCPServers: []any{}}
+		newParams := sessionNewParams{Cwd: params.Cwd, MCPServers: mcpServers}
 		result, newErr := c.call(ctx, "session/new", newParams)
 		if newErr != nil {
 			_ = c.Close(ctx)
