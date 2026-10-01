@@ -10,10 +10,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/hollis-labs/agent-contracts-leaf/runtimes"
+	"github.com/hollis-labs/go-providers/providertest"
 
 	"github.com/hollis-labs/go-agent-wrapper/activity"
 	"github.com/hollis-labs/go-agent-wrapper/adapters/claude"
@@ -76,21 +78,12 @@ func workspaceLogPath(dir, sessionID string) string {
 //     OnSessionID and EventFanout together, so the pre-existing rebind
 //     alone already covers it).
 func TestRunRealClaudeAdapter_StreamingStdio(t *testing.T) {
-	skipUnlessSh(t)
 	dir := t.TempDir()
-
-	argvFile := filepath.Join(dir, "argv.txt")
-	stdinFile := filepath.Join(dir, "stdin.txt")
-	scriptTpl := `#!/bin/sh
-printf '%%s\n' "$@" > %s
-IFS= read -r line
-printf '%%s' "$line" > %s
-printf '{"type":"system","subtype":"init","session_id":"claude-fake-session"}\n'
-printf '{"type":"result","subtype":"success","result":"ok"}\n'
-`
-	body := fmt.Sprintf(scriptTpl, argvFile, stdinFile)
-	script := writeShellFixtureLauncher(t, dir, "fake-claude", []byte(body))
-	t.Setenv("CLAUDE_CLI_PATH", script)
+	// go-providers' live capture of a resumed streaming Claude turn
+	// (claude 2.1.286): one user frame in, system/init with the session id,
+	// the reply, a success result; Claude then waits for stdin to close.
+	fake := providertest.New(t, runtimes.Claude, providertest.Replay("claude/stream_resume"))
+	t.Setenv("CLAUDE_CLI_PATH", fake.Path)
 
 	sink := newCapturingSink()
 	w, err := New(Config{
@@ -110,14 +103,17 @@ printf '{"type":"result","subtype":"success","result":"ok"}\n'
 	defer cancel()
 	runErrCh := make(chan error, 1)
 	go func() { runErrCh <- w.Run(ctx) }()
-
+	sink.waitFor(t, runtimeevents.KindTurnCompleted, 10*time.Second)
+	if err := w.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
 	select {
 	case runErr := <-runErrCh:
 		if runErr != nil {
-			t.Fatalf("Run: %v (want nil — the fake claude script exits cleanly on its own)", runErr)
+			t.Fatalf("Run: %v", runErr)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("Run did not return; fake claude script may be stuck waiting on stdin")
+		t.Fatal("Run did not return after Stop")
 	}
 
 	// ----- WorkspaceDir/LogPath: no hard error, default landed where documented -----
@@ -126,34 +122,37 @@ printf '{"type":"result","subtype":"success","result":"ok"}\n'
 		t.Errorf("synthesized workspace log file %q not created: %v", logPath, err)
 	}
 
+	call := fake.Call(0)
 	// ----- SessionIDPreset reached real BuildArgs as --resume <id> -----
-	argvBytes, err := os.ReadFile(argvFile)
-	if err != nil {
-		t.Fatalf("read argv capture: %v", err)
+	if len(call.Args) < 2 || call.Args[0] != "--resume" || call.Args[1] != "claude-resume-id" {
+		t.Errorf("argv = %v, want to start with [--resume claude-resume-id] (SessionIDPreset not forwarded to real BuildArgs)", call.Args)
 	}
-	argv := strings.Split(strings.TrimRight(string(argvBytes), "\n"), "\n")
-	if len(argv) < 2 || argv[0] != "--resume" || argv[1] != "claude-resume-id" {
-		t.Errorf("argv = %v, want to start with [--resume claude-resume-id] (SessionIDPreset not forwarded to real BuildArgs)", argv)
-	}
-
 	// ----- AutoFireFirstTurn/FirstTurnPayload delivered over stdin -----
-	stdinBytes, err := os.ReadFile(stdinFile)
-	if err != nil {
-		t.Fatalf("read stdin capture: %v", err)
-	}
-	if got := strings.TrimSpace(string(stdinBytes)); got != `{"type":"user","message":{"role":"user","content":"hello"}}` {
-		t.Errorf("first-turn stdin payload = %q, want the configured FirstTurnPayload", got)
+	if len(call.Stdin) == 0 || call.Stdin[0] != `{"type":"user","message":{"role":"user","content":"hello"}}` {
+		t.Errorf("first-turn stdin = %q, want the configured FirstTurnPayload", call.Stdin)
 	}
 
 	// ----- provider session id reached Process.ProviderSessionID -----
+	var want string
+	for _, line := range providertest.FixtureLines(t, "claude/stream_resume.transcript.jsonl") {
+		var step struct {
+			Send struct {
+				SessionID string `json:"session_id"`
+			} `json:"send"`
+		}
+		if json.Unmarshal(line, &step) == nil && step.Send.SessionID != "" {
+			want = step.Send.SessionID
+			break
+		}
+	}
 	var gotProviderSessionID string
 	for _, ev := range sink.snapshot() {
 		if ev.Process.ProviderSessionID != "" {
 			gotProviderSessionID = ev.Process.ProviderSessionID
 		}
 	}
-	if gotProviderSessionID != "claude-fake-session" {
-		t.Errorf("ProviderSessionID = %q, want claude-fake-session", gotProviderSessionID)
+	if want == "" || gotProviderSessionID != want {
+		t.Errorf("ProviderSessionID = %q, want the captured init's %q", gotProviderSessionID, want)
 	}
 
 	if !hasKind(sink.snapshot(), runtimeevents.KindSessionReady) {
@@ -178,17 +177,10 @@ printf '{"type":"result","subtype":"success","result":"ok"}\n'
 // flag), so there is no observable argv difference to assert on for
 // this adapter.
 func TestRunRealCodexAdapter_JsonRpcStdio(t *testing.T) {
-	skipUnlessSh(t)
 	dir := t.TempDir()
-
-	stdinFile := filepath.Join(dir, "stdin.txt")
-	scriptTpl := `#!/bin/sh
-IFS= read -r line
-printf '%%s' "$line" > %s
-`
-	body := fmt.Sprintf(scriptTpl, stdinFile)
-	script := writeShellFixtureLauncher(t, dir, "fake-codex", []byte(body))
-	t.Setenv("CODEX_CLI_PATH", script)
+	// app-server reads the first frame, then exits on its own.
+	fake := providertest.New(t, runtimes.Codex, providertest.Script(providertest.RecvLine(), providertest.Exit(0)))
+	t.Setenv("CODEX_CLI_PATH", fake.Path)
 
 	sink := newCapturingSink()
 	w, err := New(Config{
@@ -211,10 +203,10 @@ printf '%%s' "$line" > %s
 	select {
 	case runErr := <-runErrCh:
 		if runErr != nil {
-			t.Fatalf("Run: %v (want nil — the fake codex script exits cleanly on its own)", runErr)
+			t.Fatalf("Run: %v (want nil — the fake codex exits cleanly on its own)", runErr)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("Run did not return; fake codex script may be stuck waiting on stdin")
+		t.Fatal("Run did not return; the fake codex may be stuck waiting on stdin")
 	}
 
 	logPath := workspaceLogPath(dir, w.SessionID())
@@ -222,12 +214,12 @@ printf '%%s' "$line" > %s
 		t.Errorf("synthesized workspace log file %q not created: %v", logPath, err)
 	}
 
-	stdinBytes, err := os.ReadFile(stdinFile)
-	if err != nil {
-		t.Fatalf("read stdin capture: %v", err)
+	call := fake.Call(0)
+	if len(call.Args) != 1 || call.Args[0] != "app-server" {
+		t.Errorf("argv = %q, want [app-server]", call.Args)
 	}
-	if got := strings.TrimSpace(string(stdinBytes)); got != "kickoff payload" {
-		t.Errorf("first-turn stdin payload = %q, want %q", got, "kickoff payload")
+	if len(call.Stdin) != 1 || call.Stdin[0] != "kickoff payload" {
+		t.Errorf("first-turn stdin = %q, want %q", call.Stdin, "kickoff payload")
 	}
 
 	if !hasKind(sink.snapshot(), runtimeevents.KindSessionReady) {
