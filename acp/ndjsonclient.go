@@ -494,7 +494,7 @@ func (c *NDJSONBridgeClient) Prompt(ctx context.Context, prompt string) error {
 	// immediately), but the response is awaited on a background
 	// goroutine so Prompt returns once the turn is merely accepted, per
 	// [Client.Prompt]'s documented contract.
-	respCh, err := c.beginCall("session/prompt", params)
+	call, err := c.beginCall(ctx, "session/prompt", params)
 	if err != nil {
 		c.finishTurn(turnID, nil, err)
 		c.turnWG.Done()
@@ -503,7 +503,7 @@ func (c *NDJSONBridgeClient) Prompt(ctx context.Context, prompt string) error {
 
 	go func() {
 		defer c.turnWG.Done()
-		result, err := c.awaitCall(lifetimeCtx, respCh)
+		result, err := c.awaitCall(lifetimeCtx, call)
 		c.finishTurn(turnID, result, err)
 	}()
 
@@ -887,11 +887,19 @@ func (c *NDJSONBridgeClient) failPending(err error) {
 	}
 }
 
+// outboundCall is a request that has been written and awaits its response.
+type outboundCall struct {
+	id   int64
+	resp chan rpcResponse
+}
+
 // beginCall allocates a request id, registers the pending channel, and
-// writes the request frame — but does not wait for the response. Pairs
-// with [Client.awaitCall]. It takes no context because the write is not
-// bounded by one (CW-20261001-0211).
-func (c *NDJSONBridgeClient) beginCall(method string, params any) (chan rpcResponse, error) {
+// writes the request frame, bounded by ctx, but does not wait for the
+// response. Pairs with [Client.awaitCall]. A ctx that ends while the frame is
+// still being written, or while the write waits behind another, releases it
+// (see writeLineCtx); a ctx that never ends leaves the write bounded only by
+// the transport closing (CW-20261001-0211).
+func (c *NDJSONBridgeClient) beginCall(ctx context.Context, method string, params any) (outboundCall, error) {
 	id := c.nextID.Add(1)
 	respCh := make(chan rpcResponse, 1)
 	c.pendMu.Lock()
@@ -904,23 +912,31 @@ func (c *NDJSONBridgeClient) beginCall(method string, params any) (chan rpcRespo
 		Method  string `json:"method"`
 		Params  any    `json:"params,omitempty"`
 	}
-	if err := c.writeLine(reqFrame{JSONRPC: "2.0", ID: id, Method: method, Params: params}); err != nil {
-		c.pendMu.Lock()
-		delete(c.pending, id)
-		c.pendMu.Unlock()
-		return nil, err
+	if err := c.writeLineCtx(ctx, reqFrame{JSONRPC: "2.0", ID: id, Method: method, Params: params}); err != nil {
+		c.dropPending(id)
+		return outboundCall{}, err
 	}
-	return respCh, nil
+	return outboundCall{id: id, resp: respCh}, nil
 }
 
-func (c *NDJSONBridgeClient) awaitCall(ctx context.Context, respCh chan rpcResponse) (json.RawMessage, error) {
+// dropPending forgets an outbound request whose caller stopped waiting. A
+// response that still arrives for it finds no entry and is ignored, as one for
+// any unknown id is.
+func (c *NDJSONBridgeClient) dropPending(id int64) {
+	c.pendMu.Lock()
+	delete(c.pending, id)
+	c.pendMu.Unlock()
+}
+
+func (c *NDJSONBridgeClient) awaitCall(ctx context.Context, call outboundCall) (json.RawMessage, error) {
 	select {
-	case resp := <-respCh:
+	case resp := <-call.resp:
 		if resp.err != nil {
 			return nil, resp.err
 		}
 		return resp.result, nil
 	case <-ctx.Done():
+		c.dropPending(call.id)
 		return nil, ctx.Err()
 	}
 }
@@ -930,11 +946,11 @@ func (c *NDJSONBridgeClient) awaitCall(ctx context.Context, respCh chan rpcRespo
 // adapter with an agent-specific extension method may use it too. A JSON-RPC
 // error response comes back as a *RPCError.
 func (c *NDJSONBridgeClient) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	respCh, err := c.beginCall(method, params)
+	call, err := c.beginCall(ctx, method, params)
 	if err != nil {
 		return nil, err
 	}
-	return c.awaitCall(ctx, respCh)
+	return c.awaitCall(ctx, call)
 }
 
 // Notify writes a pre-built JSON-RPC notification frame (no id), bounded by a
@@ -989,12 +1005,100 @@ func (c *NDJSONBridgeClient) closeTransport() {
 	})
 }
 
-func (c *NDJSONBridgeClient) writeLine(v any) error {
-	return c.writeLineWithDeadline(v, time.Time{})
-}
-
 type writeDeadliner interface {
 	SetWriteDeadline(time.Time) error
+}
+
+// lockWrite takes writeMu, giving up if ctx ends first. A caller queued behind
+// a stalled write would otherwise wait on it however short its own deadline.
+func (c *NDJSONBridgeClient) lockWrite(ctx context.Context) error {
+	if c.writeMu.TryLock() {
+		return nil
+	}
+	acquired := make(chan struct{})
+	go func() {
+		c.writeMu.Lock()
+		close(acquired)
+	}()
+	select {
+	case <-acquired:
+		return nil
+	case <-ctx.Done():
+		go func() {
+			<-acquired
+			c.writeMu.Unlock()
+		}()
+		return ctx.Err()
+	}
+}
+
+// writeLineCtx writes one frame to stdin, bounded by ctx, for a request whose
+// caller waits on ctx (CW-20261001-0211). It writes nothing once ctx has
+// ended, stops waiting for writeMu when ctx ends, and interrupts a write
+// blocked on a full pipe: through the write deadline when stdin has one,
+// otherwise by closing the transport. A ctx that ends mid-write leaves
+// writeMu free for the next caller.
+//
+// If the interrupted write put part of the frame on the wire, the stream no
+// longer has frame boundaries the agent can parse, so the transport is
+// closed, as Notify closes it. When nothing was written it stays open: the
+// request was never sent and the next one is whole.
+func (c *NDJSONBridgeClient) writeLineCtx(ctx context.Context, v any) error {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("%s: encode: %w", c.cfg.Component, err)
+	}
+	frame := append(encoded, '\n')
+	c.mu.Lock()
+	stdin := c.stdin
+	c.mu.Unlock()
+	if stdin == nil {
+		return errors.New(c.cfg.Component + ": not launched (no stdin)")
+	}
+	ctxErr := func(err error) error { return fmt.Errorf("%s: write request: %w", c.cfg.Component, err) }
+	if endedErr := ctx.Err(); endedErr != nil {
+		return ctxErr(endedErr)
+	}
+	if lockErr := c.lockWrite(ctx); lockErr != nil {
+		return ctxErr(lockErr)
+	}
+	defer c.writeMu.Unlock()
+	if endedErr := ctx.Err(); endedErr != nil {
+		return ctxErr(endedErr)
+	}
+
+	// The interrupt runs only once ctx has ended, so a write it cuts short
+	// always finds ctx.Err() set. That holds for a ctx deadline as much as a
+	// cancel: setting the write deadline from ctx.Deadline() instead would let
+	// the write time out a moment before ctx reports it.
+	deadliner, canSet := stdin.(writeDeadliner)
+	fired := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(fired)
+		if canSet && deadliner.SetWriteDeadline(time.Now()) == nil {
+			return
+		}
+		c.closeTransport()
+	})
+	n, err := stdin.Write(frame)
+	if !stop() {
+		// The interrupt ran or is running: let it finish before the
+		// deadline is cleared, so it cannot land on the next write.
+		<-fired
+		if canSet {
+			_ = deadliner.SetWriteDeadline(time.Time{})
+		}
+	}
+	if err == nil {
+		return nil
+	}
+	if n > 0 {
+		c.closeTransport()
+	}
+	if ctxEnded := ctx.Err(); ctxEnded != nil {
+		return ctxErr(ctxEnded)
+	}
+	return err
 }
 
 func (c *NDJSONBridgeClient) writeLineWithDeadline(v any, deadline time.Time) error {
