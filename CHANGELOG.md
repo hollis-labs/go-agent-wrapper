@@ -33,7 +33,8 @@ refused (CW-20260930-0139).
   Set `PermissionPosture: permission.ModePlan` to keep refusing them.
 - Requires `agentkit` v0.11.0 (was v0.9.0), which brings `go-sandbox` v0.4.0
   (was v0.3.0); adds `go-permission` v0.1.0. `go-providers` stays at
-  v0.30.0, the newest tag (agentkit v0.11.0 asks for v0.29.0).
+  v0.30.0; v0.31.0 waits for the paired agentkit release
+  (CW-20260930-0133).
 ## v0.13.1 — 2026-10-01
 
 Fix: one terminal event per native turn (CW-20260930-0137 slice a; root cause
