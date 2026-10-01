@@ -7,9 +7,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## v0.15.0 — 2026-10-01
 
 Apps pick any agent runtime by id and mode through one call, native or ACP
-(CW-20260930-0134, EP-20260930-0001). Pairs with agentkit v0.12.1 and
-go-providers v0.34.0, takes go-sandbox v0.4.1, and adds a dependency on
-agent-contracts-leaf v0.3.0.
+(CW-20260930-0134, EP-20260930-0001). Pairs with agentkit v0.12.2 and
+go-providers v0.34.1, takes go-sandbox v0.4.1, and adds a dependency on
+agent-contracts-leaf v0.3.0. go-providers v0.34.1 is a security fix
+(CW-20261001-0069): an untrusted turn is never parsed as a CLI flag, because
+claude print, codex exec and opencode run take the prompt last, after `--`.
+So their argv now ends in `-- <prompt>`.
 
 ### Added
 
