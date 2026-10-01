@@ -10,6 +10,8 @@ import (
 
 	"github.com/hollis-labs/go-materialize/artifact"
 	"github.com/hollis-labs/go-materialize/materialize"
+	"github.com/hollis-labs/go-providers/layout"
+	"github.com/hollis-labs/go-providers/registry"
 )
 
 func TestNoOpPlanter(t *testing.T) {
@@ -105,7 +107,7 @@ func TestSharedPlanterLegacySpecPathsAndModes(t *testing.T) {
 		"notes/readme.md",
 		".mcp.json",
 		".claude/settings.json",
-		".codex/config.toml",
+		"config.toml", // Codex, under CODEX_HOME=boot (go-providers layout)
 		"hooks/claude/PreToolUse",
 		"recovery.md",
 	}
@@ -140,4 +142,57 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return b
+}
+
+// Every runtime the go-providers layout has rows for gets its settings file
+// planted at the layout's native-config path, by id and by every alias
+// (CW-20261001-0074: no wrapper-side list of paths).
+func TestSharedPlanterProviderSettingsFollowTheLayout(t *testing.T) {
+	for _, id := range layout.Runtimes() {
+		want, ok := layout.Find(id, layout.Shape{}, layout.NativeConfig)
+		if !ok {
+			t.Errorf("%s has layout rows but no every-mode native-config row to plant settings at", id)
+			continue
+		}
+		d, ok := registry.Lookup(string(id))
+		if !ok {
+			t.Fatalf("layout runtime %s is not in the registry", id)
+		}
+		for _, name := range append([]string{string(id)}, d.Aliases...) {
+			bootDir := filepath.Join(t.TempDir(), "boot")
+			result, err := (SharedPlanter{}).Plant(context.Background(), bootDir, Spec{
+				ProviderSettings: map[string][]byte{name: []byte("settings for " + name)},
+			})
+			if err != nil {
+				t.Fatalf("Plant(ProviderSettings[%q]): %v", name, err)
+			}
+			got, err := os.ReadFile(filepath.Join(bootDir, filepath.FromSlash(want.Rel))) //nolint:gosec // G304: test reads its own t.TempDir boot dir
+			if err != nil || string(got) != "settings for "+name {
+				t.Errorf("ProviderSettings[%q]: %s = %q, %v; want the settings (planted %v)", name, want.Rel, got, err, result.PlannedFiles)
+			}
+		}
+	}
+}
+
+// A runtime the registry does not know, or one launched only over ACP (no
+// native-config row), is refused rather than planted at a guessed path.
+func TestSharedPlanterProviderSettingsRefusesRuntimesWithoutNativeConfig(t *testing.T) {
+	names := []string{"no-such-runtime", ""}
+	for _, d := range registry.All() {
+		if _, ok := layout.Find(d.ID, layout.Shape{}, layout.NativeConfig); !ok {
+			names = append(names, string(d.ID))
+		}
+	}
+	for _, name := range names {
+		bootDir := filepath.Join(t.TempDir(), "boot")
+		_, err := (SharedPlanter{}).Plant(context.Background(), bootDir, Spec{
+			ProviderSettings: map[string][]byte{name: []byte("x")},
+		})
+		if err == nil {
+			t.Errorf("Plant(ProviderSettings[%q]) = nil error, want a refusal", name)
+		}
+		if entries, _ := os.ReadDir(bootDir); len(entries) != 0 {
+			t.Errorf("Plant(ProviderSettings[%q]) wrote %v", name, entries)
+		}
+	}
 }

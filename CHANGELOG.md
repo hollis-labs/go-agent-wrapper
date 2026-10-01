@@ -4,7 +4,7 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.19.0 — 2026-10-01
+## v0.20.0 — 2026-10-01
 
 ### Added
 
@@ -21,7 +21,117 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`agent.permission.resolved` for an MCP tool call** now carries
   `mcp_server` and `mcp_tool`, plus `mcp_allow_entry` when an entry granted
   the call.
-- Requires agentkit v0.15.0.
+- Requires agentkit v0.16.0, which carries the allow-list.
+
+## v0.19.0 — 2026-10-01
+
+### Added
+
+- **ACP sessions carry MCP servers** (CW-20260930-0136). `Config.ACPMCPServers`
+  (`[]acp.MCPServer`, also `acp.LaunchParams.MCPServers`) is sent as
+  `mcpServers` on `session/new` and `session/load`, where every ACP client
+  used to send `[]`. That covers the NDJSON bridge and Copilot's own client.
+  An `acp.MCPServer` sets exactly one transport: `URL` with optional
+  `Headers` (streamable HTTP), or `Command` with `Args` and `Env` (stdio).
+  `acp.SessionMCPServers` renders the ACP SDK's wire shapes: http is
+  `{type:"http", name, url, headers:[{name,value}]}` and stdio is
+  `{name, command, args, env:[{name,value}]}`. Arrays are always present and
+  name/value entries are sorted. An empty or duplicate name, or not exactly
+  one transport, fails the launch.
+- `acp.InitializeResult.MCPHTTP` reports
+  `agentCapabilities.mcpCapabilities.http`. HTTP servers go only to agents
+  that advertise it (opencode and Copilot do). For any other agent they are
+  dropped, and `OnACPDiagnostic` names them; it never includes header values.
+- Known limit: pi-acp advertises `http: false` and does not pass session MCP
+  servers to Pi at all, so Pi sessions get none from here, stdio included.
+  Native runtimes take MCP servers from the launch plan through agentkit's
+  prepared plant (agentkit v0.15.0), not from this field.
+
+## v0.18.0 — 2026-10-01
+
+### Changed
+
+- **`plant` takes provider settings paths from the go-providers layout**
+  (CW-20261001-0074, D-73: one list). `Spec.ProviderSettings[name]` is
+  planted at the native-config path of the layout's every-mode row for
+  runtime `name`. `name` may be an id or an alias. The hard-coded
+  claude/codex/opencode switch is gone. Paths, relative to the boot dir:
+  - **Claude:** `.claude/settings.json` (unchanged).
+  - **Codex:** `config.toml`, was `.codex/config.toml`. Codex reads it
+    under `CODEX_HOME=boot`.
+  - **OpenCode:** `opencode.json`, was `.config/opencode/opencode.json`.
+    OpenCode reads it under `OPENCODE_CONFIG_DIR=boot`.
+  - **Antigravity:** `.agents/plugins/tether/plugin.json`, was a guessed
+    `.config/antigravity/settings`.
+- **Breaking:** a name the registry doesn't know, or a runtime launched
+  only over ACP (copilot, pi), is now an error. Before, plant fell back to
+  `.config/<name>/settings`.
+
+## v0.17.1 — 2026-10-01
+
+Takes agentkit v0.14.2 (was v0.14.0). It brings two fixes to the wrapper's
+native runtimes. In agentkit v0.14.1 (CW-20261001-0086), a child output line
+over 1 MiB no longer stops the session reader. In v0.14.2 (CW-20261001-0102),
+`ExtraArgs` and Claude's `--add-dir` go before `--` on non-template launches,
+not after it, where the agent read them as prompt text.
+
+### Fixed
+
+- **ACP transports no longer lose the child's last frame at exit**
+  (CW-20261001-0039).
+  - **Symptom:** a session/close reply written just before the child exited
+    could be discarded. The pending call then failed with "protocol stream
+    closed before response" (`acp.NDJSONBridgeClient`: claudeacp, codexacp,
+    opencodeacp, piacp) or "connection closed waiting for session/close
+    response" (copilotacp stdio).
+  - **Cause:** both read the child's stdout from `cmd.StdoutPipe()` while
+    `cmd.Wait()` ran concurrently, and Wait closes that pipe as soon as the
+    child exits. It is the same race agentkit fixed in CW-20261001-0046.
+  - **Fix:** the transports own the stdout pipe, and the stderr pipe when it
+    is read, via `os.Pipe`. After Wait, the reader drains to EOF, bounded by
+    one second, before the process exit is reported. The new
+    `internal/childoutput` package holds this logic.
+  - **Evidence:** the formerly flaky
+    `TestBestEffortPermissionResponderMayCallPromptAndCloseAllACPSubprocesses`
+    passes at `-race -count=100`. On main it failed 11 of 50 runs: 12
+    Close subtests, spread across all five clients.
+
+## v0.17.0 — 2026-10-01
+
+One event vocabulary at the wrapper (CW-20260930-0137 event half; the wrapper
+side of CW-20260930-0228 and CW-20260930-0222). Additive payload fields; three
+new event kinds.
+
+### Added
+
+- **Block boundaries on `agent.delta`.** `block_id` (stable within one content
+  block, different for the next) and `phase` come from go-llm-types'
+  `StreamEvent.BlockID` / `Phase`, which go-providers v0.35.0 sets: Claude's
+  event uuid, codex exec's `item.id`, opencode's part id. Native thinking
+  deltas now carry `phase: "thought"`, the value ACP already emits. Apps
+  separate blocks without per-provider guessing.
+- **ACP `messageId` becomes `block_id`** in every ACP translator (claude,
+  codex, opencode, pi, copilot; copilot's thought chunks use `thoughtId`).
+  Copilot deltas gain `phase` (`message` / `thought`) like the others.
+- **A normalised `stop_reason` on terminal events**, from the turn's usage
+  through `llmtypes.NormalizeStopReason`: `end_turn`, `max_tokens`,
+  `tool_use`, `turn_limit`, `refusal`, `cancelled`, `error`, or the
+  provider's own word. `turn.failed` carries `error`. ACP's top-level
+  `stop_reason` is normalised the same way (`max_turn_requests` →
+  `turn_limit`).
+- **Cost.** `mergeTurnUsage` sums `Usage.CostUSD` (a per-event delta), so
+  each turn's terminal event carries the turn's cost under `usage`.
+- **Three new kinds, for every runtime that reports them** (go-runtime-events
+  v0.2.0):
+  - `session.lost` from `events.SessionLost`
+  - `agent.permission_denied` from `events.PermissionDenied`
+  - `session.auth_failed` from `events.AuthFailed` (agentkit v0.14.0 emits it
+    when the auth classifier matches)
+
+### Changed
+
+- Requires agentkit v0.14.0, go-providers v0.36.0, go-llm-types v0.5.1 and
+  go-runtime-events v0.2.1 (was v0.13.0 / v0.34.1 / v0.3.0 / v0.1.2).
 
 ## v0.16.0 — 2026-10-01
 

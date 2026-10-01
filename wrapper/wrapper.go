@@ -210,6 +210,15 @@ type Config struct {
 	// by initialize. Empty uses the ACP agent's existing authenticated state.
 	ACPAuthMethodID string
 
+	// ACPMCPServers are the MCP servers an ACP session connects to, stdio or
+	// HTTP (with headers), sent as session/new and session/load
+	// "mcpServers". An agent that does not advertise mcpCapabilities.http is
+	// not sent the HTTP ones, and OnACPDiagnostic names them. Native runtimes
+	// take MCP servers from the launch plan's MCPSpec through agentkit's
+	// prepared plant instead. Pi (pi-acp) does not wire session MCP servers
+	// at all, so they do not reach Pi.
+	ACPMCPServers []acp.MCPServer
+
 	// ACPSessionModeID and ACPSessionConfig are applied after session/new or
 	// session/load and before the first prompt.
 	ACPSessionModeID string
@@ -522,6 +531,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		}
 		if terminal {
 			payload = withTurnUsage(payload, turnUsage)
+			payload = withStopReason(payload, turnUsage)
 			turnUsage = nil
 		}
 
@@ -557,9 +567,10 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			return
 		}
 		payload := map[string]any{
-			"error":     "wrapper: process exited before the turn completed",
-			"reason":    "process_exited",
-			"exit_code": exitCode,
+			"error":       "wrapper: process exited before the turn completed",
+			"reason":      "process_exited",
+			"stop_reason": llmtypes.StopReasonError,
+			"exit_code":   exitCode,
 		}
 		if waitErr != nil {
 			payload["wait_error"] = waitErr.Error()
@@ -942,7 +953,8 @@ func isTurnInternal(kind runtimeevents.EventKind) bool {
 		runtimeevents.KindAgentToolResult,
 		runtimeevents.KindAgentSubagentSpawn,
 		runtimeevents.KindAgentPermissionRequested,
-		runtimeevents.KindAgentPermissionResolved:
+		runtimeevents.KindAgentPermissionResolved,
+		runtimeevents.KindAgentPermissionDenied:
 		return true
 	}
 	return false
@@ -953,7 +965,9 @@ func isTurnInternal(kind runtimeevents.EventKind) bool {
 // plus the turn-ending kinds (turn.completed / turn.failed) so the
 // terminal events also reference the turn they close.
 func isTurnScoped(kind runtimeevents.EventKind) bool {
-	return isTurnInternal(kind) || isTurnTerminal(kind)
+	// session.lost is reported inside the turn that discovered it, but it
+	// does not open one.
+	return isTurnInternal(kind) || isTurnTerminal(kind) || kind == runtimeevents.KindSessionLost
 }
 
 // isTurnTerminal reports whether a runtime event kind ends a turn. A native
@@ -978,6 +992,9 @@ func mergeTurnUsage(total, u *llmtypes.Usage) *llmtypes.Usage {
 	total.OutputTokens += u.OutputTokens
 	total.CacheCreationTokens += u.CacheCreationTokens
 	total.CacheReadTokens += u.CacheReadTokens
+	// CostUSD is a per-event delta (go-llm-types), so summing it is the
+	// turn's cost.
+	total.CostUSD += u.CostUSD
 	if u.StopReason != "" {
 		total.StopReason = u.StopReason
 	}
@@ -1003,6 +1020,30 @@ func withTurnUsage(payload any, usage *llmtypes.Usage) any {
 		out["payload"] = p
 	}
 	out["usage"] = usage
+	return out
+}
+
+// withStopReason sets a terminal payload's normalised stop_reason from the
+// turn's usage, unless the payload already names one (turn.failed carries
+// "error"). A turn that reported no reason gets none.
+func withStopReason(payload any, usage *llmtypes.Usage) any {
+	if usage == nil || usage.StopReason == "" {
+		return payload
+	}
+	out := map[string]any{}
+	switch p := payload.(type) {
+	case nil:
+	case map[string]any:
+		if _, set := p["stop_reason"]; set {
+			return payload
+		}
+		for k, v := range p {
+			out[k] = v
+		}
+	default:
+		out["payload"] = p
+	}
+	out["stop_reason"] = llmtypes.NormalizeStopReason(usage.StopReason)
 	return out
 }
 

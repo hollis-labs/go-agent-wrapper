@@ -110,6 +110,7 @@ func (w *Wrapper) runACP(
 		AuthMethodID:                         w.cfg.ACPAuthMethodID,
 		SessionModeID:                        w.cfg.ACPSessionModeID,
 		SessionConfig:                        cloneSessionConfig(w.cfg.ACPSessionConfig),
+		MCPServers:                           w.cfg.ACPMCPServers,
 		OnDiagnostic:                         w.cfg.OnACPDiagnostic,
 		BestEffortPermissionRequestResponder: w.cfg.ACPBestEffortPermissionRequestResponder,
 		SandboxOutcomeCallback: func(out sandboxprofile.EnforcementOutcome) {
