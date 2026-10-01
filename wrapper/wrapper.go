@@ -186,6 +186,16 @@ type Config struct {
 	// ACP sessions use ACPBestEffortPermissionRequestResponder instead.
 	PermissionPosture permission.Mode
 
+	// MCPAllow narrows which MCP tool calls the default and accept-edits
+	// postures approve on the native Codex app-server runtime
+	// ([turn.CodexApprovalResponder.MCPAllow]). Each entry is "server" or
+	// "server/tool", each half a path.Match pattern, e.g. "mux/torque_*".
+	// With entries, a call matching none is declined and its
+	// agent.permission.resolved says why; plan and yolo ignore the list.
+	// Empty keeps the posture's own answer: every MCP tool call the launch
+	// planted is approved. [New] rejects a malformed entry.
+	MCPAllow []string
+
 	// SystemPrompt is prepended to the first prompt of an ACP session. It is
 	// currently ignored by non-ACP runtime paths.
 	SystemPrompt string
@@ -325,6 +335,9 @@ func New(cfg Config) (*Wrapper, error) {
 	}
 	if err := (turn.CodexApprovalResponder{Mode: cfg.PermissionPosture}).Validate(); err != nil {
 		return nil, fmt.Errorf("wrapper: Config.PermissionPosture: %w", err)
+	}
+	if err := (turn.CodexApprovalResponder{MCPAllow: cfg.MCPAllow}).Validate(); err != nil {
+		return nil, fmt.Errorf("wrapper: Config.MCPAllow: %w", err)
 	}
 	if _, _, err := cfg.Environment.resolve(nil); err != nil {
 		return nil, err
@@ -618,7 +631,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	if posture == "" {
 		posture = permission.ModeDefault
 	}
-	approvals := turn.CodexApprovalResponder{Mode: posture}
+	approvals := turn.CodexApprovalResponder{Mode: posture, MCPAllow: w.cfg.MCPAllow}
 
 	session, err := runtime.Start(ctx, agentsessions.StartOptions{
 		Workdir:           w.cfg.Workdir,
@@ -685,6 +698,15 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			}
 			if outcome.Kind != "" {
 				resolved["kind"] = string(outcome.Kind)
+			}
+			if outcome.MCPServer != "" {
+				resolved["mcp_server"] = outcome.MCPServer
+			}
+			if outcome.MCPTool != "" {
+				resolved["mcp_tool"] = outcome.MCPTool
+			}
+			if outcome.MCPAllowEntry != "" {
+				resolved["mcp_allow_entry"] = outcome.MCPAllowEntry
 			}
 			if outcome.Err != nil {
 				resolved["error"] = outcome.Err.Message

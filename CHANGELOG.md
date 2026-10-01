@@ -4,6 +4,25 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.20.0 — 2026-10-01
+
+### Added
+
+- **`Config.MCPAllow`**, next to `PermissionPosture` (CW-20261001-0084). It
+  narrows which MCP tool calls the `default` and `accept-edits` postures
+  approve on the native Codex app-server runtime, through agentkit
+  `turn.CodexApprovalResponder.MCPAllow`.
+  - **Entries:** `server` or `server/tool`, each half a `path.Match`
+    pattern, for example `mux/torque_*`.
+  - **Behaviour:** with entries, a call that matches none is declined.
+    `plan` and `yolo` ignore the list. With no entries, behaviour is as
+    before: every planted server's tool calls are approved.
+  - **Validation:** `New` rejects a malformed entry.
+- **`agent.permission.resolved` for an MCP tool call** now carries
+  `mcp_server` and `mcp_tool`, plus `mcp_allow_entry` when an entry granted
+  the call.
+- Requires agentkit v0.16.0, which carries the allow-list.
+
 ## v0.19.0 — 2026-10-01
 
 ### Added
