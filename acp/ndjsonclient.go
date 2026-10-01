@@ -82,6 +82,13 @@ type NDJSONBridgeClient struct {
 	systemPrompt string
 	sessionClose bool
 
+	// eventsClosing is set, under mu, by closeEvents before it waits for the
+	// in-flight turns. Prompt admits no turn once it is set (CW-20261001-0262):
+	// every turnWG.Add happens under mu before it, so it is ordered before the
+	// Wait. closed alone could not do this, because the agent exiting on its
+	// own reaches closeEvents without Close.
+	eventsClosing bool
+
 	writeMu            sync.Mutex // serializes writes to stdin across goroutines
 	transportCloseOnce sync.Once
 
@@ -466,6 +473,11 @@ func (c *NDJSONBridgeClient) Prompt(ctx context.Context, prompt string) error {
 		c.turnMu.Unlock()
 		return errors.New(c.cfg.Component + ": client is closed")
 	}
+	if c.eventsClosing {
+		c.mu.Unlock()
+		c.turnMu.Unlock()
+		return errors.New(c.cfg.Component + ": the agent's transport has ended")
+	}
 	sessionID := c.sessionID
 	if sessionID == "" {
 		c.mu.Unlock()
@@ -762,6 +774,13 @@ func (c *NDJSONBridgeClient) coordinateTermination() {
 // [Client.Close] (explicit teardown) and [Client.waitProcess] (the
 // subprocess exiting on its own), whichever happens first.
 func (c *NDJSONBridgeClient) closeEvents() {
+	// No new turn is admitted from here on, so no turnWG.Add can run against
+	// the Wait below: Prompt adds under mu, before this flag is set or not at
+	// all. Without it an Add from zero races the Wait, which panics with "sync:
+	// WaitGroup is reused before previous Wait has returned".
+	c.mu.Lock()
+	c.eventsClosing = true
+	c.mu.Unlock()
 	c.turnWG.Wait()
 	c.eventsMu.Lock()
 	defer c.eventsMu.Unlock()

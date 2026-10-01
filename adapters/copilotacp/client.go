@@ -144,6 +144,13 @@ type Client struct {
 	turnInFlight  bool
 	currentTurnID string
 
+	// eventsClosing is set, under mu, by closeEvents before it waits on
+	// turnWG. Prompt admits no turn once it is set (CW-20261001-0262): every
+	// turnWG.Add happens under mu before it, so it is ordered before the Wait.
+	// closed alone could not do this, because the agent's transport ending on
+	// its own reaches closeEvents without Close.
+	eventsClosing bool
+
 	writeMu            sync.Mutex
 	transportCloseOnce sync.Once
 
@@ -795,6 +802,10 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 		c.mu.Unlock()
 		return errors.New("copilotacp: client is closed")
 	}
+	if c.eventsClosing {
+		c.mu.Unlock()
+		return errors.New("copilotacp: the agent's transport has ended")
+	}
 	if c.sessionID == "" {
 		c.mu.Unlock()
 		return ErrNotLaunched
@@ -810,8 +821,8 @@ func (c *Client) Prompt(ctx context.Context, prompt string) error {
 	c.turnInFlight = true
 	c.currentTurnID = turnID
 	c.permissions.BeginTurn()
-	// Admit the turn under the same lifecycle mutex Close uses so its
-	// closeEvents Wait cannot observe zero before this Add.
+	// Admit the turn under the same lifecycle mutex closeEvents seals admission
+	// under, so its Wait is ordered after this Add and no Add can follow it.
 	c.turnWG.Add(1)
 	c.mu.Unlock()
 
@@ -1111,6 +1122,13 @@ func (c *Client) closeTransport() {
 // full buffer).
 func (c *Client) closeEvents() {
 	c.eventsOnce.Do(func() {
+		// No new turn is admitted from here on, so no turnWG.Add can run
+		// against the Wait below. Without this, a Prompt admitted after the
+		// agent's transport ended added from zero while Wait ran, which panics
+		// with "sync: WaitGroup is reused before previous Wait has returned".
+		c.mu.Lock()
+		c.eventsClosing = true
+		c.mu.Unlock()
 		c.turnWG.Wait()
 		c.eventsMu.Lock()
 		defer c.eventsMu.Unlock()
