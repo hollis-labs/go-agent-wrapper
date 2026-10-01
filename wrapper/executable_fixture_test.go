@@ -70,22 +70,22 @@ func publishShellFixtureLauncher(dir, pattern string, body []byte) (_ string, re
 		}
 	}()
 
-	if _, err := writer.Write(body); err != nil {
+	if _, err = writer.Write(body); err != nil {
 		return "", fmt.Errorf("write staging file: %w", err)
 	}
-	if err := writer.Sync(); err != nil {
+	if err = writer.Sync(); err != nil {
 		return "", fmt.Errorf("sync staging file: %w", err)
 	}
-	if err := writer.Close(); err != nil {
+	if err = writer.Close(); err != nil {
 		return "", fmt.Errorf("close staging file: %w", err)
 	}
 	closed = true
-	if err := os.Chmod(stagingPath, 0o444); err != nil {
+	if err = os.Chmod(stagingPath, 0o444); err != nil { //nolint:gosec // G302: a test fixture in a temp dir, read-only on purpose (asserted below); readable by others is harmless
 		return "", fmt.Errorf("make staging file read-only: %w", err)
 	}
 
 	scriptPath := stagingPath + ".ready"
-	if err := os.Rename(stagingPath, scriptPath); err != nil {
+	if err = os.Rename(stagingPath, scriptPath); err != nil {
 		return "", fmt.Errorf("publish shell fixture: %w", err)
 	}
 
