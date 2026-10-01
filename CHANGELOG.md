@@ -6,6 +6,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.17.1 — 2026-10-01
 
+Takes agentkit v0.14.2 (was v0.14.0). It brings two fixes to the wrapper's
+native runtimes. In agentkit v0.14.1 (CW-20261001-0086), a child output line
+over 1 MiB no longer stops the session reader. In v0.14.2 (CW-20261001-0102),
+`ExtraArgs` and Claude's `--add-dir` go before `--` on non-template launches,
+not after it, where the agent read them as prompt text.
+
 ### Fixed
 
 - **ACP transports no longer lose the child's last frame at exit**
