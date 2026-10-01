@@ -7,8 +7,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## v0.15.0 — 2026-10-01
 
 Apps pick any agent runtime by id and mode through one call, native or ACP
-(CW-20260930-0134, EP-20260930-0001). Pairs with agentkit v0.12.0 and
-go-providers v0.34.0, and adds a dependency on agent-contracts-leaf v0.3.0.
+(CW-20260930-0134, EP-20260930-0001). Pairs with agentkit v0.12.1 and
+go-providers v0.34.0, takes go-sandbox v0.4.1, and adds a dependency on
+agent-contracts-leaf v0.3.0.
 
 ### Added
 
@@ -25,9 +26,14 @@ go-providers v0.34.0, and adds a dependency on agent-contracts-leaf v0.3.0.
     Copilot and Pi acp-stdio.
   - The factory set is closed. `launch.Supported` lists it, and a registry
     mode it does not drive (Claude's PTY TUI) is `ErrUnsupportedSelection`.
+  - Native adapters come from go-providers' `provider.NewAdapter`, the one
+    constructor table shared with agentkit's planting path. The wrapper keeps
+    only its dispatch facts (protocol, transport, channel) per pair.
   - All six runtimes launch through `launch.Select` + `wrapper.New` + `Run` in
     `TestLaunchEveryRegistryRuntimeThroughSelect`, against go-providers
     `providertest` fakes replaying captured CLI output.
+    `TestLiveLaunchEveryInstalledRuntimeThroughSelect` does the same against
+    installed CLIs behind the shared live-provider gate.
 
 ### Changed
 
