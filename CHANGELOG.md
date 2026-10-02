@@ -4,12 +4,13 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.25.7 - 2026-10-02
 
 The Copilot ACP client's request writes honor the caller's ctx
 (CW-20261001-0238). The shared helper also includes CW-20261001-0261's
-hardening: a completed write does not trigger a fallback close, interrupts finish before deadlines
-are cleared, and unrelated write errors retain their cause.
+hardening: a completed write does not trigger a fallback close, interrupts
+finish before deadlines are cleared, and unrelated write errors retain their
+cause.
 
 ### Fixed
 
@@ -40,8 +41,12 @@ are cleared, and unrelated write errors retain their cause.
 
 - **`acp.WriteFrameCtx`** is the one implementation of that bounded write,
   extracted from the NDJSON client's `writeLineCtx` (v0.25.4). Both clients
-  call it. `NDJSONBridgeClient`'s behavior and error text are unchanged; its
-  existing tests pass against the shared helper unchanged.
+  call it. Canceled or deadline-interrupted writes keep the context error;
+  unrelated write failures now retain their original cause, even if the context
+  has also ended. NDJSON real-child tests now signal write entry, use 1 MiB
+  requests and 4-second deadlines, and run serially to avoid fork/exec ETXTBSY.
+- **Correction to v0.25.4's test claim:** restoring the old write path fails
+  the blocked-write tests; the pending-entry test is unaffected.
 - **Tested** over stdio against a real child that stops reading stdin, and
   over TCP against a peer that stops reading, with the socket buffers shrunk so
   a 1 MiB request blocks. A cancel and a deadline each return promptly with the
@@ -53,6 +58,13 @@ are cleared, and unrelated write errors retain their cause.
   unbounded write restored the blocked-write tests fail; the pending-entry
   test independently covers response cancellation. Deterministic helper tests
   cover deadline clearing, callback completion, and unrelated write errors.
+
+### Not covered
+
+- A second `Prompt` or `Cancel` queued behind a stalled `Prompt` still waits
+  on `promptCloseMu`, whose admission lock does not honor the queued caller's
+  context. This pre-existing gate limitation is separate from request writes
+  and tracked as CW-20261002-0051.
 
 ## v0.25.6 — 2026-10-01
 
@@ -189,8 +201,7 @@ dependencies move to the latest set so hosts take one consistent pair.
 - **Tested** on all four components: a real child that answers the
   handshake and then stops reading stdin, plus fake stdins for a queued
   caller, a partial frame, a stdin with no write deadline, an ended ctx, and
-  `Prompt`. With the old write path the blocked-write tests fail (the
-  pending-entry test is unaffected), because the `Call` never
+  `Prompt`. With the old write path they all fail, because the `Call` never
   returns.
 
 ## v0.25.3 — 2026-10-01

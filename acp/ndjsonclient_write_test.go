@@ -83,7 +83,6 @@ func TestNDJSONBridgeClient_CtxReleasesRequestWriteToStalledChild(t *testing.T) 
 	for _, name := range []string{"cancel", "deadline"} {
 		t.Run(name, func(t *testing.T) {
 			forEachComponent(t, func(t *testing.T, component string) {
-				t.Parallel() // the deadline cases each wait out a few seconds
 				client := newTestClient(component, stalledAgent(t))
 				launchCtx, launchCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer launchCancel()

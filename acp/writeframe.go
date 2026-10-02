@@ -41,7 +41,11 @@ type writeDeadliner interface {
 // write it exists to preempt. It may be called more than once.
 //
 // The error is ctx.Err() when cancellation interrupts the write, and the
-// write's own error otherwise. A ctx that never ends leaves the write bounded
+// write's own error otherwise. For writers without a working write deadline,
+// a cancellation racing the fallback close can still close the transport just
+// after a successful write; the completion guard reduces that window but does
+// not make the check and close atomic. Stdio pipes and TCP use deadlines.
+// A ctx that never ends leaves the write bounded
 // only by the transport closing.
 func WriteFrameCtx(ctx context.Context, mu *sync.Mutex, w io.Writer, frame []byte, closeTransport func()) error {
 	if err := ctx.Err(); err != nil {

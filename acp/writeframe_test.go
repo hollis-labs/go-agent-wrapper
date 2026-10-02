@@ -124,3 +124,56 @@ func TestWriteFrameCtx_PreservesUnrelatedWriteError(t *testing.T) {
 		t.Fatalf("write error = %v, want %v", err, want)
 	}
 }
+
+// Both callers have a nil Done channel. The contended fast path must still
+// take the mutex, rather than treating a failed TryLock as admission.
+type heldFrameWriter struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (w heldFrameWriter) Write(p []byte) (int, error) {
+	w.entered <- struct{}{}
+	<-w.release
+	return len(p), nil
+}
+
+func TestWriteFrameCtx_BackgroundCallsSerializeWhenContended(t *testing.T) {
+	w := heldFrameWriter{entered: make(chan struct{}, 2), release: make(chan struct{})}
+	var mu sync.Mutex
+	done := make(chan error, 2)
+	go func() { done <- WriteFrameCtx(context.Background(), &mu, w, []byte("first\n"), func() {}) }()
+	select {
+	case <-w.entered:
+	case <-time.After(time.Second):
+		t.Fatal("first write did not begin")
+	}
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		done <- WriteFrameCtx(context.Background(), &mu, w, []byte("second\n"), func() {})
+	}()
+	<-started
+	select {
+	case <-w.entered:
+		close(w.release)
+		t.Fatal("second Background call bypassed the contended mutex")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(w.release)
+	for range 2 {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Background call did not finish after release")
+		}
+	}
+	select {
+	case <-w.entered:
+	default:
+		t.Fatal("second call did not write after release")
+	}
+}

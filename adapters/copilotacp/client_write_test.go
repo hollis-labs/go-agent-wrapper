@@ -515,6 +515,9 @@ func TestClient_PromptWriteHonorsCtx(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Prompt did not return: its request write ignores ctx")
 	}
+	if left := pendingCount(c); left != 0 {
+		t.Fatalf("%d pending entries left after Prompt write failed", left)
+	}
 	if !c.promptCloseMu.TryLock() {
 		t.Fatal("the prompt admission gate is still held")
 	}
