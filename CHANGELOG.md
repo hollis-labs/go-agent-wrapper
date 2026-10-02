@@ -4,6 +4,35 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.27.1 — 2026-10-02
+
+`turnoutput` no longer drops a turn that had no events of its own (review of
+agentkit#38, CW-20261002-0061).
+
+### Fixed
+
+- **A turn with no events of its own after an earlier completed turn was
+  dropped, so a cancelled or tool-only turn was never reported.** On the
+  provider and stream feeds, which carry no turn id, a lone `Done` while the
+  reducer was settled was taken for a repeat of the previous turn's `Done`. Codex
+  app-server reports nothing when a turn starts, so a turn interrupted before it
+  said anything reaches the reducer as exactly that.
+  - **Now:** a `Done` with no turn in progress is a repeat only if the last turn
+    was completed and this one ends the same way (same stop reason and text), and
+    a cancellation is never a repeat. A lone terminal event is never lost.
+  - A stop reason that arrives while settled is held until the next event: a
+    terminal event takes it (the stream feed reports the stop reason on a usage
+    event ahead of the done), any other drops it (it trailed the turn that ended),
+    which keeps v0.26.0's fix for a trailing usage leaking into the next turn.
+
+### Tests
+
+- The review's three-turn sequence (an answered turn, an interrupted turn with no
+  message, a tool-only turn) on both the typed and the stream feed; two
+  interrupted turns in a row; a different ending after a completed turn; a held
+  stop reason that must not lead the next turn. Reverting the repeat rule or the
+  held stop reason fails them.
+
 ## v0.27.0 — 2026-10-02
 
 `turn.completed` carries the turn's own final message when the provider reports
