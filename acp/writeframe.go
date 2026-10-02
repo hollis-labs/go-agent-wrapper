@@ -2,8 +2,12 @@ package acp
 
 import (
 	"context"
+	"errors"
 	"io"
+	"net"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -36,7 +40,7 @@ type writeDeadliner interface {
 // closeTransport must not take mu: it may run while mu is held by the very
 // write it exists to preempt. It may be called more than once.
 //
-// The error is ctx.Err() when ctx ended, whatever the write returned, and the
+// The error is ctx.Err() when cancellation interrupts the write, and the
 // write's own error otherwise. A ctx that never ends leaves the write bounded
 // only by the transport closing.
 func WriteFrameCtx(ctx context.Context, mu *sync.Mutex, w io.Writer, frame []byte, closeTransport func()) error {
@@ -52,15 +56,20 @@ func WriteFrameCtx(ctx context.Context, mu *sync.Mutex, w io.Writer, frame []byt
 	}
 
 	deadliner, canSet := w.(writeDeadliner)
+	var writeDone, closedByUs atomic.Bool
 	fired := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
 		defer close(fired)
 		if canSet && deadliner.SetWriteDeadline(time.Now()) == nil {
 			return
 		}
-		closeTransport()
+		if !writeDone.Load() {
+			closedByUs.Store(true)
+			closeTransport()
+		}
 	})
 	n, err := w.Write(frame)
+	writeDone.Store(true)
 	if !stop() {
 		// The interrupt ran or is running: let it finish before the
 		// deadline is cleared, so it cannot land on the next write.
@@ -75,7 +84,9 @@ func WriteFrameCtx(ctx context.Context, mu *sync.Mutex, w io.Writer, frame []byt
 	if n > 0 {
 		closeTransport()
 	}
-	if ended := ctx.Err(); ended != nil {
+	interrupted := errors.Is(err, os.ErrDeadlineExceeded) || (closedByUs.Load() &&
+		(errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed)))
+	if ended := ctx.Err(); ended != nil && interrupted {
 		return ended
 	}
 	return err
@@ -84,6 +95,10 @@ func WriteFrameCtx(ctx context.Context, mu *sync.Mutex, w io.Writer, frame []byt
 // lockCtx takes mu, giving up if ctx ends first. A caller queued behind a
 // stalled write would otherwise wait on it however short its own deadline.
 func lockCtx(ctx context.Context, mu *sync.Mutex) error {
+	if ctx.Done() == nil {
+		mu.Lock()
+		return nil
+	}
 	if mu.TryLock() {
 		return nil
 	}

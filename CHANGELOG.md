@@ -7,9 +7,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## Unreleased
 
 The Copilot ACP client's request writes honor the caller's ctx
-(CW-20261001-0238). Parked and unreleased: it was built against v0.25.5 and
-merged with v0.25.6; it still needs CW-20261001-0261's hardening of the
-shared helper before it ships.
+(CW-20261001-0238). The shared helper also includes CW-20261001-0261's
+hardening: a completed write does not trigger a fallback close, interrupts finish before deadlines
+are cleared, and unrelated write errors retain their cause.
 
 ### Fixed
 
@@ -50,7 +50,9 @@ shared helper before it ships.
   transport with no write deadline, an ended ctx, an abandoned call, and
   `Prompt`. The tests end the ctx only after the write has begun, because under
   `-race` on a loaded host building the frame can outlast a short ctx. With the
-  unbounded write restored they all fail.
+  unbounded write restored the blocked-write tests fail; the pending-entry
+  test independently covers response cancellation. Deterministic helper tests
+  cover deadline clearing, callback completion, and unrelated write errors.
 
 ## v0.25.6 — 2026-10-01
 
@@ -187,7 +189,8 @@ dependencies move to the latest set so hosts take one consistent pair.
 - **Tested** on all four components: a real child that answers the
   handshake and then stops reading stdin, plus fake stdins for a queued
   caller, a partial frame, a stdin with no write deadline, an ended ctx, and
-  `Prompt`. With the old write path they all fail, because the `Call` never
+  `Prompt`. With the old write path the blocked-write tests fail (the
+  pending-entry test is unaffected), because the `Call` never
   returns.
 
 ## v0.25.3 — 2026-10-01
