@@ -4,6 +4,47 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.26.0 — 2026-10-02
+
+A host can now ask a session for what each turn said to the user
+(CW-20261002-0061, ADR 0049).
+
+### Added
+
+- **`turnoutput`** reduces a session's events to one `Output` per completed
+  turn: `{session_id, turn_id, text, kind, stop_reason, runtime, confidence}`.
+  - `kind` is `final`, `question`, `approval`, `failure` or `terminal`.
+    `confidence` is `exact` when the runtime marked the text and `heuristic`
+    when the reducer took the turn's last text block.
+  - Reasoning, tool calls, tool results and the turn's earlier blocks are never
+    in `text`.
+  - A `Reducer` per session takes `Observe` (go-runtime-events envelopes: this
+    wrapper's Activity sink and every ACP runtime), `ObserveProvider`
+    (go-providers typed events, from agentkit's `TypedEventCallback`) or
+    `ObserveStream` (agentkit's `EventFanout`, which drops events when its
+    channel is full). Each returns an `Output` exactly when a turn ends.
+    `Flush` ends a turn the runtime never finished.
+  - Text comes from the terminal event's own text (`turn.completed`'s `text`),
+    else the last block a delta marked `final`, else the last text block. The
+    package doc says when `text` can be empty and how each kind is decided.
+  - Turns are tracked by id: an event that arrives late for a turn already
+    reported is dropped, and a turn that starts before the previous one's
+    terminal event keeps its own text. The id-less feeds drop a repeated `Done`
+    and a trailing stop reason, and never lose a lone `Error`.
+  - Tested against what each runtime wrote, by running go-providers'
+    captured fixtures through the wrapper into the reducer (Claude streaming,
+    OpenCode, Antigravity, Copilot and Pi over ACP). A live-gated test does the
+    same against every installed CLI.
+
+### Not covered
+
+- The wrapper does not yet put Claude's `result.result` or any other final
+  text on `turn.completed`, so Claude, OpenCode and Antigravity report
+  `heuristic` for now; the Output's shape does not change when they gain an
+  exact marker.
+- Codex's app-server emits no turn events through the wrapper, because the host
+  drives its thread protocol, so there is nothing to reduce for it yet.
+
 ## v0.25.7 — 2026-10-02
 
 The Copilot ACP client's request writes honor the caller's ctx

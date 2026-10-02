@@ -283,6 +283,7 @@ their `acp.LaunchParams`.
 | `plant/` | Pre-exec planting contract (boot dirs, MCP config, provider settings, hooks/plugins). `SharedPlanter` delegates to the shared materialization engine. Called by `Run` before the agentkit runtime is constructed. |
 | `sandbox/` | Post-start `Applier` contract, called by `Run` after `Start` against the session's PID. Pre-spawn go-sandbox confinement is `Config.SandboxPolicy`/`SandboxProfile`/`ProtectedPaths`. |
 | `filters/` | Integration point for the `go-harness-filters` pipeline; `RepairPipeline` adapts its repair rules. |
+| `turnoutput/` | Reducer from a session's events (`runtimeevents`, go-providers typed events or the legacy stream) to one normalized record per completed turn: the text for the user, its kind (final, question, approval, failure, terminal), stop reason and confidence (exact or heuristic). |
 | `snapshot/` | Filesystem snapshot primitive: capture, diff, preview, and selective restore of granted paths through a shadow git store. |
 | `sidebyside/` | Live native-vs-ACP Claude comparison tests (opt-in, see Development). |
 | `internal/testgate/` | The live-provider opt-in gate every installed-provider test calls. |
