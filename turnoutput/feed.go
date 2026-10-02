@@ -60,7 +60,7 @@ func (r *Reducer) Observe(ev runtimeevents.Event) (Output, bool) {
 			} `json:"tool_use"`
 			Name     string          `json:"name"`
 			Title    string          `json:"title"`
-			RawInput json.RawMessage `json:"rawInput"`
+			RawInput json.RawMessage `json:"raw_input"`
 		}
 		if json.Unmarshal(ev.Payload, &p) != nil {
 			return Output{}, false

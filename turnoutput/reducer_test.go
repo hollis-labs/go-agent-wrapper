@@ -312,6 +312,21 @@ func TestQuestionToolBecomesAQuestion(t *testing.T) {
 	})
 }
 
+// An ACP agent's tool call carries its tool in "title" and its arguments in
+// "raw_input", not the native tool_use object.
+func TestACPToolCallCanBeAQuestion(t *testing.T) {
+	f := newFeed(t, Config{})
+	f.mustQuiet(f.event(runtimeevents.KindAgentToolUse, "turn_1", map[string]any{
+		"tool_call_id": "tc_1", "title": "AskUserQuestion", "kind": "other", "status": "pending",
+		"raw_input": map[string]any{"questions": []any{map[string]any{"question": "Proceed?"}}},
+	}))
+	got, ok := f.send(f.done("turn_1", nil))
+	want(t, got, ok, Output{
+		SessionID: "ses_1", TurnID: "turn_1", Runtime: "claude",
+		Text: "Proceed?", Kind: KindQuestion, Confidence: ConfidenceExact,
+	})
+}
+
 func TestCodexRequestUserInputIsAQuestion(t *testing.T) {
 	f := newFeed(t, Config{})
 	params := map[string]any{"questions": []any{map[string]any{"id": "q1", "question": "Which branch?"}}}
