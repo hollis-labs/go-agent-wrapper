@@ -48,7 +48,11 @@ End-to-end launch path is wired:
   normalized by `llmtypes.NormalizeStopReason` (`end_turn`, `max_tokens`,
   `tool_use`, `turn_limit`, `refusal`, the cancellation value, `error`; any
   other reason passes through as given). Native `usage` is go-llm-types'
-  `Usage` summed over the turn, `CostUSD` included; the Claude, Codex,
+  `Usage` summed over the turn, `CostUSD` included. `turn.completed` also
+  carries `text`, the turn's own final message, when the provider reports it on
+  its terminal event (Claude's `result.result`, agy's `result.response`, the last
+  step of an `opencode run`); a consumer such as `turnoutput` takes it as exact.
+  The Claude, Codex,
   OpenCode and Pi ACP clients pass the agent's own `usage` object through on
   `turn.completed`, and Copilot's carries only `stop_reason`.
 - On the native Codex app-server runtime, `Config.PermissionPosture`
