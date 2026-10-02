@@ -4,6 +4,47 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.27.2 — 2026-10-02
+
+`ObserveProvider` consumes the provider's final text, and an `opencode run` turn
+reduces as exact (CW-20261002-0061). Takes go-providers v0.45.0.
+
+### Fixed
+
+- **`Reducer.ObserveProvider` ignored `events.Done.Text`.** go-providers v0.44.0
+  puts the turn's own final message on the typed `Done` (Claude's `result.result`,
+  agy's `result.response`; v0.45.0 adds the last step of an `opencode run`), and
+  the typed feed built its terminal from the stop reason alone. So the path a host
+  taps with agentkit's `TypedEventCallback`, which is how Tether feeds native
+  Claude, agy and OpenCode sessions, reported `heuristic` and could pick a
+  different string than the runtime's final message. The wrapper path
+  (`turn.completed`'s `text`) and `ObserveStream` (`EventDone.Content`) already
+  read it; the replay tests ran through the wrapper's Activity sink, which is why
+  this was missed.
+  - **Now:** the typed feed takes `Done.Text` as the terminal text, `exact`, with
+    the same precedence as the other feeds (terminal text, then a final-phase
+    delta, then the last block).
+
+### Changed
+
+- **go-providers v0.44.0 → v0.45.0**, whose `opencode run` adapter puts the text
+  of the step that ends the turn on its done. An OpenCode turn now reduces as
+  `exact` through the wrapper too (it carries a done's text as `turn.completed`'s
+  `text` since v0.27.0). No wrapper code changed for this.
+
+### Tests
+
+- **The typed feed against the real adapters**: go-providers' captured fixtures
+  go through the adapter that parses them (`ParseLineEvents`, what the typed
+  callback delivers) into `ObserveProvider`: Claude print (including a last
+  message after tool calls) and streaming (two turns), agy (including after a tool
+  and an MCP tool), OpenCode run (including an answer after tool steps) and Codex
+  exec. Each turn is `final`, `exact`, with the agent's last message as its text.
+  Reverting the fix fails eight of the nine.
+- The OpenCode wrapper replays assert `exact`: the captured one-step turn and the
+  turn that runs two tool-calling steps and then answers. They fail on
+  go-providers v0.44.0.
+
 ## v0.27.1 — 2026-10-02
 
 `turnoutput` no longer drops a turn that had no events of its own (review of
