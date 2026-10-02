@@ -293,3 +293,108 @@ func TestAnUnfinishedTurnsBufferIsBounded(t *testing.T) {
 		}
 	})
 }
+
+// A turn with no events of its own (an interrupted one, or a tool-only one whose
+// tools were not reported) still ends in a terminal event, and a lone terminal
+// event is never dropped: it is a repeat only if it ends the way the last turn
+// ended. This is the sequence Codex app-server's turns arrive in
+// (CW-20261002-0061): an answered turn, an interrupted turn that said nothing,
+// and a turn that ran a command and wrote nothing.
+func TestATurnWithNoEventsOfItsOwnIsNotARepeat(t *testing.T) {
+	newReducer := func() *Reducer {
+		n := 0
+		return New(Config{SessionID: "s", Runtime: "codex", NewTurnID: func() string { n++; return fmt.Sprintf("turn_%d", n) }})
+	}
+	wantOutputs := []Output{
+		{SessionID: "s", TurnID: "turn_1", Runtime: "codex", Text: "Hi!", Kind: KindFinal, StopReason: llmtypes.StopReasonEndTurn, Confidence: ConfidenceExact},
+		{SessionID: "s", TurnID: "turn_2", Runtime: "codex", Text: "", Kind: KindTerminal, StopReason: llmtypes.StopReasonCancelled, Confidence: ConfidenceHeuristic},
+		{SessionID: "s", TurnID: "turn_3", Runtime: "codex", Text: "", Kind: KindFinal, StopReason: llmtypes.StopReasonEndTurn, Confidence: ConfidenceHeuristic},
+	}
+
+	t.Run("typed feed", func(t *testing.T) {
+		r := newReducer()
+		steps := []events.Event{
+			events.Delta{Text: "Hi!", Phase: "final", BlockID: "msg_1"}, events.Done{StopReason: llmtypes.StopReasonEndTurn},
+			events.Done{StopReason: llmtypes.StopReasonCancelled},
+			events.ToolUse{ID: "cmd_1", Name: "commandExecution"}, events.ToolResult{ID: "cmd_1"}, events.Done{StopReason: llmtypes.StopReasonEndTurn},
+		}
+		var got []Output
+		for _, ev := range steps {
+			if out, ok := r.ObserveProvider(ev); ok {
+				got = append(got, out)
+			}
+		}
+		if len(got) != len(wantOutputs) {
+			t.Fatalf("reported %d turns, want %d: %+v", len(got), len(wantOutputs), got)
+		}
+		for i := range got {
+			if got[i] != wantOutputs[i] {
+				t.Errorf("turn %d = %+v, want %+v", i+1, got[i], wantOutputs[i])
+			}
+		}
+	})
+
+	t.Run("stream feed", func(t *testing.T) {
+		r := newReducer()
+		usage := func(stop string) llmtypes.StreamEvent {
+			return llmtypes.StreamEvent{Type: llmtypes.EventUsage, Usage: &llmtypes.Usage{StopReason: stop}}
+		}
+		done := llmtypes.StreamEvent{Type: llmtypes.EventDone}
+		steps := []llmtypes.StreamEvent{
+			{Type: llmtypes.EventDelta, Content: "Hi!", Phase: llmtypes.PhaseFinal, BlockID: "msg_1"}, usage(llmtypes.StopReasonEndTurn), done,
+			usage(llmtypes.StopReasonCancelled), done,
+			{Type: llmtypes.EventToolUse, ToolUse: &llmtypes.ToolUseBlock{ID: "cmd_1", Name: "commandExecution"}}, usage(llmtypes.StopReasonEndTurn), done,
+		}
+		var got []Output
+		for _, ev := range steps {
+			if out, ok := r.ObserveStream(ev); ok {
+				got = append(got, out)
+			}
+		}
+		if len(got) != len(wantOutputs) {
+			t.Fatalf("reported %d turns, want %d: %+v", len(got), len(wantOutputs), got)
+		}
+		for i := range got {
+			if got[i] != wantOutputs[i] {
+				t.Errorf("turn %d = %+v, want %+v", i+1, got[i], wantOutputs[i])
+			}
+		}
+	})
+
+	t.Run("two interrupted turns in a row are both reported", func(t *testing.T) {
+		r := newReducer()
+		r.ObserveProvider(events.Delta{Text: "a", BlockID: "a"})
+		r.ObserveProvider(events.Done{StopReason: llmtypes.StopReasonEndTurn})
+		for i := range 2 {
+			if got, ok := r.ObserveProvider(events.Done{StopReason: llmtypes.StopReasonCancelled}); !ok || got.Kind != KindTerminal {
+				t.Fatalf("interrupted turn %d: %+v (reported %v)", i+1, got, ok)
+			}
+		}
+	})
+
+	t.Run("a repeat is the same ending; a different one is a turn", func(t *testing.T) {
+		r := newReducer()
+		r.ObserveProvider(events.Delta{Text: "a", BlockID: "a"})
+		if _, ok := r.ObserveProvider(events.Done{StopReason: llmtypes.StopReasonEndTurn}); !ok {
+			t.Fatal("no Output for the turn")
+		}
+		if out, ok := r.ObserveProvider(events.Done{StopReason: llmtypes.StopReasonEndTurn}); ok {
+			t.Fatalf("a repeated ending reported %+v", out)
+		}
+		if got, ok := r.ObserveProvider(events.Done{StopReason: llmtypes.StopReasonMaxTokens}); !ok || got.StopReason != llmtypes.StopReasonMaxTokens {
+			t.Fatalf("a different ending: %+v (reported %v), want a turn of its own", got, ok)
+		}
+	})
+
+	t.Run("a held stop reason that trailed a turn does not lead the next", func(t *testing.T) {
+		r := newReducer()
+		r.ObserveStream(llmtypes.StreamEvent{Type: llmtypes.EventDelta, Content: "one", BlockID: "a"})
+		r.ObserveStream(llmtypes.StreamEvent{Type: llmtypes.EventDone})
+		r.ObserveStream(llmtypes.StreamEvent{Type: llmtypes.EventUsage, Usage: &llmtypes.Usage{StopReason: llmtypes.StopReasonCancelled}}) // trailing
+		r.ObserveStream(llmtypes.StreamEvent{Type: llmtypes.EventDelta, Content: "two", BlockID: "a"})
+		got, ok := r.ObserveStream(llmtypes.StreamEvent{Type: llmtypes.EventDone})
+		if !ok || got.Kind != KindFinal || got.StopReason != "" {
+			t.Fatalf("got %+v, want a plain final turn", got)
+		}
+	})
+}

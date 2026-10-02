@@ -71,12 +71,19 @@
 //
 // The provider and stream feeds carry no turn id, so the reducer decides by
 // whether a turn is in progress. A turn starts at its first event and ends at
-// Done or Error. A Done that arrives with no turn in progress repeats the one
-// that ended the last turn and is dropped; so is a trailing stop reason. An
-// Error with no turn in progress is reported as a failure of its own, so a
-// startup failure is never lost, unless it is the same error as the one just
-// reported. A lossy feed (ObserveStream) that drops a terminal event makes the
-// next turn's events join the unfinished one, which the reducer cannot detect.
+// Done or Error. A Done that arrives with no turn in progress is either a turn
+// that had no events of its own (an interrupted one, say) or a repeat of the Done
+// that ended the last turn. It is a repeat only if the last turn was completed
+// and this one ends the same way, with the same stop reason and text; a
+// cancellation is never a repeat, so an interrupted turn that said nothing is
+// reported and a lone terminal event is never lost. A stop reason that arrives
+// with no turn in progress is held until the next event: a terminal event takes
+// it (the stream feed reports a stop reason on a usage event ahead of the done),
+// any other drops it (it trailed the turn that ended). An Error with no turn in
+// progress is reported as a failure of its own, so a startup failure is never
+// lost, unless it is the same error as the one just reported. A lossy feed
+// (ObserveStream) that drops a terminal event makes the next turn's events join
+// the unfinished one, which the reducer cannot detect.
 //
 // A turn's buffer is bounded for the case where its terminal event is lost: the
 // oldest text blocks go first (the last never does), a single block is cut at

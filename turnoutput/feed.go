@@ -148,7 +148,7 @@ func (r *Reducer) Observe(ev runtimeevents.Event) (Output, bool) {
 			stopReason: p.StopReason,
 			text:       p.Text,
 		}
-		t, ok := r.ending(ev.TurnID, term.failed, term.errText)
+		t, ok := r.ending(ev.TurnID, term)
 		if !ok {
 			return Output{}, false
 		}
@@ -270,7 +270,7 @@ func (r *Reducer) ObserveStream(ev llmtypes.StreamEvent) (Output, bool) {
 
 // endIDLess ends the current turn on a terminal event that carries no turn id.
 func (r *Reducer) endIDLess(term terminal) (Output, bool) {
-	t, ok := r.ending("", term.failed, term.errText)
+	t, ok := r.ending("", term)
 	if !ok {
 		return Output{}, false
 	}
