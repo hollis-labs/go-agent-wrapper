@@ -176,6 +176,27 @@ func TestReplayClaudeStreamingTwoTurns(t *testing.T) {
 	}
 }
 
+// Claude refused a Bash call (result.permission_denials) and its last message asks
+// for the approval. Through the real wrapper the refusal arrives as an
+// agent.permission_denied naming the call, and the turn ended on it: an approval,
+// with Claude's own text, exact.
+func TestReplayClaudeRefusedToolCall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("providertest fakes need sh")
+	}
+	fake := providertest.New(t, runtimes.Claude, providertest.Replay("claude/print_tool_denied"))
+	var out turnoutput.Output
+	reduceRun(t, launch.Selection{Runtime: string(runtimes.Claude), Mode: runtimes.ModeSubprocessPerTurn, Binary: fake.Path}, 30*time.Second,
+		func(t *testing.T, w *wrapper.Wrapper, _ *acp.Manager, outs <-chan turnoutput.Output) {
+			out = ask(t, w, outs, "create providertest.txt")
+		})
+	requireOutput(t, out, turnoutput.KindApproval,
+		"I need your approval to create the file `providertest.txt` in the current directory. Should I proceed?")
+	if out.Confidence != turnoutput.ConfidenceExact || out.Runtime != "claude" {
+		t.Fatalf("Output = %+v, want runtime claude and exact confidence", out)
+	}
+}
+
 func TestReplayOpenCodeRun(t *testing.T) {
 	for _, tc := range []struct{ name, fixture, text string }{
 		// One step: the text and the step that ends the turn.

@@ -55,11 +55,41 @@
 //
 // A turn.failed (or Error) is a failure, except that reason "interrupted" or
 // "process_exited", or a stop_reason of llmtypes.StopReasonCancelled, makes it
-// terminal; a completed turn that stopped that way is terminal too. A question
-// tool call (see [Config.QuestionTools]) or a Codex requestUserInput request in
-// the turn makes it a question. A permission request that is unresolved or refused, or
-// an agent.permission_denied, makes it an approval. Anything else is final.
-// Failure and terminal win over question, and question over approval.
+// terminal; a completed turn that stopped that way is terminal too. A turn that
+// ended on a question or an approval is a question or an approval, as below.
+// Anything else is final. Failure and terminal win over question, and question
+// over approval.
+//
+// # Questions and approvals
+//
+// No runtime says a person is waiting: in headless mode every one refuses
+// automatically and the agent carries on. So a turn is a question or an approval
+// only if it ended on one, and what the reducer works from is two different
+// kinds of evidence:
+//
+//   - The runtime's own record that something needed a person, which is exact: a
+//     refused tool call (Claude's result.permission_denials, naming the call;
+//     agy's denied_actions, naming none; a Codex item declined by its posture),
+//     a refused permission request (agent.permission_resolved with allowed
+//     false), a permission request still unanswered when the turn ended, or a call
+//     to a question tool (see [Config.QuestionTools]; Claude's AskUserQuestion,
+//     Codex's request_user_input) or a Codex requestUserInput request.
+//   - That the turn "ended on it", which the reducer infers: no tool call that was
+//     not itself refused (or only a question) came after it. An agent that kept
+//     working past the refusal worked around it, and the turn is final. A question
+//     whose tool call came back answered is not waiting either.
+//
+// A refusal that names its tool call (Claude) is placed where the call was; one
+// that names none (agy, which reports its refusals when the turn ends) stands for
+// the last thing the agent did, so an agy refusal always counts as ended on. Output
+// carries no separate confidence for the kind: Confidence is about Text, and a
+// question or approval is the combination above, never a runtime's statement that
+// someone is waiting.
+//
+// Text is what the agent wrote after the signal (the runtime's own final text
+// when it has one, so exact), else the signal's own description (the question's
+// text from its input, or "Permission denied: <what was refused>"), never text the
+// agent wrote before the signal: the call is the last thing it said.
 //
 // # Turn ids and repeated events
 //
@@ -101,7 +131,10 @@
 // terminal should ask the runtime for the stop reason, or end the turn with
 // Flush.
 //
-// A question tool is judged by the call alone: if the tool is refused (headless
-// Claude has no one to ask) and the agent carries on and finishes, the turn is
-// still reported as a question, with the agent's later text as its Text.
+// Known limits of the reading above: an agent that gets past a refusal with text
+// alone (no tool call) and says it resolved the matter itself is still reported as
+// a question or an approval, since nothing structural tells that from asking again;
+// the only question or approval evidence for Claude's AskUserQuestion is the tool's
+// name (no capture of one exists); and a turn blocked on a pending request has not
+// ended, so it reports nothing until it does.
 package turnoutput

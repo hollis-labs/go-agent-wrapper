@@ -320,9 +320,9 @@ func (r *Reducer) finish(t *turn, term terminal) Output {
 	default:
 		out.Kind = KindFinal
 		out.Text, out.Confidence = t.pick(0, term.text)
-		if sig := t.signal(); sig != nil {
+		if sig := t.openSignal(); sig != nil {
 			out.Kind = sig.kind
-			out.Text, out.Confidence = t.signalText(sig, out.Text, out.Confidence)
+			out.Text, out.Confidence = t.signalText(sig, term.text, out.Text, out.Confidence)
 		}
 	}
 	return out
@@ -340,9 +340,11 @@ type turn struct {
 	// bytes is the text held across all blocks.
 	bytes int
 
-	question *signal
-	approval *signal
-	pending  []pendingRequest
+	// tools are the turn's tool calls in order, and signals what in the turn
+	// needs the user; see signals.go.
+	tools   []tool
+	signals []*signal
+	pending []pendingRequest
 }
 
 func newTurn(id string) *turn {
@@ -354,22 +356,6 @@ type block struct {
 	id    string
 	final bool
 	text  strings.Builder
-}
-
-// signal is something in the turn that needs the user: a question or an
-// approval. at is how many blocks existed when it was raised, so text written
-// after it can be told from text before it.
-type signal struct {
-	kind Kind
-	text string
-	at   int
-}
-
-// pendingRequest is a permission request that has not been resolved. ids are
-// every id a resolution may name it by.
-type pendingRequest struct {
-	ids []string
-	sig signal
 }
 
 func (t *turn) addDelta(text, blockID string, final bool) {
@@ -412,44 +398,13 @@ func (t *turn) trim() {
 			delete(t.byID, oldest.id)
 		}
 		t.blocks = t.blocks[1:]
-		for _, sig := range []*signal{t.question, t.approval} {
-			if sig != nil && sig.at > 0 {
-				sig.at--
-			}
-		}
-		for i := range t.pending {
-			if t.pending[i].sig.at > 0 {
-				t.pending[i].sig.at--
-			}
-		}
+		t.blocksShifted()
 	}
 }
 
 // boundary marks a tool or permission event: the next anonymous delta starts a
 // new block.
 func (t *turn) boundary() { t.anonOpen = false }
-
-func (t *turn) raiseQuestion(text string) {
-	if t.question == nil {
-		t.question = &signal{kind: KindQuestion, text: clip(text), at: len(t.blocks)}
-	}
-}
-
-func (t *turn) raiseApproval(text string) {
-	if t.approval == nil {
-		t.approval = &signal{kind: KindApproval, text: clip(text), at: len(t.blocks)}
-	}
-}
-
-func (t *turn) request(ids []string, text string) {
-	t.pending = append(t.pending, pendingRequest{
-		ids: ids,
-		sig: signal{kind: KindApproval, text: clip(text), at: len(t.blocks)},
-	})
-	if len(t.pending) > maxPending {
-		t.pending = t.pending[len(t.pending)-maxPending:]
-	}
-}
 
 // clip trims a signal's text and cuts it at maxSignalBytes.
 func clip(text string) string {
@@ -468,30 +423,6 @@ func cutUTF8(s string, n int) string {
 	return s[:n]
 }
 
-// resolve settles the pending request that any of ids names, or the oldest one
-// when none does. A refusal raises an approval: the agent went without a
-// decision it needed.
-func (t *turn) resolve(ids []string, allowed bool, text string) {
-	idx := -1
-	for i, p := range t.pending {
-		if overlaps(p.ids, ids) {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 && len(t.pending) > 0 {
-		idx = 0
-	}
-	described := clip(text)
-	if idx >= 0 {
-		described = t.pending[idx].sig.text
-		t.pending = append(t.pending[:idx], t.pending[idx+1:]...)
-	}
-	if !allowed {
-		t.raiseApproval(described)
-	}
-}
-
 func overlaps(a, b []string) bool {
 	for _, x := range a {
 		if x == "" {
@@ -504,36 +435,6 @@ func overlaps(a, b []string) bool {
 		}
 	}
 	return false
-}
-
-// signal returns the signal that decides the turn's kind, if any: a question
-// over an approval, and any request still unresolved at the end counts as an
-// approval.
-func (t *turn) signal() *signal {
-	if t.question != nil {
-		return t.question
-	}
-	if t.approval != nil {
-		return t.approval
-	}
-	if len(t.pending) > 0 {
-		sig := t.pending[0].sig
-		return &sig
-	}
-	return nil
-}
-
-// signalText is the text of an output whose kind a signal decided: what the
-// agent wrote after the signal, else the signal's own description, else the
-// turn's ordinary pick.
-func (t *turn) signalText(sig *signal, pickText string, pickConf Confidence) (string, Confidence) {
-	if s, c := t.pick(sig.at, ""); s != "" {
-		return s, c
-	}
-	if sig.text != "" {
-		return sig.text, ConfidenceExact
-	}
-	return pickText, pickConf
 }
 
 // pick chooses the turn's text from the blocks at index from onward: the

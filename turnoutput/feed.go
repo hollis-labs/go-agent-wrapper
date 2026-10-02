@@ -61,26 +61,42 @@ func (r *Reducer) Observe(ev runtimeevents.Event) (Output, bool) {
 		t.boundary()
 		var p struct {
 			ToolUse *struct {
+				ID    string          `json:"id"`
 				Name  string          `json:"name"`
 				Input json.RawMessage `json:"input"`
 			} `json:"tool_use"`
-			Name     string          `json:"name"`
-			Title    string          `json:"title"`
-			RawInput json.RawMessage `json:"raw_input"`
+			ToolCallID string          `json:"tool_call_id"`
+			Name       string          `json:"name"`
+			Title      string          `json:"title"`
+			RawInput   json.RawMessage `json:"raw_input"`
 		}
 		if json.Unmarshal(ev.Payload, &p) != nil {
 			return Output{}, false
 		}
-		name, input := p.Name, p.RawInput
+		id, name, input := p.ToolCallID, p.Name, p.RawInput
 		if p.ToolUse != nil {
-			name, input = p.ToolUse.Name, p.ToolUse.Input
+			id, name, input = p.ToolUse.ID, p.ToolUse.Name, p.ToolUse.Input
 		}
 		if name == "" {
 			name = p.Title
 		}
-		r.toolUse(t, name, input)
+		r.toolUse(t, id, name, input)
 
-	case runtimeevents.KindAgentToolResult, runtimeevents.KindAgentSubagentSpawn:
+	case runtimeevents.KindAgentToolResult:
+		if t := r.body(ev.TurnID); t != nil {
+			t.boundary()
+			var p struct {
+				ToolResult struct {
+					ID      string `json:"id"`
+					IsError bool   `json:"is_error"`
+				} `json:"tool_result"`
+			}
+			if json.Unmarshal(ev.Payload, &p) == nil {
+				t.toolResult(p.ToolResult.ID, p.ToolResult.IsError)
+			}
+		}
+
+	case runtimeevents.KindAgentSubagentSpawn:
 		if t := r.body(ev.TurnID); t != nil {
 			t.boundary()
 		}
@@ -100,7 +116,7 @@ func (r *Reducer) Observe(ev runtimeevents.Event) (Output, bool) {
 			return Output{}, false
 		}
 		if isQuestionMethod(p.Method) {
-			t.raiseQuestion(questionText(p.Params))
+			t.raiseQuestion(questionText(p.Params), len(t.tools)-1)
 			return Output{}, false
 		}
 		t.request([]string{ev.ID, idKey(p.RequestID)}, "Approval requested: "+describeRequest(p.Method, p.Params))
@@ -129,7 +145,8 @@ func (r *Reducer) Observe(ev runtimeevents.Event) (Output, bool) {
 	case runtimeevents.KindAgentPermissionDenied:
 		if t := r.body(ev.TurnID); t != nil {
 			t.boundary()
-			t.raiseApproval(permissionDenied(ev.Payload))
+			text, toolUseID := permissionDenied(ev.Payload)
+			t.raiseApproval(text, toolUseID)
 		}
 
 	case runtimeevents.KindTurnCompleted, runtimeevents.KindTurnFailed:
@@ -207,15 +224,19 @@ func (r *Reducer) ObserveProvider(ev events.Event) (Output, bool) {
 		if e.Args != nil {
 			input, _ = json.Marshal(e.Args)
 		}
-		r.toolUse(t, e.Name, input)
-	case events.ToolResult, events.SubagentSpawn:
+		r.toolUse(t, e.ID, e.Name, input)
+	case events.ToolResult:
+		t := r.body("")
+		t.boundary()
+		t.toolResult(e.ID, e.IsError)
+	case events.SubagentSpawn:
 		r.body("").boundary()
 	case events.Usage:
 		r.noteStop(e.StopReason)
 	case events.PermissionDenied:
 		t := r.body("")
 		t.boundary()
-		t.raiseApproval(permissionDeniedText(e.Action, e.DisplayName))
+		t.raiseApproval(permissionDeniedText(e.Action, e.DisplayName), e.ToolUseID)
 	case events.Done:
 		// Text is the turn's own final message when the provider reports one on
 		// its terminal event (go-providers v0.44.0: Claude's result.result, agy's
@@ -256,7 +277,7 @@ func (r *Reducer) ObserveStream(ev llmtypes.StreamEvent) (Output, bool) {
 			if ev.ToolUse.Input != nil {
 				input, _ = json.Marshal(ev.ToolUse.Input)
 			}
-			r.toolUse(t, ev.ToolUse.Name, input)
+			r.toolUse(t, ev.ToolUse.ID, ev.ToolUse.Name, input)
 		}
 	case llmtypes.EventUsage:
 		if ev.Usage != nil && ev.Usage.StopReason != "" {
@@ -282,9 +303,11 @@ func (r *Reducer) endIDLess(term terminal) (Output, bool) {
 }
 
 // toolUse notes a tool call: a question tool raises a question.
-func (r *Reducer) toolUse(t *turn, name string, input json.RawMessage) {
-	if _, ok := r.questions[strings.ToLower(strings.TrimSpace(name))]; ok {
-		t.raiseQuestion(questionText(input))
+func (r *Reducer) toolUse(t *turn, id, name string, input json.RawMessage) {
+	_, isQuestion := r.questions[strings.ToLower(strings.TrimSpace(name))]
+	idx := t.addTool(id, isQuestion)
+	if isQuestion {
+		t.raiseQuestion(questionText(input), idx)
 	}
 }
 
@@ -397,13 +420,16 @@ func describeRequest(method string, params json.RawMessage) string {
 	return "an action"
 }
 
-func permissionDenied(payload json.RawMessage) string {
+// permissionDenied reads an agent.permission_denied payload: what to say about
+// the refusal and, when the producer names it, the id of the refused tool call.
+func permissionDenied(payload json.RawMessage) (text, toolUseID string) {
 	var p struct {
 		Action      string `json:"action"`
 		DisplayName string `json:"display_name"`
+		ToolUseID   string `json:"tool_use_id"`
 	}
 	_ = json.Unmarshal(payload, &p)
-	return permissionDeniedText(p.Action, p.DisplayName)
+	return permissionDeniedText(p.Action, p.DisplayName), p.ToolUseID
 }
 
 func permissionDeniedText(action, displayName string) string {
