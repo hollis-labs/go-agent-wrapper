@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os/exec"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -263,4 +264,102 @@ func TestReplayACPAgents(t *testing.T) {
 			}
 		})
 	}
+}
+
+// collectEvents launches sel through the real wrapper, drives it, and returns every
+// event the wrapper emitted, in the order it emitted them.
+func collectEvents(t *testing.T, sel launch.Selection, drive func(*testing.T, *wrapper.Wrapper)) []runtimeevents.Event {
+	t.Helper()
+	adapter, err := launch.Select(sel)
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	var mu sync.Mutex
+	var evs []runtimeevents.Event
+	w, err := wrapper.New(wrapper.Config{
+		App:     "turnoutput-order",
+		Adapter: adapter,
+		Activity: activity.NewBridge(runtimeevents.SinkFunc(func(_ context.Context, ev runtimeevents.Event) error {
+			mu.Lock()
+			evs = append(evs, ev)
+			mu.Unlock()
+			return nil
+		})),
+		Workdir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() { runDone <- w.Run(ctx) }()
+	drive(t, w)
+	if err := w.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Run did not return after Stop")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return append([]runtimeevents.Event(nil), evs...)
+}
+
+// The wrapper emits a typed event (a tool result, a refusal) in the position it
+// had in the output: after the tool call it belongs to and before the turn's end.
+// agentkit calls the typed callback a goroutine ahead of the stream events of the
+// same line, so emitting from the callback let a refusal reach the sink before the
+// tool call it names (CW-20261002-0073). Repeated, because the race is.
+func TestReplayTypedEventsKeepTheirPlaceInTheStream(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("providertest fakes need sh")
+	}
+	for run := range 25 {
+		fake := providertest.New(t, runtimes.Claude, providertest.Replay("claude/print_tool_denied"))
+		evs := collectEvents(t, launch.Selection{Runtime: string(runtimes.Claude), Mode: runtimes.ModeSubprocessPerTurn, Binary: fake.Path},
+			func(t *testing.T, w *wrapper.Wrapper) {
+				for {
+					err := w.SendInput(context.Background(), []byte("create providertest.txt"))
+					if err == nil {
+						return
+					}
+					if !errors.Is(err, wrapper.ErrSessionNotStarted) {
+						t.Fatalf("SendInput: %v", err)
+					}
+					time.Sleep(time.Millisecond)
+				}
+			})
+		toolUse, denied, done := -1, -1, -1
+		for i, ev := range evs {
+			switch ev.Kind {
+			case runtimeevents.KindAgentToolUse:
+				if toolUse < 0 {
+					toolUse = i
+				}
+			case runtimeevents.KindAgentPermissionDenied:
+				denied = i
+			case runtimeevents.KindTurnCompleted:
+				done = i
+			default:
+				// Lifecycle, raw IO and the like are not part of what is being ordered.
+			}
+		}
+		if toolUse < 0 || denied < 0 || done < 0 || toolUse >= denied || denied >= done {
+			t.Fatalf("run %d: tool call at %d, refusal at %d, turn end at %d; want the call, then the refusal, then the end: %v", run, toolUse, denied, done, kindsOf(evs))
+		}
+	}
+}
+
+func kindsOf(evs []runtimeevents.Event) []string {
+	out := make([]string, len(evs))
+	for i, ev := range evs {
+		out[i] = string(ev.Kind)
+	}
+	return out
 }

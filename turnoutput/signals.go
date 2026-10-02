@@ -9,15 +9,20 @@ import "strings"
 // runtime, is the runtime's own record of the refusal (Claude's
 // result.permission_denials and agy's denied_actions as PermissionDenied events,
 // Codex's declined item, a refused permission request, a question tool call), and
-// "ended on it" is its own inference: no tool call that was not itself refused
-// came after it. An agent that kept working after a refusal worked around it, and
-// the turn is final.
+// "ended on it" is its own inference: the agent did no work after it. An agent that
+// kept working after a refusal worked around it, and the turn is final.
+//
+// The facts a signal is judged by are collected as they arrive but resolved when
+// the turn ends, keyed by tool call id, because they do not arrive in the order
+// they happened: a refusal and a tool result are reported on a different path from
+// the tool call they name, and can reach the reducer first.
 
-// maxTools and maxSignals bound what one turn remembers about its tool calls and
-// signals; the oldest go first.
+// maxTools, maxSignals and maxOutcomes bound what one turn remembers about its tool
+// calls, signals and tool results; the oldest tool calls go first.
 const (
-	maxTools   = 256
-	maxSignals = 64
+	maxTools    = 256
+	maxSignals  = 64
+	maxOutcomes = 512
 )
 
 // tool is one tool call of a turn.
@@ -26,30 +31,39 @@ type tool struct {
 	// blocksAt is how many text blocks the turn had when the call was made, so
 	// text written after it can be told from text before it.
 	blocksAt int
-	// refused is set when the runtime reported refusing this call.
-	refused bool
+	// seq orders the call among the turn's tool calls and tool results, as they
+	// arrived.
+	seq int
 	// question is set for a call to a question tool: it asks, it does not work.
 	question bool
-	// result is what the call's result said: resultNone until one arrives.
-	result toolResult
 }
 
-type toolResult int
-
-const (
-	resultNone toolResult = iota
-	resultOK
-	resultError
-)
+// outcome is what a tool call's result said, and where it fell in the turn.
+type outcome struct {
+	isError bool
+	seq     int
+}
 
 // signal is something in the turn that needs the user: a question or an
-// approval. anchor is the index of the tool call it sits on (-1 when it came
-// before any), at how many blocks the turn had there.
+// approval.
+//
+// A signal is placed one of two ways. One that names a tool call (a question tool
+// call, or a refusal that names the call it refused) is placed at finish by that
+// call's id. One that sits at a point in the turn (a permission request, a
+// question the runtime asked by request) is placed where it arrived: at is how many
+// text blocks the turn had and seq how far along its tool calls and results.
 type signal struct {
-	kind   Kind
-	text   string
-	at     int
-	anchor int
+	kind Kind
+	text string
+
+	byTool bool   // placed by toolID at finish
+	toolID string // the call: for a refusal, the one it refused; "" names none
+	// toolCall is set for a call to a question tool, whose own result says whether
+	// the question was answered.
+	toolCall bool
+
+	at  int
+	seq int
 }
 
 // pendingRequest is a permission request that has not been resolved. ids are every
@@ -63,13 +77,13 @@ type pendingRequest struct {
 func (t *turn) addTool(id string, question bool) int {
 	if len(t.tools) >= maxTools {
 		t.tools = t.tools[1:]
-		t.toolsShifted()
 	}
-	t.tools = append(t.tools, tool{id: id, blocksAt: len(t.blocks), question: question})
+	t.seq++
+	t.tools = append(t.tools, tool{id: id, blocksAt: len(t.blocks), seq: t.seq, question: question})
 	return len(t.tools) - 1
 }
 
-// toolIndex finds the call with id, or -1.
+// toolIndex finds the newest call with id, or -1.
 func (t *turn) toolIndex(id string) int {
 	if id == "" {
 		return -1
@@ -82,35 +96,47 @@ func (t *turn) toolIndex(id string) int {
 	return -1
 }
 
-// toolResult records what a tool call's result said.
+// toolResult records what a tool call's result said. The first result for a call
+// is the one that counts: a later one (an ACP agent updates a call several times)
+// does not overwrite it.
 func (t *turn) toolResult(id string, isError bool) {
-	if i := t.toolIndex(id); i >= 0 && t.tools[i].result == resultNone {
-		t.tools[i].result = resultOK
-		if isError {
-			t.tools[i].result = resultError
-		}
+	if id == "" {
+		return
 	}
+	if _, seen := t.results[id]; seen || len(t.results) >= maxOutcomes {
+		return
+	}
+	t.seq++
+	t.results[id] = outcome{isError: isError, seq: t.seq}
 }
 
-// raiseQuestion records that the agent asked the user something, on the tool
-// call at anchor.
-func (t *turn) raiseQuestion(text string, anchor int) {
-	at := len(t.blocks)
-	if anchor >= 0 && anchor < len(t.tools) {
-		at = t.tools[anchor].blocksAt
+// raiseQuestion records that the agent asked the user something by calling a
+// question tool, the call at tools[idx].
+func (t *turn) raiseQuestion(text string, idx int) {
+	// The call was just recorded, so where the turn stands now is where it was
+	// made: that is the placement of a call that carries no id.
+	sig := &signal{kind: KindQuestion, text: clip(text), toolCall: true, at: len(t.blocks), seq: t.seq}
+	if idx >= 0 && idx < len(t.tools) {
+		sig.toolID = t.tools[idx].id
+		sig.byTool = sig.toolID != ""
 	}
-	t.addSignal(&signal{kind: KindQuestion, text: clip(text), at: at, anchor: anchor})
+	t.addSignal(sig)
+}
+
+// raiseRequestedQuestion records a question the runtime asked by request (Codex's
+// requestUserInput). It has no tool call of its own: it sits where it arrived, after
+// every tool call the turn has so far.
+func (t *turn) raiseRequestedQuestion(text string) {
+	t.addSignal(&signal{kind: KindQuestion, text: clip(text), at: len(t.blocks), seq: t.seq})
 }
 
 // raiseApproval records a refusal: of the call whose id the runtime names, or,
 // with none, of whatever the agent did last.
 func (t *turn) raiseApproval(text, toolUseID string) {
-	sig := &signal{kind: KindApproval, text: clip(text), at: len(t.blocks), anchor: len(t.tools) - 1}
-	if i := t.toolIndex(toolUseID); i >= 0 {
-		t.tools[i].refused = true
-		sig.anchor, sig.at = i, t.tools[i].blocksAt
+	if toolUseID != "" && len(t.refused) < maxOutcomes {
+		t.refused[toolUseID] = struct{}{}
 	}
-	t.addSignal(sig)
+	t.addSignal(&signal{kind: KindApproval, text: clip(text), byTool: true, toolID: toolUseID})
 }
 
 func (t *turn) addSignal(sig *signal) {
@@ -124,7 +150,7 @@ func (t *turn) addSignal(sig *signal) {
 func (t *turn) request(ids []string, text string) {
 	t.pending = append(t.pending, pendingRequest{
 		ids: ids,
-		sig: signal{kind: KindApproval, text: clip(text), at: len(t.blocks), anchor: len(t.tools) - 1},
+		sig: signal{kind: KindApproval, text: clip(text), at: len(t.blocks), seq: t.seq},
 	})
 	if len(t.pending) > maxPending {
 		t.pending = t.pending[len(t.pending)-maxPending:]
@@ -145,7 +171,7 @@ func (t *turn) resolve(ids []string, allowed bool, text string) {
 	if idx < 0 && len(t.pending) > 0 {
 		idx = 0
 	}
-	sig := signal{kind: KindApproval, text: clip(text), at: len(t.blocks), anchor: len(t.tools) - 1}
+	sig := signal{kind: KindApproval, text: clip(text), at: len(t.blocks), seq: t.seq}
 	if idx >= 0 {
 		sig = t.pending[idx].sig
 		t.pending = append(t.pending[:idx], t.pending[idx+1:]...)
@@ -155,20 +181,65 @@ func (t *turn) resolve(ids []string, allowed bool, text string) {
 	}
 }
 
-// open reports whether the turn ended on the signal: nothing the agent did after
-// it counts as working past it. A tool call that was refused, or that only asked
-// a question, is not working; any other tool call after it is. A question whose
-// tool call came back answered is no longer waiting.
-func (t *turn) open(sig *signal) bool {
-	if sig.kind == KindQuestion && sig.anchor >= 0 && sig.anchor < len(t.tools) && t.tools[sig.anchor].result == resultOK {
-		return false
+// place says where a signal sits: at, how many text blocks the turn had there, and
+// after, the point past which a tool call counts as the agent working on.
+//
+//   - A signal at a point (a request) sits where it arrived.
+//   - A signal that names a tool call sits at that call, and the point is its
+//     result when the turn has one: a call issued in the same batch before the
+//     result came back was not a reaction to it. With no result, it is the call's
+//     own start.
+//   - A refusal that names no call stands for the last thing the agent did, which
+//     is how agy reports its refusals (when the turn ends, naming none).
+//   - A signal that names a call the turn does not have (it was dropped for age)
+//     is older than anything the turn kept.
+func (t *turn) place(sig *signal) (at, after int) {
+	if !sig.byTool {
+		return sig.at, sig.seq
 	}
-	for i := sig.anchor + 1; i < len(t.tools); i++ {
-		if tl := t.tools[i]; !tl.refused && !tl.question {
+	if sig.toolID == "" {
+		if n := len(t.tools); n > 0 {
+			last := t.tools[n-1]
+			return last.blocksAt, last.seq
+		}
+		return 0, 0
+	}
+	i := t.toolIndex(sig.toolID)
+	if i < 0 {
+		return 0, -1
+	}
+	after = t.tools[i].seq
+	if r, ok := t.results[sig.toolID]; ok {
+		after = r.seq
+	}
+	return t.tools[i].blocksAt, after
+}
+
+// open reports whether the turn ended on the signal: nothing the agent did after
+// it counts as working past it. A tool call that was refused, or that only asked a
+// question, is not working; any other call that started after the signal is. A
+// question whose own tool call came back answered is no longer waiting.
+func (t *turn) open(sig *signal) bool {
+	if sig.toolCall && sig.toolID != "" {
+		if r, ok := t.results[sig.toolID]; ok && !r.isError {
+			return false
+		}
+	}
+	_, after := t.place(sig)
+	for _, tl := range t.tools {
+		if tl.seq > after && !tl.question && !t.isRefused(tl.id) {
 			return false
 		}
 	}
 	return true
+}
+
+func (t *turn) isRefused(id string) bool {
+	if id == "" {
+		return false
+	}
+	_, refused := t.refused[id]
+	return refused
 }
 
 // openSignal returns the signal the turn ended on, if any: the last open
@@ -201,12 +272,17 @@ func (t *turn) openSignal() *signal {
 // signalText is the text of an output whose kind a signal decided: what the agent
 // wrote after the signal (the terminal event's own text when it has one, which is
 // then the last of what the agent wrote), else the signal's own description, else
-// the turn's ordinary pick.
+// the turn's ordinary pick. A runtime that gave its final text but no deltas at
+// all has nothing to place it by; its final message is the last thing the agent
+// said, so it is used.
 func (t *turn) signalText(sig *signal, termText, pickText string, pickConf Confidence) (string, Confidence) {
-	if t.hasTextAfter(sig.at) {
-		if s, c := t.pick(sig.at, termText); s != "" {
+	at, _ := t.place(sig)
+	if t.hasTextAfter(at) {
+		if s, c := t.pick(at, termText); s != "" {
 			return s, c
 		}
+	} else if s := strings.TrimSpace(termText); s != "" && len(t.blocks) == 0 {
+		return s, ConfidenceExact
 	}
 	if sig.text != "" {
 		return sig.text, ConfidenceExact
@@ -227,7 +303,8 @@ func (t *turn) hasTextAfter(from int) bool {
 	return false
 }
 
-// blocksShifted keeps block positions right after the oldest block was dropped.
+// blocksShifted keeps block positions right after the oldest text block was
+// dropped.
 func (t *turn) blocksShifted() {
 	for i := range t.tools {
 		if t.tools[i].blocksAt > 0 {
@@ -242,20 +319,6 @@ func (t *turn) blocksShifted() {
 	for i := range t.pending {
 		if t.pending[i].sig.at > 0 {
 			t.pending[i].sig.at--
-		}
-	}
-}
-
-// toolsShifted keeps anchors right after the oldest tool call was dropped.
-func (t *turn) toolsShifted() {
-	for _, sig := range t.signals {
-		if sig.anchor > -1 {
-			sig.anchor--
-		}
-	}
-	for i := range t.pending {
-		if t.pending[i].sig.anchor > -1 {
-			t.pending[i].sig.anchor--
 		}
 	}
 }

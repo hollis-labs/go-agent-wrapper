@@ -37,6 +37,37 @@ ADR 0049). Takes go-providers v0.46.0.
   the provider names it); `agent.tool_use`'s `id` and `agent.tool_result`'s `id`
   and `is_error` are read to place it. go-providers v0.45.0 → v0.46.0.
 
+- **The kind does not depend on the order events arrive in.** A refusal and a
+  tool result reach the reducer on a different path from the tool call they name
+  (typed events against stream events), and could get there first; refusals and
+  results are now collected by tool call id and resolved when the turn ends, with
+  arrival order kept only as a sequence number. A refusal naming a call the turn
+  has dropped for age (more than 256 calls ago) is older than anything it kept;
+  one naming no call (agy) stands for the last call, with that call's position, so
+  the agent's own message after it is the text.
+- **"Worked around" means a call that started after the refused call's result.** A
+  call issued in the same batch, before the result came back, was not a reaction
+  to the refusal. A tool's first result is the one that counts (ACP agents update a
+  call several times).
+- **A question raised by request (Codex's `requestUserInput`) sits where it
+  arrived,** after every call the turn had, and an earlier call's result says
+  nothing about it; the text before it is not the question. A question is
+  "answered" only by its own tool call's result.
+- **Tool results are read in their ACP shapes** (flat `tool_call_id`, `status`,
+  `is_error`; a `failed` or `completed` status is the result, an `in_progress`
+  frame is not).
+- **A runtime's final text with no deltas to place it by is used** for a refused
+  turn.
+- **go-agent-wrapper emits a typed event in its place in the stream.**
+  agentkit calls `TypedEventCallback` a goroutine ahead of the stream events of the
+  same line, and the wrapper emitted from the callback, so a tool result or a
+  refusal reached the sink before the tool call it belongs to (and the replay
+  test of the refused Claude turn failed two runs in three). The callback now
+  queues the event and puts a marker in the fanout channel, which the translator
+  turns back into the event when it reaches it, so both kinds are emitted in the
+  order they were parsed in. Unlike agentkit's own sends, the marker send waits, so
+  a typed event is never dropped by a full channel.
+
 ### Tests
 
 - Real captures: the Claude refused-tool-call turn through the real adapters into
@@ -51,6 +82,11 @@ ADR 0049). Takes go-providers v0.46.0.
 
 ### Not covered
 
+- `ObserveStream` sees neither refusals nor tool results, so the Claude turn that
+  ended on a refused call is a final turn there and an approval through
+  `ObserveProvider`.
+- A batch of parallel calls fed out of order is judged as if the later ones had
+  followed the result; the wrapper now delivers in order.
 - An agent that gets past a refusal with text alone and says it resolved the
   matter itself is still reported as a question or an approval (nothing
   structural tells that from asking again).

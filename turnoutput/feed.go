@@ -85,14 +85,8 @@ func (r *Reducer) Observe(ev runtimeevents.Event) (Output, bool) {
 	case runtimeevents.KindAgentToolResult:
 		if t := r.body(ev.TurnID); t != nil {
 			t.boundary()
-			var p struct {
-				ToolResult struct {
-					ID      string `json:"id"`
-					IsError bool   `json:"is_error"`
-				} `json:"tool_result"`
-			}
-			if json.Unmarshal(ev.Payload, &p) == nil {
-				t.toolResult(p.ToolResult.ID, p.ToolResult.IsError)
+			if id, isError, final := toolResultOutcome(ev.Payload); final {
+				t.toolResult(id, isError)
 			}
 		}
 
@@ -116,7 +110,7 @@ func (r *Reducer) Observe(ev runtimeevents.Event) (Output, bool) {
 			return Output{}, false
 		}
 		if isQuestionMethod(p.Method) {
-			t.raiseQuestion(questionText(p.Params), len(t.tools)-1)
+			t.raiseRequestedQuestion(questionText(p.Params))
 			return Output{}, false
 		}
 		t.request([]string{ev.ID, idKey(p.RequestID)}, "Approval requested: "+describeRequest(p.Method, p.Params))
@@ -309,6 +303,41 @@ func (r *Reducer) toolUse(t *turn, id, name string, input json.RawMessage) {
 	if isQuestion {
 		t.raiseQuestion(questionText(input), idx)
 	}
+}
+
+// toolResultOutcome reads an agent.tool_result payload: the call's id, whether it
+// failed, and whether this is the call's result at all. Native runtimes nest it
+// (tool_result: id, is_error); ACP agents send it flat (tool_call_id, status, and
+// is_error where the agent has one), and update a call several times, so a frame
+// that is neither an explicit is_error nor a completed or failed status is a
+// progress update, not the result.
+func toolResultOutcome(payload json.RawMessage) (id string, isError, final bool) {
+	var p struct {
+		ToolResult *struct {
+			ID      string `json:"id"`
+			IsError *bool  `json:"is_error"`
+			Status  string `json:"status"`
+		} `json:"tool_result"`
+		ToolCallID string `json:"tool_call_id"`
+		IsError    *bool  `json:"is_error"`
+		Status     string `json:"status"`
+	}
+	if json.Unmarshal(payload, &p) != nil {
+		return "", false, false
+	}
+	id, flag, status := p.ToolCallID, p.IsError, p.Status
+	if p.ToolResult != nil {
+		id, flag, status = p.ToolResult.ID, p.ToolResult.IsError, p.ToolResult.Status
+	}
+	switch {
+	case flag != nil:
+		return id, *flag, true
+	case status == "failed":
+		return id, true, true
+	case status == "completed":
+		return id, false, true
+	}
+	return id, false, false
 }
 
 func isThought(phase string) bool {

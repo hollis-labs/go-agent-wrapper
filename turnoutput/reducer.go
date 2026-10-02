@@ -342,13 +342,16 @@ type turn struct {
 
 	// tools are the turn's tool calls in order, and signals what in the turn
 	// needs the user; see signals.go.
+	seq     int
 	tools   []tool
+	results map[string]outcome
+	refused map[string]struct{}
 	signals []*signal
 	pending []pendingRequest
 }
 
 func newTurn(id string) *turn {
-	return &turn{id: id, byID: map[string]*block{}}
+	return &turn{id: id, byID: map[string]*block{}, results: map[string]outcome{}, refused: map[string]struct{}{}}
 }
 
 // block is one text block of a turn.

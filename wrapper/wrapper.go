@@ -552,6 +552,10 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	}
 
 	fanout := make(chan llmtypes.StreamEvent, 128)
+	// typed carries the typed events of the session in the order the stream
+	// events arrive in; see typedQueue.
+	typed := &typedQueue{fanout: fanout}
+	closeFanout := typed.closeFanout
 
 	stdoutStream := newStreamWriter(ctx, w.cfg.Activity, rawSource,
 		runtimeevents.KindStdoutRaw, runtimeevents.KindStdoutLine, w.cfg.Filters)
@@ -736,7 +740,13 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			if !mapped {
 				return
 			}
-			emitProviderObserved(kind, payload)
+			// The stream events of the same output reach the translator below
+			// through the fanout channel, a goroutine behind the parser; emitting
+			// a typed event here would let it overtake the tool call, text and
+			// terminal event it belongs with. So it goes in line behind them.
+			if !typed.enqueue(typedEvent{kind: kind, payload: payload}) {
+				emitProviderObserved(kind, payload)
+			}
 		},
 		JsonRpcRequestHook: func(method string, params json.RawMessage) (any, *agentsessions.JsonRpcError) {
 			turnMu.Lock()
@@ -801,6 +811,12 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	go func() {
 		defer close(translatorDone)
 		for ev := range fanout {
+			if ev.Type == typedMarker {
+				if te, ok := typed.dequeue(); ok {
+					emitProviderObserved(te.kind, te.payload)
+				}
+				continue
+			}
 			if ev.Type == llmtypes.EventSessionID && ev.SessionID != "" {
 				// Provider-side session ID: rebind the Process so
 				// subsequent emissions carry it. Use the locked
@@ -830,7 +846,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		_ = session.Stop(context.Background())
 		exitCode, waitErr := session.Wait()
 		w.inputWG.Wait()
-		close(fanout)
+		closeFanout()
 		<-translatorDone
 		flushOpenTurn(exitCode, waitErr)
 		exitPayload := map[string]any{"exit_code": exitCode, "error": err.Error()}
@@ -857,7 +873,7 @@ func (w *Wrapper) Run(ctx context.Context) error {
 	close(stopWatcher)
 	w.closeInputAdmission()
 	w.inputWG.Wait()
-	close(fanout)
+	closeFanout()
 	<-translatorDone
 	flushOpenTurn(exitCode, waitErr)
 
