@@ -443,15 +443,13 @@ func (t *turn) resolve(ids []string, allowed bool, text string) {
 	if idx < 0 && len(t.pending) > 0 {
 		idx = 0
 	}
-	var sig signal
+	described := clip(text)
 	if idx >= 0 {
-		sig = t.pending[idx].sig
+		described = t.pending[idx].sig.text
 		t.pending = append(t.pending[:idx], t.pending[idx+1:]...)
-	} else {
-		sig = signal{kind: KindApproval, text: clip(text), at: len(t.blocks)}
 	}
 	if !allowed {
-		t.raiseApproval(sig.text)
+		t.raiseApproval(described)
 	}
 }
 
