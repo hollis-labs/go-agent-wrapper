@@ -744,28 +744,14 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			// through the fanout channel, a goroutine behind the parser; emitting
 			// a typed event here would let it overtake the tool call, text and
 			// terminal event it belongs with. So it goes in line behind them.
-			if !typed.enqueue(typedEvent{kind: kind, payload: payload}) {
-				emitProviderObserved(kind, payload)
+			emit := func() { emitProviderObserved(kind, payload) }
+			if !typed.enqueue(emit) {
+				emit()
 			}
 		},
 		JsonRpcRequestHook: func(method string, params json.RawMessage) (any, *agentsessions.JsonRpcError) {
-			turnMu.Lock()
-			if currentTurnID == "" {
-				currentTurnID = runtimeevents.NewTurnID()
-				w.turns.opened(currentTurnID)
-				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindTurnStarted, source, nil,
-					runtimeevents.WithTurnID(currentTurnID))
-				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionProcessing, source,
-					map[string]any{"turn_id": currentTurnID},
-					runtimeevents.WithTurnID(currentTurnID))
-			}
-			turnID := currentTurnID
-			turnMu.Unlock()
-
 			requestID := runtimeevents.NewEventID()
 			payload := map[string]any{"method": method, "params": params}
-			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindAgentPermissionRequested, source, payload,
-				runtimeevents.WithID(requestID), runtimeevents.WithTurnID(turnID))
 			outcome := approvals.Decide(method, params)
 			resolved := map[string]any{
 				"method":  method,
@@ -788,8 +774,33 @@ func (w *Wrapper) Run(ctx context.Context) error {
 			if outcome.Err != nil {
 				resolved["error"] = outcome.Err.Message
 			}
-			_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindAgentPermissionResolved, source, resolved,
-				runtimeevents.WithParentID(requestID), runtimeevents.WithTurnID(turnID))
+			// The request and its resolution are emitted in their place in the
+			// stream, like the typed events: the hook runs on the reader goroutine
+			// while the tool call, text and turn events of the same turn are still
+			// in the fanout channel, and emitting here let a refused request reach
+			// the sink before the tool call it belongs to. The decision is made
+			// now, because the hook returns it; only the events wait their turn.
+			emit := func() {
+				turnMu.Lock()
+				if currentTurnID == "" {
+					currentTurnID = runtimeevents.NewTurnID()
+					w.turns.opened(currentTurnID)
+					_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindTurnStarted, source, nil,
+						runtimeevents.WithTurnID(currentTurnID))
+					_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindSessionProcessing, source,
+						map[string]any{"turn_id": currentTurnID},
+						runtimeevents.WithTurnID(currentTurnID))
+				}
+				turnID := currentTurnID
+				turnMu.Unlock()
+				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindAgentPermissionRequested, source, payload,
+					runtimeevents.WithID(requestID), runtimeevents.WithTurnID(turnID))
+				_ = w.cfg.Activity.Emit(ctx, runtimeevents.KindAgentPermissionResolved, source, resolved,
+					runtimeevents.WithParentID(requestID), runtimeevents.WithTurnID(turnID))
+			}
+			if !typed.enqueue(emit) {
+				emit()
+			}
 			return outcome.Response()
 		},
 	})
@@ -812,8 +823,8 @@ func (w *Wrapper) Run(ctx context.Context) error {
 		defer close(translatorDone)
 		for ev := range fanout {
 			if ev.Type == typedMarker {
-				if te, ok := typed.dequeue(); ok {
-					emitProviderObserved(te.kind, te.payload)
+				if emit, ok := typed.dequeue(); ok {
+					emit()
 				}
 				continue
 			}

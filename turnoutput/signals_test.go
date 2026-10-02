@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	llmtypes "github.com/hollis-labs/go-llm-types"
 	"github.com/hollis-labs/go-providers/provider/events"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
@@ -617,5 +618,121 @@ func TestAQuestionCallWithNoIDIsPlacedWhereItWasMade(t *testing.T) {
 		events.ToolUse{ID: "t2", Name: "Write"}, events.Delta{Text: "Chose Postgres.", BlockID: "m1"})
 	if out.Kind != KindFinal {
 		t.Fatalf("got %+v, want a final turn: the agent wrote after asking", out)
+	}
+}
+
+// ---- Second review of #41 ---------------------------------------------------
+
+// A tool call's result and refusal live with the call: after hundreds of earlier
+// results, a later call's are still counted (an earlier build kept results in a
+// shared map that stopped taking entries at 512).
+func TestFactsAboutALaterCallStillCountAfterManyResults(t *testing.T) {
+	prime := func(r *Reducer) {
+		for i := range 600 {
+			r.ObserveProvider(events.ToolUse{ID: fmt.Sprintf("r%d", i), Name: "Read"})
+			r.ObserveProvider(events.ToolResult{ID: fmt.Sprintf("r%d", i)})
+		}
+	}
+
+	t.Run("an answered question", func(t *testing.T) {
+		r := provider(t)
+		prime(r)
+		out := finishWith(t, r, events.Done{StopReason: "end_turn"},
+			events.ToolUse{ID: "q1", Name: "AskUserQuestion", Args: map[string]any{"question": "Which?"}},
+			events.ToolResult{ID: "q1"},
+			events.Delta{Text: "Going with it.", BlockID: "m1"},
+		)
+		if out.Kind != KindFinal {
+			t.Fatalf("got %+v, want a final turn: the question came back answered", out)
+		}
+	})
+
+	t.Run("a refusal in a parallel batch", func(t *testing.T) {
+		r := provider(t)
+		prime(r)
+		out := finishWith(t, r, events.Done{StopReason: "end_turn"},
+			events.ToolUse{ID: "t1", Name: "Bash"},
+			events.ToolUse{ID: "t2", Name: "Read"},
+			events.ToolResult{ID: "t1", IsError: true},
+			events.ToolResult{ID: "t2"},
+			events.Delta{Text: "I need approval.", BlockID: "m1"},
+			events.PermissionDenied{Action: "Bash", DisplayName: "x", ToolUseID: "t1"},
+		)
+		if out.Kind != KindApproval {
+			t.Fatalf("got %+v, want an approval", out)
+		}
+	})
+}
+
+// What arrives before the call it names is held for the call, in a bounded place.
+func TestFactsThatArriveBeforeTheirCallAreHeldBounded(t *testing.T) {
+	r := provider(t)
+	for i := range maxEarly * 2 {
+		r.ObserveProvider(events.ToolResult{ID: fmt.Sprintf("u%d", i), IsError: true})
+	}
+	if n := len(r.current().early); n != maxEarly {
+		t.Fatalf("holds %d early facts, want %d", n, maxEarly)
+	}
+
+	// The newest are kept and a call claims its own when it arrives.
+	newest := fmt.Sprintf("u%d", maxEarly*2-1)
+	r.ObserveProvider(events.ToolUse{ID: newest, Name: "AskUserQuestion", Args: map[string]any{"question": "Which?"}})
+	out, ok := r.ObserveProvider(events.Done{StopReason: "end_turn"})
+	if !ok || out.Kind != KindQuestion {
+		t.Fatalf("got %+v, want a question: its error result arrived first and was kept", out)
+	}
+}
+
+// One reducer can take a call from the stream feed and its result from the typed
+// feed; the call's id is what pairs them.
+func TestAToolCallFromTheStreamFeedPairsWithTypedFacts(t *testing.T) {
+	r := provider(t)
+	r.ObserveStream(llmtypes.StreamEvent{Type: llmtypes.EventToolUse, ToolUse: &llmtypes.ToolUseBlock{ID: "t1", Name: "Bash"}})
+	r.ObserveStream(llmtypes.StreamEvent{Type: llmtypes.EventToolUse, ToolUse: &llmtypes.ToolUseBlock{ID: "t2", Name: "Read"}})
+	r.ObserveProvider(events.ToolResult{ID: "t1", IsError: true})
+	r.ObserveProvider(events.ToolResult{ID: "t2"})
+	r.ObserveProvider(events.PermissionDenied{Action: "Bash", DisplayName: "x", ToolUseID: "t1"})
+	out, ok := r.ObserveStream(llmtypes.StreamEvent{Type: llmtypes.EventDone})
+	if !ok || out.Kind != KindApproval {
+		t.Fatalf("got %+v, want an approval: t2 was issued with t1, before its result", out)
+	}
+}
+
+// A completed or failed status with no is_error is still the result (copilot sends
+// the status alone), nested or flat.
+func TestACPStatusAloneIsTheResult(t *testing.T) {
+	for _, shape := range []struct {
+		name  string
+		build func(f *feed, id, status string) runtimeevents.Event
+	}{
+		{"nested", func(f *feed, id, status string) runtimeevents.Event {
+			return f.event(runtimeevents.KindAgentToolResult, "turn_1", map[string]any{"tool_result": map[string]any{"id": id, "status": status}})
+		}},
+		{"flat", func(f *feed, id, status string) runtimeevents.Event {
+			return f.event(runtimeevents.KindAgentToolResult, "turn_1", map[string]any{"tool_call_id": id, "status": status})
+		}},
+	} {
+		t.Run(shape.name+" completed answers a question", func(t *testing.T) {
+			f := newFeed(t, Config{})
+			ask := f.event(runtimeevents.KindAgentToolUse, "turn_1", map[string]any{"tool_call_id": "q1", "title": "AskUserQuestion", "raw_input": map[string]any{"question": "Which?"}})
+			f.mustQuiet(ask, shape.build(f, "q1", "completed"))
+			got, ok := f.send(f.done("turn_1", nil))
+			if !ok || got.Kind != KindFinal {
+				t.Fatalf("got %+v, want a final turn: a completed status is the answer", got)
+			}
+		})
+	}
+}
+
+// A result that arrives before its call is the call's when the call arrives: an OK
+// result for a question tool, reported first, still means it was answered.
+func TestAnEarlyResultBelongsToTheCallThatArrivesAfterIt(t *testing.T) {
+	out := finishWith(t, provider(t), events.Done{StopReason: "end_turn"},
+		events.ToolResult{ID: "q1"},
+		events.ToolUse{ID: "q1", Name: "AskUserQuestion", Args: map[string]any{"question": "Which?"}},
+		events.Delta{Text: "Going with it.", BlockID: "m1"},
+	)
+	if out.Kind != KindFinal {
+		t.Fatalf("got %+v, want a final turn: the question's OK result came first", out)
 	}
 }

@@ -58,6 +58,17 @@ ADR 0049). Takes go-providers v0.46.0.
   frame is not).
 - **A runtime's final text with no deltas to place it by is used** for a refused
   turn.
+- **A tool call's result and refusal live with the call**, and go when it does (the
+  oldest of 256 calls is dropped); what arrives before its call is held, bounded
+  (256), for the call to claim. An earlier build kept results and refusals in shared
+  maps that stopped taking entries at 512, so after 512 tool results a later
+  answered question or refusal was silently missed.
+- **The wrapper also emits a JSON-RPC server request's permission events in
+  place.** Codex's `agent.permission_requested` / `_resolved` come from the
+  request hook on the reader goroutine and were emitted directly, so a refused
+  request could reach the sink before the tool call it belongs to; they now go
+  through the same queue (the decision is still made at once, because the hook
+  returns it).
 - **go-agent-wrapper emits a typed event in its place in the stream.**
   agentkit calls `TypedEventCallback` a goroutine ahead of the stream events of the
   same line, and the wrapper emitted from the callback, so a tool result or a

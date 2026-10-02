@@ -17,12 +17,13 @@ import "strings"
 // they happened: a refusal and a tool result are reported on a different path from
 // the tool call they name, and can reach the reducer first.
 
-// maxTools, maxSignals and maxOutcomes bound what one turn remembers about its tool
-// calls, signals and tool results; the oldest tool calls go first.
+// maxTools, maxSignals and maxEarly bound what one turn remembers about its tool
+// calls, its signals and facts that arrived before the tool call they name; the oldest
+// go first. A tool call's result and refusal live with the call and go when it does.
 const (
-	maxTools    = 256
-	maxSignals  = 64
-	maxOutcomes = 512
+	maxTools   = 256
+	maxSignals = 64
+	maxEarly   = 256
 )
 
 // tool is one tool call of a turn.
@@ -36,6 +37,18 @@ type tool struct {
 	seq int
 	// question is set for a call to a question tool: it asks, it does not work.
 	question bool
+
+	// facts about the call, which may arrive before the call does (see early).
+	facts
+}
+
+// facts is what the turn has learned about one tool call from other events: its
+// result (the first one counts, and seq says where it fell among the turn's calls
+// and results) and whether the runtime reported refusing it.
+type facts struct {
+	result    outcome
+	hasResult bool
+	refused   bool
 }
 
 // outcome is what a tool call's result said, and where it fell in the turn.
@@ -79,8 +92,42 @@ func (t *turn) addTool(id string, question bool) int {
 		t.tools = t.tools[1:]
 	}
 	t.seq++
-	t.tools = append(t.tools, tool{id: id, blocksAt: len(t.blocks), seq: t.seq, question: question})
+	tl := tool{id: id, blocksAt: len(t.blocks), seq: t.seq, question: question}
+	// A result or a refusal can reach the reducer before the call it names.
+	if f, ok := t.early[id]; ok && id != "" {
+		tl.facts = *f
+		t.forgetEarly(id)
+	}
+	t.tools = append(t.tools, tl)
 	return len(t.tools) - 1
+}
+
+// factsFor returns the facts store for the call with id: the call's own when the
+// turn has it, else a bounded holding place for the call to claim when it arrives.
+func (t *turn) factsFor(id string) *facts {
+	if i := t.toolIndex(id); i >= 0 {
+		return &t.tools[i].facts
+	}
+	if f, ok := t.early[id]; ok {
+		return f
+	}
+	if len(t.earlyOrder) >= maxEarly {
+		t.forgetEarly(t.earlyOrder[0])
+	}
+	f := &facts{}
+	t.early[id] = f
+	t.earlyOrder = append(t.earlyOrder, id)
+	return f
+}
+
+func (t *turn) forgetEarly(id string) {
+	delete(t.early, id)
+	for i, e := range t.earlyOrder {
+		if e == id {
+			t.earlyOrder = append(t.earlyOrder[:i], t.earlyOrder[i+1:]...)
+			return
+		}
+	}
 }
 
 // toolIndex finds the newest call with id, or -1.
@@ -103,11 +150,12 @@ func (t *turn) toolResult(id string, isError bool) {
 	if id == "" {
 		return
 	}
-	if _, seen := t.results[id]; seen || len(t.results) >= maxOutcomes {
+	f := t.factsFor(id)
+	if f.hasResult {
 		return
 	}
 	t.seq++
-	t.results[id] = outcome{isError: isError, seq: t.seq}
+	f.result, f.hasResult = outcome{isError: isError, seq: t.seq}, true
 }
 
 // raiseQuestion records that the agent asked the user something by calling a
@@ -133,8 +181,8 @@ func (t *turn) raiseRequestedQuestion(text string) {
 // raiseApproval records a refusal: of the call whose id the runtime names, or,
 // with none, of whatever the agent did last.
 func (t *turn) raiseApproval(text, toolUseID string) {
-	if toolUseID != "" && len(t.refused) < maxOutcomes {
-		t.refused[toolUseID] = struct{}{}
+	if toolUseID != "" {
+		t.factsFor(toolUseID).refused = true
 	}
 	t.addSignal(&signal{kind: KindApproval, text: clip(text), byTool: true, toolID: toolUseID})
 }
@@ -209,8 +257,8 @@ func (t *turn) place(sig *signal) (at, after int) {
 		return 0, -1
 	}
 	after = t.tools[i].seq
-	if r, ok := t.results[sig.toolID]; ok {
-		after = r.seq
+	if tl := t.tools[i]; tl.hasResult {
+		after = tl.result.seq
 	}
 	return t.tools[i].blocksAt, after
 }
@@ -221,25 +269,17 @@ func (t *turn) place(sig *signal) (at, after int) {
 // question whose own tool call came back answered is no longer waiting.
 func (t *turn) open(sig *signal) bool {
 	if sig.toolCall && sig.toolID != "" {
-		if r, ok := t.results[sig.toolID]; ok && !r.isError {
+		if i := t.toolIndex(sig.toolID); i >= 0 && t.tools[i].hasResult && !t.tools[i].result.isError {
 			return false
 		}
 	}
 	_, after := t.place(sig)
 	for _, tl := range t.tools {
-		if tl.seq > after && !tl.question && !t.isRefused(tl.id) {
+		if tl.seq > after && !tl.question && !tl.refused {
 			return false
 		}
 	}
 	return true
-}
-
-func (t *turn) isRefused(id string) bool {
-	if id == "" {
-		return false
-	}
-	_, refused := t.refused[id]
-	return refused
 }
 
 // openSignal returns the signal the turn ended on, if any: the last open

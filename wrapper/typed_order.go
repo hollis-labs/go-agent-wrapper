@@ -4,7 +4,6 @@ import (
 	"sync"
 
 	llmtypes "github.com/hollis-labs/go-llm-types"
-	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
 // typedMarker is the StreamEvent type of a placeholder that holds a typed event's
@@ -12,15 +11,9 @@ import (
 // translator never sees it: it dequeues the typed event the marker stands for.
 const typedMarker llmtypes.EventType = "wrapper.typed"
 
-// typedEvent is a typed event translated and waiting for its turn to be emitted.
-type typedEvent struct {
-	kind    runtimeevents.EventKind
-	payload any
-}
-
-// typedQueue puts a session's typed events (tool results, refusals, session and
-// permission notices) in order with its stream events (tool calls, text, the
-// terminal event).
+// typedQueue puts the events a session reports out of band (typed events: tool
+// results, refusals, session notices; and a JSON-RPC server request's permission
+// events) in order with its stream events (tool calls, text, the terminal event).
 //
 // agentkit parses a line, calls TypedEventCallback synchronously and then sends the
 // line's stream events on the fanout channel, which a second goroutine translates.
@@ -28,10 +21,11 @@ type typedEvent struct {
 // stream events that preceded it, and a consumer that reads the two together (a
 // refusal that names a tool call it had not yet seen) got them in the wrong order.
 //
-// The callback enqueues the event here and sends a marker into the fanout channel,
-// where it sits between the previous line's stream events and this line's, and the
-// translator emits the event when it reaches the marker. Markers and events are
-// one-for-one and both first-in-first-out, so the k-th marker is the k-th event.
+// The callback enqueues an emit function here and sends a marker into the fanout
+// channel, where it sits between the previous line's stream events and this
+// line's, and the translator runs the function when it reaches the marker. Markers
+// and functions are one-for-one and both first-in-first-out, so the k-th marker is
+// the k-th function.
 // Unlike agentkit's own sends, which drop when the channel is full, the marker send
 // waits, so a typed event is never lost to a slow consumer.
 type typedQueue struct {
@@ -43,34 +37,34 @@ type typedQueue struct {
 	closed  bool
 
 	mu    sync.Mutex
-	items []typedEvent
+	items []func()
 }
 
-// enqueue queues ev and puts its marker in the fanout channel. It reports false,
-// leaving ev to the caller, when the channel is already closed.
-func (q *typedQueue) enqueue(ev typedEvent) bool {
+// enqueue queues emit and puts its marker in the fanout channel. It reports false,
+// leaving emit to the caller, when the channel is already closed.
+func (q *typedQueue) enqueue(emit func()) bool {
 	q.closeMu.RLock()
 	defer q.closeMu.RUnlock()
 	if q.closed {
 		return false
 	}
 	q.mu.Lock()
-	q.items = append(q.items, ev)
+	q.items = append(q.items, emit)
 	q.mu.Unlock()
 	q.fanout <- llmtypes.StreamEvent{Type: typedMarker}
 	return true
 }
 
-// dequeue returns the oldest queued typed event.
-func (q *typedQueue) dequeue() (typedEvent, bool) {
+// dequeue returns the oldest queued emit function.
+func (q *typedQueue) dequeue() (func(), bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.items) == 0 {
-		return typedEvent{}, false
+		return nil, false
 	}
-	ev := q.items[0]
+	emit := q.items[0]
 	q.items = q.items[1:]
-	return ev, true
+	return emit, true
 }
 
 // closeFanout closes the fanout channel once, after which enqueue refuses.
