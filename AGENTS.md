@@ -26,6 +26,11 @@ and reports what happened.
   from a `go-harness-filters` classifier.
 - `filters/` adapts `go-harness-filters` rules onto agent text and tool
   envelopes.
+- `turnoutput/` reduces a session's events to one `Output` per completed turn
+  (final text, kind, stop reason, confidence). Its `doc.go` is the contract: how
+  the text is chosen, when it is empty and how the kind is decided. It reads the
+  payload conventions in the `runtimeevents` package doc, so a producer that
+  changes one changes what the reducer sees.
 - `plant/` owns pre-spawn materialization. `sandbox/` is the post-start PID
   applier; pre-spawn confinement is `Config.SandboxPolicy`/`SandboxProfile`/
   `ProtectedPaths`.
