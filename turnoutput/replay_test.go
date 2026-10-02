@@ -177,16 +177,26 @@ func TestReplayClaudeStreamingTwoTurns(t *testing.T) {
 }
 
 func TestReplayOpenCodeRun(t *testing.T) {
-	var out turnoutput.Output
-	replay(t, runtimes.OpenCode, providertest.Replay("opencode/run_turn1").When("run"),
-		func(t *testing.T, w *wrapper.Wrapper, _ *acp.Manager, outs <-chan turnoutput.Output) {
-			out = ask(t, w, outs, "say hi")
+	for _, tc := range []struct{ name, fixture, text string }{
+		// One step: the text and the step that ends the turn.
+		{"one step", "opencode/run_turn1", "OK."},
+		// Two tool-calling steps, then the step that answers: only the last step's
+		// text is the turn's message.
+		{"after tool steps", "opencode/run_tool_use", "hello fixture"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out turnoutput.Output
+			replay(t, runtimes.OpenCode, providertest.Replay(tc.fixture).When("run"),
+				func(t *testing.T, w *wrapper.Wrapper, _ *acp.Manager, outs <-chan turnoutput.Output) {
+					out = ask(t, w, outs, "say hi")
+				})
+			requireOutput(t, out, turnoutput.KindFinal, tc.text)
+			// go-providers v0.45.0 puts the text of the step that ends an opencode
+			// run on its done, which the wrapper carries as turn.completed's text.
+			if out.Runtime != "opencode" || out.Confidence != turnoutput.ConfidenceExact {
+				t.Fatalf("Output = %+v, want runtime opencode and exact confidence", out)
+			}
 		})
-	requireOutput(t, out, turnoutput.KindFinal, "OK.")
-	// go-providers v0.45.0 carries opencode's last step on its done, which makes
-	// this exact; until the wrapper takes that release the last block is a guess.
-	if out.Runtime != "opencode" || out.Confidence != turnoutput.ConfidenceHeuristic {
-		t.Fatalf("Output = %+v, want runtime opencode and heuristic confidence", out)
 	}
 }
 

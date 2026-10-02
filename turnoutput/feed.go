@@ -217,7 +217,11 @@ func (r *Reducer) ObserveProvider(ev events.Event) (Output, bool) {
 		t.boundary()
 		t.raiseApproval(permissionDeniedText(e.Action, e.DisplayName))
 	case events.Done:
-		return r.endIDLess(terminal{stopReason: e.StopReason})
+		// Text is the turn's own final message when the provider reports one on
+		// its terminal event (go-providers v0.44.0: Claude's result.result, agy's
+		// result.response; v0.45.0: the last step of an opencode run), so it is
+		// exact, as it is on turn.completed and on an EventDone's Content.
+		return r.endIDLess(terminal{stopReason: e.StopReason, text: e.Text})
 	case events.Error:
 		return r.endIDLess(terminal{failed: true, errText: errText})
 	}
