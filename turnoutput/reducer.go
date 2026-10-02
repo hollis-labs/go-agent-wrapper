@@ -14,6 +14,11 @@ import (
 // reopening it.
 const finishedMemory = 64
 
+// doneSignature is how a completed turn ended: its stop reason and its text.
+type doneSignature struct {
+	stop, text string
+}
+
 // maxOpenTurns bounds the turns a Reducer buffers at once. A session runs one
 // turn at a time and every turn ends with a terminal event, so reaching it means
 // a producer lost terminal events; the oldest turn is dropped without an Output.
@@ -50,9 +55,17 @@ type Reducer struct {
 	// finished is the ids of the turns already reported, oldest first.
 	finished []string
 	// settled reports that the last turn ended and nothing has opened another.
-	// A terminal event with no turn id that arrives while settled repeats the one
-	// that ended it.
+	// A terminal event with no turn id that arrives while settled is either a
+	// turn that had no events of its own (an interrupted one, say) or a repeat of
+	// the terminal event that ended the last turn; lastDone tells them apart.
 	settled bool
+	// lastDone is what the last completed turn ended with.
+	lastDone doneSignature
+	// heldStop is a stop reason that arrived while settled: the leading stop
+	// reason of a turn with no other events, or a trailing one of the turn that
+	// just ended. The next event says which: a terminal event takes it, any other
+	// drops it.
+	heldStop string
 	// lastError is the text of the last failure reported, so the same error
 	// repeated while settled is reported once.
 	lastError string
@@ -136,6 +149,7 @@ func (r *Reducer) current() *turn {
 func (r *Reducer) begin(id string) *turn {
 	t := newTurn(id)
 	t.usageStop, r.pendingStop = r.pendingStop, ""
+	r.heldStop = ""
 	r.open[id] = t
 	r.order = append(r.order, id)
 	for len(r.order) > maxOpenTurns {
@@ -169,11 +183,15 @@ func (r *Reducer) body(id string) *turn {
 // ending returns the turn a terminal event closes, and false when the event
 // repeats one already reported. An id the reducer saw nothing of closes an empty
 // turn: the runtime reported a turn even if none of it reached the reducer.
-// Without an id the event closes the current turn; with none open it repeats the
-// terminal event that ended the last one while settled, except that an error is
-// never dropped unless it is the same error again, so a failure with no turn
-// around it (a startup failure) is reported.
-func (r *Reducer) ending(id string, failed bool, errText string) (*turn, bool) {
+//
+// Without an id the event closes the current turn. With none open, the turn had
+// no events of its own, or the event repeats the one that ended the last turn.
+// It is a repeat only if the last turn was completed and this one ends the same
+// way: the same stop reason and text, and not a cancellation, since an
+// interrupted turn that said nothing is a turn of its own and a lone terminal
+// event must never vanish. A failure is a repeat only if it is the same error
+// again, so a failure with no turn around it (a startup failure) is reported.
+func (r *Reducer) ending(id string, term terminal) (*turn, bool) {
 	if id != "" {
 		if t := r.open[id]; t != nil {
 			return t, true
@@ -186,20 +204,34 @@ func (r *Reducer) ending(id string, failed bool, errText string) (*turn, bool) {
 	if t := r.current(); t != nil {
 		return t, true
 	}
+	stop := term.stopReason
+	if stop == "" {
+		stop = r.heldStop
+	}
 	if r.settled {
-		if !failed || (errText != "" && errText == r.lastError) {
+		errText := strings.TrimSpace(term.errText)
+		switch {
+		case term.failed:
+			if errText != "" && errText == r.lastError {
+				return nil, false
+			}
+		case stop != stopCancelled && r.lastDone == doneSignature{stop: stop, text: strings.TrimSpace(term.text)}:
 			return nil, false
 		}
 	}
 	t := newTurn(r.newTurnID())
-	t.usageStop, r.pendingStop = r.pendingStop, ""
+	t.usageStop = r.pendingStop
+	if r.heldStop != "" {
+		t.usageStop = r.heldStop
+	}
+	r.pendingStop, r.heldStop = "", ""
 	return t, true
 }
 
 // noteStop records a stop reason reported on its own: on the current turn, or,
 // when a turn's first event is not in yet, for the next one. One that arrives
-// after a turn ended with nothing since belongs to the turn that ended and is
-// dropped.
+// after a turn ended with nothing since is held until the next event says
+// whether it led a terminal event or trailed the turn that ended.
 func (r *Reducer) noteStop(stop string) {
 	if stop == "" {
 		return
@@ -208,9 +240,11 @@ func (r *Reducer) noteStop(stop string) {
 		t.usageStop = stop
 		return
 	}
-	if !r.settled {
-		r.pendingStop = stop
+	if r.settled {
+		r.heldStop = stop
+		return
 	}
+	r.pendingStop = stop
 }
 
 func (r *Reducer) wasFinished(id string) bool {
@@ -235,9 +269,10 @@ func (r *Reducer) finish(t *turn, term terminal) Output {
 		r.finished = r.finished[len(r.finished)-finishedMemory:]
 	}
 	r.settled = len(r.order) == 0
-	r.pendingStop = ""
+	r.pendingStop, r.heldStop = "", ""
 	if term.failed {
 		r.lastError = strings.TrimSpace(term.errText)
+		r.lastDone = doneSignature{}
 	}
 
 	out := Output{
@@ -248,6 +283,10 @@ func (r *Reducer) finish(t *turn, term terminal) Output {
 	}
 	if out.StopReason == "" {
 		out.StopReason = t.usageStop
+	}
+
+	if !term.failed {
+		r.lastDone = doneSignature{stop: out.StopReason, text: strings.TrimSpace(term.text)}
 	}
 
 	cut := term.cut ||
