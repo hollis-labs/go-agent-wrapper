@@ -14,8 +14,8 @@ github.com/hollis-labs/go-materialize v0.1.0 h1:JQ7nKIlKIaWvuiN1yPpad0dQaJTLocuQ
 github.com/hollis-labs/go-materialize v0.1.0/go.mod h1:ubDxYOfG+hCX0PXQaVm8ssmJoc6ZCDh8iSO46pj0PK0=
 github.com/hollis-labs/go-permission v0.1.0 h1:eOlb2pPmEkh9D5zlVgWwOd4ryycEQYiLT1cLMEG6y2c=
 github.com/hollis-labs/go-permission v0.1.0/go.mod h1:OXz5GXvR7vFAb6TVoGDOESIEecC0V40524NdN0jiOrs=
-github.com/hollis-labs/go-providers v0.45.0 h1:zEr5R2qZgct7r2PSk52d42ci0ofa26Io8ItD2aDnP8s=
-github.com/hollis-labs/go-providers v0.45.0/go.mod h1:WR4UJzbsvtzb53L2tW8jT28dqq6h4CP4mNkA7gJLpuc=
+github.com/hollis-labs/go-providers v0.46.0 h1:qQoV48OYTrVL5rJqUVQWYxe3akcPtoaYWhY4VY+GWPc=
+github.com/hollis-labs/go-providers v0.46.0/go.mod h1:WR4UJzbsvtzb53L2tW8jT28dqq6h4CP4mNkA7gJLpuc=
 github.com/hollis-labs/go-runner v0.8.2 h1:f15VFjGvbykf1zsi6KV66rHzCwsWAKtjYVl91Zsr5uI=
 github.com/hollis-labs/go-runner v0.8.2/go.mod h1:eKfG17Zulw2kYOruTxBLbT5RT8AYE7zJXvHqQD9ltOE=
 github.com/hollis-labs/go-runtime-events v0.2.1 h1:ik7AxHU5pPLvNXPIfYYC10czm3zoueKrPvsD2bFrISs=

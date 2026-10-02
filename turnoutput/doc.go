@@ -55,11 +55,65 @@
 //
 // A turn.failed (or Error) is a failure, except that reason "interrupted" or
 // "process_exited", or a stop_reason of llmtypes.StopReasonCancelled, makes it
-// terminal; a completed turn that stopped that way is terminal too. A question
-// tool call (see [Config.QuestionTools]) or a Codex requestUserInput request in
-// the turn makes it a question. A permission request that is unresolved or refused, or
-// an agent.permission_denied, makes it an approval. Anything else is final.
-// Failure and terminal win over question, and question over approval.
+// terminal; a completed turn that stopped that way is terminal too. A turn that
+// ended on a question or an approval is a question or an approval, as below.
+// Anything else is final. Failure and terminal win over question, and question
+// over approval.
+//
+// # Questions and approvals
+//
+// No runtime says a person is waiting: in headless mode every one refuses
+// automatically and the agent carries on. So a turn is a question or an approval
+// only if it ended on one, and what the reducer works from is two different
+// kinds of evidence:
+//
+//   - The runtime's own record that something needed a person, which is exact: a
+//     refused tool call (Claude's result.permission_denials, naming the call;
+//     agy's denied_actions, naming none; a Codex item declined by its posture, from
+//     agentkit v0.24.0), a refused permission request (agent.permission_resolved
+//     with allowed false), a permission request still unanswered when the turn
+//     ended, or a call to a question tool (see [Config.QuestionTools]; Claude's
+//     AskUserQuestion, Codex's request_user_input, which agentkit v0.24.0 reports
+//     when it is refused) or a Codex requestUserInput request.
+//   - That the turn "ended on it", which the reducer infers: the agent did no work
+//     after it. Work is a tool call that started after the signal and was not itself
+//     refused and did not just ask a question. A call issued in the same batch as
+//     the refused one, before its result came back, was not a reaction to it, so
+//     "after" is the refused call's result when the turn has one, else the call's
+//     own start. An agent that kept working past the refusal worked around it, and
+//     the turn is final. A question whose own tool call came back answered is not
+//     waiting either.
+//
+// The facts a signal is judged by (a refusal, a tool call's result) do not arrive
+// in the order they happened: a refusal and a tool result are typed events, and the
+// tool call they name is a stream event, delivered by a different path. They are
+// collected by tool call id as they arrive and resolved when the turn ends, so the
+// kind does not depend on which came first. How far along the turn a result fell
+// is the order the events arrived in, which the wrapper keeps in step with the
+// stream (typed events are emitted in their place, not ahead of it); a host that
+// feeds Observe or ObserveProvider out of order gets a batch of parallel calls
+// judged as if the later ones had followed the result.
+//
+// A refusal that names its tool call (Claude) is placed where the call was; one
+// that names none (agy, which reports its refusals when the turn ends) stands for
+// the last thing the agent did, so an agy refusal always counts as ended on; one
+// that names a call the turn has dropped for age is older than anything it kept.
+// Output carries no separate confidence for the kind: Confidence is about Text, and
+// a question or approval is the combination above, never a runtime's statement that
+// someone is waiting.
+//
+// Text is what the agent wrote after the signal (the runtime's own final text
+// when it has one, so exact; a runtime that gave its final text and no deltas at
+// all has nothing to place it by, and it is used as it is), else the signal's own
+// description (the question's text from its input, or "Permission denied: <what
+// was refused>"), never text the agent wrote before the signal: the call is the
+// last thing it said.
+//
+// ObserveStream sees neither refusals nor tool results (the legacy stream has no
+// form for them), so a refusal never reaches it: the same Claude turn that ended on
+// a refused call is an approval through ObserveProvider and a final turn through
+// ObserveStream. Its question tools are seen, and with no result to say they were
+// answered they are judged by whether the agent kept working.
 //
 // # Turn ids and repeated events
 //
@@ -101,7 +155,10 @@
 // terminal should ask the runtime for the stop reason, or end the turn with
 // Flush.
 //
-// A question tool is judged by the call alone: if the tool is refused (headless
-// Claude has no one to ask) and the agent carries on and finishes, the turn is
-// still reported as a question, with the agent's later text as its Text.
+// Known limits of the reading above: an agent that gets past a refusal with text
+// alone (no tool call) and says it resolved the matter itself is still reported as
+// a question or an approval, since nothing structural tells that from asking again;
+// the only question or approval evidence for Claude's AskUserQuestion is the tool's
+// name (no capture of one exists); and a turn blocked on a pending request has not
+// ended, so it reports nothing until it does.
 package turnoutput

@@ -4,6 +4,107 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.28.0 — 2026-10-02
+
+A turn is a question or an approval only if it ended on one (CW-20261002-0073,
+ADR 0049). Takes go-providers v0.46.0.
+
+### Changed
+
+- **`kind` question and approval now mean the turn ended on an unresolved
+  signal, not that a signal occurred.** In headless mode every runtime refuses
+  automatically and the agent carries on, so a refused tool call or a refused
+  question tool that the agent then worked around was reported as a question or an
+  approval. The reducer now asks whether the agent kept working: a tool call that
+  was not itself refused, and not just a question, after the signal means it
+  worked around it and the turn is `final`; a question whose tool call came back
+  answered is not waiting either. Before, a turn that ended on a refusal and one
+  that went on to do the work after it both reported `approval` or `question`.
+  - Claude's `result.permission_denials` (go-providers v0.46.0's typed
+    `PermissionDenied` with the refused call's id) places a refusal where the call
+    was. The captured `claude/print_tool_denied` turn, which ended on a refused
+    `Bash` call and whose last message asks for the approval, is now an
+    `approval` with Claude's own text, `exact`; it was `final`. A refusal that
+    names no call (agy's `denied_actions`, reported when the turn ends) stands for
+    the last thing the agent did.
+  - **Text** is what the agent wrote after the signal (Claude's `result.result`
+    when it has one, `exact`), else the signal's own description, never text it
+    wrote before the call.
+  - `Output.Confidence` is still about `Text` only. `doc.go` says what the kind
+    rests on: the runtime's own record of the refusal (exact) plus "ended on it"
+    (inferred); no runtime says a person is waiting.
+- **`agent.permission_denied` carries `tool_use_id`** (the refused call's id, when
+  the provider names it); `agent.tool_use`'s `id` and `agent.tool_result`'s `id`
+  and `is_error` are read to place it. go-providers v0.45.0 → v0.46.0.
+
+- **The kind does not depend on the order events arrive in.** A refusal and a
+  tool result reach the reducer on a different path from the tool call they name
+  (typed events against stream events), and could get there first; refusals and
+  results are now collected by tool call id and resolved when the turn ends, with
+  arrival order kept only as a sequence number. A refusal naming a call the turn
+  has dropped for age (more than 256 calls ago) is older than anything it kept;
+  one naming no call (agy) stands for the last call, with that call's position, so
+  the agent's own message after it is the text.
+- **"Worked around" means a call that started after the refused call's result.** A
+  call issued in the same batch, before the result came back, was not a reaction
+  to the refusal. A tool's first result is the one that counts (ACP agents update a
+  call several times).
+- **A question raised by request (Codex's `requestUserInput`) sits where it
+  arrived,** after every call the turn had, and an earlier call's result says
+  nothing about it; the text before it is not the question. A question is
+  "answered" only by its own tool call's result.
+- **Tool results are read in their ACP shapes** (flat `tool_call_id`, `status`,
+  `is_error`; a `failed` or `completed` status is the result, an `in_progress`
+  frame is not).
+- **A runtime's final text with no deltas to place it by is used** for a refused
+  turn.
+- **A tool call's result and refusal live with the call**, and go when it does (the
+  oldest of 256 calls is dropped); what arrives before its call is held, bounded
+  (256), for the call to claim. An earlier build kept results and refusals in shared
+  maps that stopped taking entries at 512, so after 512 tool results a later
+  answered question or refusal was silently missed.
+- **The wrapper also emits a JSON-RPC server request's permission events in
+  place.** Codex's `agent.permission_requested` / `_resolved` come from the
+  request hook on the reader goroutine and were emitted directly, so a refused
+  request could reach the sink before the tool call it belongs to; they now go
+  through the same queue (the decision is still made at once, because the hook
+  returns it).
+- **go-agent-wrapper emits a typed event in its place in the stream.**
+  agentkit calls `TypedEventCallback` a goroutine ahead of the stream events of the
+  same line, and the wrapper emitted from the callback, so a tool result or a
+  refusal reached the sink before the tool call it belongs to (and the replay
+  test of the refused Claude turn failed two runs in three). The callback now
+  queues the event and puts a marker in the fanout channel, which the translator
+  turns back into the event when it reaches it, so both kinds are emitted in the
+  order they were parsed in. Unlike agentkit's own sends, the marker send waits, so
+  a typed event is never dropped by a full channel.
+
+### Tests
+
+- Real captures: the Claude refused-tool-call turn through the real adapters into
+  `ObserveProvider` and through the real wrapper into `Observe`, both an
+  `approval` with the exact text. Synthetic turns in the shapes the adapters emit
+  for: ended on a refusal, worked around it, two refusals, a refusal with no text
+  after it, a refusal with no call id, a question refused / answered / never
+  answered / followed by work / followed by a refused call, refused and answered
+  permission requests, and the bounds. Breaking the open-ness rule, the refusal
+  marking, the answered-question check, the text choice, the call ids or the
+  payload field fails them.
+
+### Not covered
+
+- `ObserveStream` sees neither refusals nor tool results, so the Claude turn that
+  ended on a refused call is a final turn there and an approval through
+  `ObserveProvider`.
+- A batch of parallel calls fed out of order is judged as if the later ones had
+  followed the result; the wrapper now delivers in order.
+- An agent that gets past a refusal with text alone and says it resolved the
+  matter itself is still reported as a question or an approval (nothing
+  structural tells that from asking again).
+- Claude's `AskUserQuestion` is in no capture; its evidence is the tool's name.
+- Codex's refused user-input requests and declined items need agentkit's events
+  (a separate change).
+
 ## v0.27.2 — 2026-10-02
 
 `ObserveProvider` consumes the provider's final text, and an `opencode run` turn

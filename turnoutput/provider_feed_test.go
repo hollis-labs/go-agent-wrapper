@@ -69,18 +69,21 @@ func TestObserveProviderConsumesTheProvidersFinalText(t *testing.T) {
 		adapter func() provider.EventParser
 		fixture string
 		want    []string // the text of each turn, every one exact
+		kind    turnoutput.Kind
 	}{
-		{"claude print", func() provider.EventParser { return provider.NewClaudeAdapter() }, "claude/print_turn1.jsonl", []string{claudeHi}},
-		{"claude print, last message after tool calls", func() provider.EventParser { return provider.NewClaudeAdapter() }, "claude/print_tool_denied.jsonl", []string{claudeDenied}},
+		{"claude print", func() provider.EventParser { return provider.NewClaudeAdapter() }, "claude/print_turn1.jsonl", []string{claudeHi}, ""},
+		// The turn ended on a Bash call Claude refused (result.permission_denials), and
+		// its last message asks for the approval: an approval, with Claude's own text.
+		{"claude print, ended on a refused tool call", func() provider.EventParser { return provider.NewClaudeAdapter() }, "claude/print_tool_denied.jsonl", []string{claudeDenied}, turnoutput.KindApproval},
 		{"claude streaming, two turns", func() provider.EventParser { return provider.NewClaudeAdapterStreamingStdio() }, "claude/stream_two_turns.transcript.jsonl",
-			[]string{"Hi! 👋 I'm ready to help you with software engineering tasks. What would you like to work on?", "Bye! 👋 Feel free to reach out anytime you need help with code."}},
-		{"agy", func() provider.EventParser { return provider.NewAntigravityAdapter() }, "antigravity/print_turn1.jsonl", []string{"OK"}},
-		{"agy, after a tool step", func() provider.EventParser { return provider.NewAntigravityAdapter() }, "antigravity/print_tool_run.jsonl", []string{"done"}},
+			[]string{"Hi! 👋 I'm ready to help you with software engineering tasks. What would you like to work on?", "Bye! 👋 Feel free to reach out anytime you need help with code."}, ""},
+		{"agy", func() provider.EventParser { return provider.NewAntigravityAdapter() }, "antigravity/print_turn1.jsonl", []string{"OK"}, ""},
+		{"agy, after a tool step", func() provider.EventParser { return provider.NewAntigravityAdapter() }, "antigravity/print_tool_run.jsonl", []string{"done"}, ""},
 		{"agy, after an MCP tool", func() provider.EventParser { return provider.NewAntigravityAdapter() }, "antigravity/print_mcp_tool.jsonl",
-			[]string{"MCP=SECRET-WORD-MAGNOLIA; ADR=WORKSPACE-OVERRIDE-MARKER skill for probing precedence"}},
-		{"opencode run", func() provider.EventParser { return provider.NewOpencodeAdapter() }, "opencode/run_turn1.jsonl", []string{"OK."}},
-		{"opencode run, answer after tool steps", func() provider.EventParser { return provider.NewOpencodeAdapter() }, "opencode/run_tool_use.jsonl", []string{"hello fixture"}},
-		{"codex exec, final-phase delta", func() provider.EventParser { return provider.NewCodexAdapter() }, "codex/exec_turn1.jsonl", []string{"Hi!"}},
+			[]string{"MCP=SECRET-WORD-MAGNOLIA; ADR=WORKSPACE-OVERRIDE-MARKER skill for probing precedence"}, ""},
+		{"opencode run", func() provider.EventParser { return provider.NewOpencodeAdapter() }, "opencode/run_turn1.jsonl", []string{"OK."}, ""},
+		{"opencode run, answer after tool steps", func() provider.EventParser { return provider.NewOpencodeAdapter() }, "opencode/run_tool_use.jsonl", []string{"hello fixture"}, ""},
+		{"codex exec, final-phase delta", func() provider.EventParser { return provider.NewCodexAdapter() }, "codex/exec_turn1.jsonl", []string{"Hi!"}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -89,8 +92,12 @@ func TestObserveProviderConsumesTheProvidersFinalText(t *testing.T) {
 				t.Fatalf("reported %d turn(s), want %d: %+v", len(outs), len(tt.want), outs)
 			}
 			for i, out := range outs {
-				if out.Kind != turnoutput.KindFinal || out.Text != tt.want[i] || out.Confidence != turnoutput.ConfidenceExact {
-					t.Errorf("turn %d = %+v, want a final turn with text %q and exact confidence", i+1, out, tt.want[i])
+				kind := tt.kind
+				if kind == "" {
+					kind = turnoutput.KindFinal
+				}
+				if out.Kind != kind || out.Text != tt.want[i] || out.Confidence != turnoutput.ConfidenceExact {
+					t.Errorf("turn %d = %+v, want a %s turn with text %q and exact confidence", i+1, out, kind, tt.want[i])
 				}
 			}
 		})

@@ -122,10 +122,16 @@ func translateProviderEvent(ev pevents.Event) (kind runtimeevents.EventKind, pay
 			"error": e.Message,
 		}, true
 	case pevents.PermissionDenied:
-		return runtimeevents.KindAgentPermissionDenied, map[string]any{
+		p := map[string]any{
 			"action":       e.Action,
 			"display_name": e.DisplayName,
-		}, true
+		}
+		// The id of the refused tool call, when the CLI names it, so a consumer can
+		// tell a refusal the turn ended on from one the agent worked around.
+		if e.ToolUseID != "" {
+			p["tool_use_id"] = e.ToolUseID
+		}
+		return runtimeevents.KindAgentPermissionDenied, p, true
 	case pevents.Heartbeat:
 		last := e.LastActivityAt
 		if last.IsZero() {
