@@ -61,6 +61,24 @@
 // an agent.permission_denied, makes it an approval. Anything else is final.
 // Failure and terminal win over question, and question over approval.
 //
-// A session runs one turn at a time, so a new turn id replaces a turn that never
-// finished: its buffered text is dropped without an Output.
+// # Turn ids and repeated events
+//
+// Observe tracks turns by the id on the envelope: a turn that starts before the
+// previous one's terminal event arrives keeps its own text, and an event that
+// arrives late for a turn already reported is dropped, never reopening it. A
+// session runs one turn at a time, so a producer that loses terminal events
+// leaves turns buffered; the Reducer holds at most 64 and drops the oldest.
+//
+// The provider and stream feeds carry no turn id, so the reducer decides by
+// whether a turn is in progress. A turn starts at its first event and ends at
+// Done or Error. A Done that arrives with no turn in progress repeats the one
+// that ended the last turn and is dropped; so is a trailing stop reason. An
+// Error with no turn in progress is reported as a failure of its own, so a
+// startup failure is never lost, unless it is the same error as the one just
+// reported. A lossy feed (ObserveStream) that drops a terminal event makes the
+// next turn's events join the unfinished one, which the reducer cannot detect.
+//
+// A question tool is judged by the call alone: if the tool is refused (headless
+// Claude has no one to ask) and the agent carries on and finishes, the turn is
+// still reported as a question, with the agent's later text as its Text.
 package turnoutput

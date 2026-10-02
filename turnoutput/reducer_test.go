@@ -427,7 +427,7 @@ func TestOneOutputPerTurn(t *testing.T) {
 	})
 }
 
-func TestNewTurnAbandonsAnUnfinishedOne(t *testing.T) {
+func TestAnUnfinishedTurnDoesNotAffectTheNextOne(t *testing.T) {
 	f := newFeed(t, Config{})
 	f.mustQuiet(f.delta("turn_1", "never finished", "a", ""), f.delta("turn_2", "the real one", "a", ""))
 	got, ok := f.send(f.done("turn_2", nil))

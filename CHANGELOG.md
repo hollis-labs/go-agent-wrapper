@@ -27,6 +27,10 @@ A host can now ask a session for what each turn said to the user
   - Text comes from the terminal event's own text (`turn.completed`'s `text`),
     else the last block a delta marked `final`, else the last text block. The
     package doc says when `text` can be empty and how each kind is decided.
+  - Turns are tracked by id: an event that arrives late for a turn already
+    reported is dropped, and a turn that starts before the previous one's
+    terminal event keeps its own text. The id-less feeds drop a repeated `Done`
+    and a trailing stop reason, and never lose a lone `Error`.
   - Tested against what each runtime wrote, by running go-providers'
     captured fixtures through the wrapper into the reducer (Claude streaming,
     OpenCode, Antigravity, Copilot and Pi over ACP). A live-gated test does the

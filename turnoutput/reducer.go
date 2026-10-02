@@ -8,9 +8,15 @@ import (
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
 )
 
-// finishedMemory is how many finished turn ids a Reducer remembers so that a
-// late duplicate terminal event does not produce a second Output.
-const finishedMemory = 16
+// finishedMemory is how many finished turn ids a Reducer remembers, so that an
+// event that arrives late for a turn already reported is dropped rather than
+// reopening it.
+const finishedMemory = 64
+
+// maxOpenTurns bounds the turns a Reducer buffers at once. A session runs one
+// turn at a time and every turn ends with a terminal event, so reaching it means
+// a producer lost terminal events; the oldest turn is dropped without an Output.
+const maxOpenTurns = 64
 
 // Reducer folds one session's events into an [Output] per completed turn. It is
 // safe for concurrent use. Build one per session with [New].
@@ -21,8 +27,23 @@ type Reducer struct {
 	newTurnID func() string
 	questions map[string]struct{}
 
-	cur      *turn
+	// open holds the turns in progress by id; order lists their ids, oldest
+	// first, and its last is the current turn, which events with no turn id
+	// belong to.
+	open  map[string]*turn
+	order []string
+	// finished is the ids of the turns already reported, oldest first.
 	finished []string
+	// settled reports that the last turn ended and nothing has opened another.
+	// A terminal event with no turn id that arrives while settled repeats the one
+	// that ended it.
+	settled bool
+	// lastError is the text of the last failure reported, so the same error
+	// repeated while settled is reported once.
+	lastError string
+	// pendingStop is a stop reason that arrived before the turn it belongs to had
+	// any other event.
+	pendingStop string
 }
 
 // New returns a Reducer for one session.
@@ -32,6 +53,7 @@ func New(cfg Config) *Reducer {
 		runtime:   cfg.Runtime,
 		newTurnID: cfg.NewTurnID,
 		questions: map[string]struct{}{},
+		open:      map[string]*turn{},
 	}
 	if r.newTurnID == nil {
 		r.newTurnID = runtimeevents.NewTurnID
@@ -48,18 +70,19 @@ func New(cfg Config) *Reducer {
 
 // Flush ends the turn in progress with kind terminal, for a host that learns
 // the session is gone without the runtime having reported a terminal event.
-// reason says why (default "process_exited"). It reports false when no turn is
-// in progress.
+// The text is what the agent had said, else reason (default "process_exited"). It
+// reports false when no turn is in progress.
 func (r *Reducer) Flush(reason string) (Output, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.cur == nil {
+	t := r.current()
+	if t == nil {
 		return Output{}, false
 	}
 	if strings.TrimSpace(reason) == "" {
 		reason = reasonProcessExited
 	}
-	return r.finish(r.cur, terminal{failed: true, reason: reason}), true
+	return r.finish(t, terminal{failed: true, cut: true, reason: reason}), true
 }
 
 const (
@@ -75,6 +98,8 @@ type terminal struct {
 	// failed is a turn.failed or Error; otherwise the turn completed.
 	failed  bool
 	errText string
+	// cut makes the turn terminal whatever its reason: the session ended it.
+	cut bool
 	// reason is the producer's own reason for a failed turn ("interrupted",
 	// "process_exited"); empty for an ordinary failure.
 	reason     string
@@ -83,51 +108,121 @@ type terminal struct {
 	text string
 }
 
-// open returns the turn with id, starting it when it is new. A session runs one
-// turn at a time, so starting a turn abandons any that never finished.
-func (r *Reducer) open(id string) *turn {
-	if r.cur != nil && r.cur.id == id {
-		return r.cur
+// current returns the turn that events with no turn id belong to: the one most
+// recently started that is still open.
+func (r *Reducer) current() *turn {
+	if len(r.order) == 0 {
+		return nil
 	}
-	r.cur = newTurn(id)
-	return r.cur
+	return r.open[r.order[len(r.order)-1]]
 }
 
-// implicit returns the turn in progress, starting one with a minted id when
-// there is none. Events with no turn id of their own belong to it.
-func (r *Reducer) implicit() *turn {
-	if r.cur == nil {
-		r.cur = newTurn(r.newTurnID())
+// begin starts the turn with id.
+func (r *Reducer) begin(id string) *turn {
+	t := newTurn(id)
+	t.usageStop, r.pendingStop = r.pendingStop, ""
+	r.open[id] = t
+	r.order = append(r.order, id)
+	for len(r.order) > maxOpenTurns {
+		delete(r.open, r.order[0])
+		r.order = r.order[1:]
 	}
-	return r.cur
+	r.settled = false
+	return t
 }
 
-// lookup returns the turn a terminal event closes: the one in progress when id
-// is empty or matches it, or a transient empty turn for an unknown id, which
-// closes without disturbing the one in progress. It reports false for a turn
-// already reported.
-func (r *Reducer) lookup(id string) (*turn, bool) {
+// body returns the turn an event inside a turn's body belongs to: the open turn
+// with the event's id, started when the id is new; for an event with no id, the
+// current turn, started with a minted id when none is open. It returns nil for
+// an event that arrived late for a turn already reported, which is dropped.
+func (r *Reducer) body(id string) *turn {
 	if id == "" {
-		return r.implicit(), true
+		if t := r.current(); t != nil {
+			return t
+		}
+		return r.begin(r.newTurnID())
 	}
-	if r.cur != nil && r.cur.id == id {
-		return r.cur, true
+	if t := r.open[id]; t != nil {
+		return t
 	}
-	for _, done := range r.finished {
-		if done == id {
+	if r.wasFinished(id) {
+		return nil
+	}
+	return r.begin(id)
+}
+
+// ending returns the turn a terminal event closes, and false when the event
+// repeats one already reported. An id the reducer saw nothing of closes an empty
+// turn: the runtime reported a turn even if none of it reached the reducer.
+// Without an id the event closes the current turn; with none open it repeats the
+// terminal event that ended the last one while settled, except that an error is
+// never dropped unless it is the same error again, so a failure with no turn
+// around it (a startup failure) is reported.
+func (r *Reducer) ending(id string, failed bool, errText string) (*turn, bool) {
+	if id != "" {
+		if t := r.open[id]; t != nil {
+			return t, true
+		}
+		if r.wasFinished(id) {
+			return nil, false
+		}
+		return newTurn(id), true
+	}
+	if t := r.current(); t != nil {
+		return t, true
+	}
+	if r.settled {
+		if !failed || (errText != "" && errText == r.lastError) {
 			return nil, false
 		}
 	}
-	return newTurn(id), true
+	t := newTurn(r.newTurnID())
+	t.usageStop, r.pendingStop = r.pendingStop, ""
+	return t, true
+}
+
+// noteStop records a stop reason reported on its own: on the current turn, or,
+// when a turn's first event is not in yet, for the next one. One that arrives
+// after a turn ended with nothing since belongs to the turn that ended and is
+// dropped.
+func (r *Reducer) noteStop(stop string) {
+	if stop == "" {
+		return
+	}
+	if t := r.current(); t != nil {
+		t.usageStop = stop
+		return
+	}
+	if !r.settled {
+		r.pendingStop = stop
+	}
+}
+
+func (r *Reducer) wasFinished(id string) bool {
+	for _, done := range r.finished {
+		if done == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Reducer) finish(t *turn, term terminal) Output {
-	if r.cur == t {
-		r.cur = nil
+	delete(r.open, t.id)
+	for i, id := range r.order {
+		if id == t.id {
+			r.order = append(r.order[:i], r.order[i+1:]...)
+			break
+		}
 	}
 	r.finished = append(r.finished, t.id)
 	if len(r.finished) > finishedMemory {
 		r.finished = r.finished[len(r.finished)-finishedMemory:]
+	}
+	r.settled = len(r.order) == 0
+	r.pendingStop = ""
+	if term.failed {
+		r.lastError = strings.TrimSpace(term.errText)
 	}
 
 	out := Output{
@@ -140,7 +235,8 @@ func (r *Reducer) finish(t *turn, term terminal) Output {
 		out.StopReason = t.usageStop
 	}
 
-	cut := (term.failed && (term.reason == reasonInterrupted || term.reason == reasonProcessExited)) ||
+	cut := term.cut ||
+		(term.failed && (term.reason == reasonInterrupted || term.reason == reasonProcessExited)) ||
 		out.StopReason == stopCancelled
 	switch {
 	case term.failed && !cut:
