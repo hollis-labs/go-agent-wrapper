@@ -579,33 +579,37 @@ func TestOutputJSONFieldNames(t *testing.T) {
 	}
 }
 
+// Turns in flight together each report once, with their own text, however their
+// events interleave across goroutines.
 func TestConcurrentFeedsReportEachTurnOnce(t *testing.T) {
-	r := New(Config{SessionID: "ses_1", Runtime: "claude"})
-	const turns = 50
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	seen := map[string]int{}
-	for i := range turns {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			id := fmt.Sprintf("turn_%d", i)
-			payload, _ := json.Marshal(map[string]any{"content": "t" + id, "block_id": "a"})
-			r.Observe(runtimeevents.Event{Kind: runtimeevents.KindAgentDelta, TurnID: id, Payload: payload})
-			if out, ok := r.Observe(runtimeevents.Event{Kind: runtimeevents.KindTurnCompleted, TurnID: id}); ok {
-				mu.Lock()
-				seen[out.TurnID]++
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-	for id, n := range seen {
-		if n != 1 {
-			t.Errorf("%s reported %d times", id, n)
+	for run := range 5 {
+		r := New(Config{SessionID: "ses_1", Runtime: "claude"})
+		const turns = 50
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		seen := map[string][]string{}
+		for i := range turns {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				id := fmt.Sprintf("turn_%d", i)
+				payload, _ := json.Marshal(map[string]any{"content": "text of " + id, "block_id": "a"})
+				r.Observe(runtimeevents.Event{Kind: runtimeevents.KindAgentDelta, TurnID: id, Payload: payload})
+				if out, ok := r.Observe(runtimeevents.Event{Kind: runtimeevents.KindTurnCompleted, TurnID: id}); ok {
+					mu.Lock()
+					seen[out.TurnID] = append(seen[out.TurnID], out.Text)
+					mu.Unlock()
+				}
+			}()
 		}
-	}
-	if len(seen) == 0 {
-		t.Fatal("no turn reported")
+		wg.Wait()
+		if len(seen) != turns {
+			t.Fatalf("run %d: %d of %d turns reported", run, len(seen), turns)
+		}
+		for id, texts := range seen {
+			if len(texts) != 1 || texts[0] != "text of "+id {
+				t.Fatalf("run %d: %s reported %q, want once with its own text", run, id, texts)
+			}
+		}
 	}
 }

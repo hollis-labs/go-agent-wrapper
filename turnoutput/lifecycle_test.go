@@ -1,10 +1,10 @@
 package turnoutput
 
 import (
-	"encoding/json"
 	"fmt"
-	"sync"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	llmtypes "github.com/hollis-labs/go-llm-types"
 	"github.com/hollis-labs/go-providers/provider/events"
@@ -222,37 +222,74 @@ func TestIDLessFeedsDoNotInventTurns(t *testing.T) {
 	})
 }
 
-// Turns in flight together each keep their own text, however their events
-// interleave across goroutines.
-func TestConcurrentTurnsKeepTheirText(t *testing.T) {
-	for run := range 5 {
-		r := New(Config{SessionID: "ses_1", Runtime: "claude"})
-		const turns = 50
-		var wg sync.WaitGroup
-		var mu sync.Mutex
-		seen := map[string]string{}
-		for i := range turns {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				id := fmt.Sprintf("turn_%d", i)
-				payload, _ := json.Marshal(map[string]any{"content": "text of " + id, "block_id": "a"})
-				r.Observe(runtimeevents.Event{Kind: runtimeevents.KindAgentDelta, TurnID: id, Payload: payload})
-				if out, ok := r.Observe(runtimeevents.Event{Kind: runtimeevents.KindTurnCompleted, TurnID: id}); ok {
-					mu.Lock()
-					seen[out.TurnID] = out.Text
-					mu.Unlock()
-				}
-			}()
+// A turn whose terminal event never comes keeps buffering, so the buffer is
+// bounded: the oldest blocks go first, the last is never dropped, and one block
+// is cut at its cap.
+func TestAnUnfinishedTurnsBufferIsBounded(t *testing.T) {
+	t.Run("block count", func(t *testing.T) {
+		r := New(Config{SessionID: "s", Runtime: "claude", NewTurnID: func() string { return "turn_b" }})
+		for i := range maxBlocks * 3 {
+			r.ObserveProvider(events.Delta{Text: fmt.Sprintf("block %d", i), BlockID: fmt.Sprintf("b%d", i)})
 		}
-		wg.Wait()
-		if len(seen) != turns {
-			t.Fatalf("run %d: %d of %d turns reported", run, len(seen), turns)
+		if n := len(r.current().blocks); n != maxBlocks {
+			t.Fatalf("holds %d blocks, want %d", n, maxBlocks)
 		}
-		for id, text := range seen {
-			if text != "text of "+id {
-				t.Fatalf("run %d: %s reported %q", run, id, text)
-			}
+		got, ok := r.ObserveProvider(events.Done{})
+		if !ok || got.Text != fmt.Sprintf("block %d", maxBlocks*3-1) {
+			t.Fatalf("got %+v, want the last block", got)
 		}
-	}
+	})
+
+	t.Run("total bytes", func(t *testing.T) {
+		r := New(Config{SessionID: "s", Runtime: "claude", NewTurnID: func() string { return "turn_b" }})
+		chunk := strings.Repeat("x", maxBlockBytes)
+		for i := range 3 * maxTurnBytes / maxBlockBytes {
+			r.ObserveProvider(events.Delta{Text: chunk, BlockID: fmt.Sprintf("b%d", i)})
+		}
+		if n := r.current().bytes; n > maxTurnBytes {
+			t.Fatalf("holds %d bytes, want at most %d", n, maxTurnBytes)
+		}
+		if got, ok := r.ObserveProvider(events.Done{}); !ok || len(got.Text) != maxBlockBytes {
+			t.Fatalf("the last block was not kept whole: %d bytes", len(got.Text))
+		}
+	})
+
+	t.Run("one block is cut on a rune boundary", func(t *testing.T) {
+		r := New(Config{SessionID: "s", Runtime: "claude", NewTurnID: func() string { return "turn_b" }})
+		r.ObserveProvider(events.Delta{Text: strings.Repeat("é", maxBlockBytes), BlockID: "a"}) // 2 bytes each
+		r.ObserveProvider(events.Delta{Text: "more", BlockID: "a"})
+		got, ok := r.ObserveProvider(events.Done{})
+		if !ok || !utf8.ValidString(got.Text) || len(got.Text) > maxBlockBytes {
+			t.Fatalf("got %d bytes (valid utf-8: %v), want a whole-rune cut at %d", len(got.Text), utf8.ValidString(got.Text), maxBlockBytes)
+		}
+	})
+
+	t.Run("open turns", func(t *testing.T) {
+		r := New(Config{SessionID: "s", Runtime: "claude"})
+		for i := range maxOpenTurns * 2 {
+			r.Observe(runtimeevents.Event{Kind: runtimeevents.KindTurnStarted, TurnID: fmt.Sprintf("turn_%d", i)})
+		}
+		if len(r.open) != maxOpenTurns || len(r.order) != maxOpenTurns {
+			t.Fatalf("holds %d turns (%d ordered), want %d", len(r.open), len(r.order), maxOpenTurns)
+		}
+	})
+
+	t.Run("pending permission requests", func(t *testing.T) {
+		f := newFeed(t, Config{})
+		for i := range maxPending * 2 {
+			f.mustQuiet(f.event(runtimeevents.KindAgentPermissionRequested, "turn_1", map[string]any{"request_id": i, "method": "m"}))
+		}
+		if n := len(f.r.open["turn_1"].pending); n != maxPending {
+			t.Fatalf("holds %d pending requests, want %d", n, maxPending)
+		}
+	})
+
+	t.Run("a signal's text", func(t *testing.T) {
+		r := New(Config{SessionID: "s", Runtime: "claude", NewTurnID: func() string { return "turn_b" }})
+		r.ObserveProvider(events.ToolUse{Name: "AskUserQuestion", Args: map[string]any{"question": strings.Repeat("q", 3*maxSignalBytes)}})
+		got, ok := r.ObserveProvider(events.Done{})
+		if !ok || got.Kind != KindQuestion || len(got.Text) != maxSignalBytes {
+			t.Fatalf("got a %s of %d bytes, want a question cut at %d", got.Kind, len(got.Text), maxSignalBytes)
+		}
+	})
 }

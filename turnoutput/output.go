@@ -40,9 +40,10 @@ type Output struct {
 	// is chosen and when it is empty.
 	Text string `json:"text"`
 	Kind Kind   `json:"kind"`
-	// StopReason is normalised (end_turn, max_tokens, tool_use, turn_limit,
-	// refusal, canceled, error) or the provider's own word. It is empty when
-	// the runtime reported none.
+	// StopReason is one of go-llm-types' StopReason values (end_turn, max_tokens,
+	// tool_use, turn_limit, refusal, error, and llmtypes.StopReasonCancelled for
+	// a turn that was cut short) or the provider's own word. It is empty when the
+	// runtime reported none.
 	StopReason string `json:"stop_reason"`
 	// Runtime is the go-providers registry runtime id (claude, codex, opencode,
 	// agy, an ACP agent id): the provider the session runs, not its transport.
@@ -60,7 +61,8 @@ type Config struct {
 	// [Reducer.Observe] falls back to the first event's Process.Provider.
 	Runtime string
 	// NewTurnID mints a turn id for the provider and stream feeds, whose events
-	// carry none. Default: runtimeevents.NewTurnID.
+	// carry none. Default: runtimeevents.NewTurnID. The Reducer calls it with its
+	// lock held, so it must not call back into the Reducer.
 	NewTurnID func() string
 	// QuestionTools names the tools that mean the agent asked the user.
 	// Default: [DefaultQuestionTools]. Matching ignores case.

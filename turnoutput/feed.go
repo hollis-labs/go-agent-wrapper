@@ -180,6 +180,15 @@ func (r *Reducer) Observe(ev runtimeevents.Event) (Output, bool) {
 // Values are expected, as the typed callback delivers them; a pointer to an
 // event is ignored.
 func (r *Reducer) ObserveProvider(ev events.Event) (Output, bool) {
+	// An error's text is read before the lock is taken: Error() is the
+	// caller's code.
+	var errText string
+	if e, ok := ev.(events.Error); ok {
+		errText = e.Message
+		if errText == "" && e.Err != nil {
+			errText = e.Err.Error()
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -210,11 +219,7 @@ func (r *Reducer) ObserveProvider(ev events.Event) (Output, bool) {
 	case events.Done:
 		return r.endIDLess(terminal{stopReason: e.StopReason})
 	case events.Error:
-		msg := e.Message
-		if msg == "" && e.Err != nil {
-			msg = e.Err.Error()
-		}
-		return r.endIDLess(terminal{failed: true, errText: msg})
+		return r.endIDLess(terminal{failed: true, errText: errText})
 	}
 	return Output{}, false
 }

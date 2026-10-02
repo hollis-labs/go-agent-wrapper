@@ -78,6 +78,22 @@
 // reported. A lossy feed (ObserveStream) that drops a terminal event makes the
 // next turn's events join the unfinished one, which the reducer cannot detect.
 //
+// A turn's buffer is bounded for the case where its terminal event is lost: the
+// oldest text blocks go first (the last never does), a single block is cut at
+// 1 MiB, a turn keeps at most 4 MiB of text and 128 blocks, and the question or
+// approval text is cut at 8 KiB.
+//
+// # Interrupted turns differ by feed
+//
+// Observe is told by the wrapper when a turn it interrupted ends (turn.failed
+// with reason "interrupted") and reports it as terminal. The provider and stream
+// feeds carry only what the runtime says: a Codex app-server turn ended by an
+// interrupt is a done with the stop reason llmtypes.StopReasonCancelled, so it is
+// terminal too, but a runtime that ends an interrupted turn with an error reports
+// a failure. A host that interrupts turns itself and wants every one reported as
+// terminal should ask the runtime for the stop reason, or end the turn with
+// Flush.
+//
 // A question tool is judged by the call alone: if the tool is refused (headless
 // Claude has no one to ask) and the agent carries on and finishes, the turn is
 // still reported as a question, with the agent's later text as its Text.

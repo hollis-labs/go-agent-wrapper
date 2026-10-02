@@ -3,6 +3,7 @@ package turnoutput
 import (
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	llmtypes "github.com/hollis-labs/go-llm-types"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
@@ -17,6 +18,20 @@ const finishedMemory = 64
 // turn at a time and every turn ends with a terminal event, so reaching it means
 // a producer lost terminal events; the oldest turn is dropped without an Output.
 const maxOpenTurns = 64
+
+// Per-turn memory bounds. A turn whose terminal event is lost (a dropped Done on
+// a lossy feed) keeps buffering, so the buffer is capped: past maxBlocks blocks
+// or maxTurnBytes of text the oldest blocks are dropped, since the turn's text
+// is its last block; one block is cut at maxBlockBytes. A turn with more than
+// maxPending permission requests unresolved forgets the oldest, and the text of
+// a question or approval signal is cut at maxSignalBytes.
+const (
+	maxBlocks      = 128
+	maxTurnBytes   = 4 << 20
+	maxBlockBytes  = 1 << 20
+	maxPending     = 64
+	maxSignalBytes = 8 << 10
+)
 
 // Reducer folds one session's events into an [Output] per completed turn. It is
 // safe for concurrent use. Build one per session with [New].
@@ -283,6 +298,8 @@ type turn struct {
 	// deltas; a tool or permission event closes it.
 	anonOpen  bool
 	usageStop string
+	// bytes is the text held across all blocks.
+	bytes int
 
 	question *signal
 	approval *signal
@@ -320,6 +337,7 @@ func (t *turn) addDelta(text, blockID string, final bool) {
 	if text == "" {
 		return
 	}
+	defer t.trim()
 	var b *block
 	switch {
 	case blockID != "":
@@ -337,9 +355,34 @@ func (t *turn) addDelta(text, blockID string, final bool) {
 		t.blocks = append(t.blocks, b)
 		t.anonOpen = true
 	}
+	text = cutUTF8(text, maxBlockBytes-b.text.Len())
 	b.text.WriteString(text)
+	t.bytes += len(text)
 	if final {
 		b.final = true
+	}
+}
+
+// trim keeps the turn's buffer within its bounds by dropping the oldest blocks,
+// never the last.
+func (t *turn) trim() {
+	for len(t.blocks) > 1 && (len(t.blocks) > maxBlocks || t.bytes > maxTurnBytes) {
+		oldest := t.blocks[0]
+		t.bytes -= oldest.text.Len()
+		if oldest.id != "" {
+			delete(t.byID, oldest.id)
+		}
+		t.blocks = t.blocks[1:]
+		for _, sig := range []*signal{t.question, t.approval} {
+			if sig != nil && sig.at > 0 {
+				sig.at--
+			}
+		}
+		for i := range t.pending {
+			if t.pending[i].sig.at > 0 {
+				t.pending[i].sig.at--
+			}
+		}
 	}
 }
 
@@ -349,21 +392,41 @@ func (t *turn) boundary() { t.anonOpen = false }
 
 func (t *turn) raiseQuestion(text string) {
 	if t.question == nil {
-		t.question = &signal{kind: KindQuestion, text: strings.TrimSpace(text), at: len(t.blocks)}
+		t.question = &signal{kind: KindQuestion, text: clip(text), at: len(t.blocks)}
 	}
 }
 
 func (t *turn) raiseApproval(text string) {
 	if t.approval == nil {
-		t.approval = &signal{kind: KindApproval, text: strings.TrimSpace(text), at: len(t.blocks)}
+		t.approval = &signal{kind: KindApproval, text: clip(text), at: len(t.blocks)}
 	}
 }
 
 func (t *turn) request(ids []string, text string) {
 	t.pending = append(t.pending, pendingRequest{
 		ids: ids,
-		sig: signal{kind: KindApproval, text: strings.TrimSpace(text), at: len(t.blocks)},
+		sig: signal{kind: KindApproval, text: clip(text), at: len(t.blocks)},
 	})
+	if len(t.pending) > maxPending {
+		t.pending = t.pending[len(t.pending)-maxPending:]
+	}
+}
+
+// clip trims a signal's text and cuts it at maxSignalBytes.
+func clip(text string) string {
+	return cutUTF8(strings.TrimSpace(text), maxSignalBytes)
+}
+
+// cutUTF8 returns s cut to at most n bytes, never in the middle of a rune.
+func cutUTF8(s string, n int) string {
+	if n >= len(s) {
+		return s
+	}
+	n = max(n, 0)
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // resolve settles the pending request that any of ids names, or the oldest one
@@ -385,7 +448,7 @@ func (t *turn) resolve(ids []string, allowed bool, text string) {
 		sig = t.pending[idx].sig
 		t.pending = append(t.pending[:idx], t.pending[idx+1:]...)
 	} else {
-		sig = signal{kind: KindApproval, text: strings.TrimSpace(text), at: len(t.blocks)}
+		sig = signal{kind: KindApproval, text: clip(text), at: len(t.blocks)}
 	}
 	if !allowed {
 		t.raiseApproval(sig.text)
