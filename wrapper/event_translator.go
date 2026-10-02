@@ -42,6 +42,14 @@ func translateStreamEvent(ev llmtypes.StreamEvent) (kind runtimeevents.EventKind
 		}, true
 
 	case llmtypes.EventDone:
+		// A done's Content is the turn's own final message when the provider
+		// reports one on its terminal event (Claude's result.result, agy's
+		// result.response, the last step of an opencode run). It rides on
+		// turn.completed as text, so a consumer takes it as exact instead of
+		// guessing the last block of the turn.
+		if ev.Content != "" {
+			return runtimeevents.KindTurnCompleted, map[string]any{"text": ev.Content}, true
+		}
 		return runtimeevents.KindTurnCompleted, nil, true
 
 	case llmtypes.EventSessionID:

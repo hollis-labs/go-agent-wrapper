@@ -169,11 +169,10 @@ func TestReplayClaudeStreamingTwoTurns(t *testing.T) {
 	if turn1.Runtime != "claude" || turn1.StopReason != "end_turn" {
 		t.Fatalf("turn 1 = %+v, want runtime claude, stop end_turn", turn1)
 	}
-	// Claude's result.result is the exact text, but the wrapper does not carry it
-	// on turn.completed yet; until it does the reducer falls back to the last
-	// block, which is the same words.
-	if turn1.Confidence != turnoutput.ConfidenceHeuristic {
-		t.Fatalf("confidence = %s", turn1.Confidence)
+	// Claude's result.result rides on turn.completed as text, so the reducer
+	// takes it as exact rather than guessing the last block.
+	if turn1.Confidence != turnoutput.ConfidenceExact || turn2.Confidence != turnoutput.ConfidenceExact {
+		t.Fatalf("confidence = %s and %s, want exact", turn1.Confidence, turn2.Confidence)
 	}
 }
 
@@ -184,6 +183,8 @@ func TestReplayOpenCodeRun(t *testing.T) {
 			out = ask(t, w, outs, "say hi")
 		})
 	requireOutput(t, out, turnoutput.KindFinal, "OK.")
+	// go-providers v0.45.0 carries opencode's last step on its done, which makes
+	// this exact; until the wrapper takes that release the last block is a guess.
 	if out.Runtime != "opencode" || out.Confidence != turnoutput.ConfidenceHeuristic {
 		t.Fatalf("Output = %+v, want runtime opencode and heuristic confidence", out)
 	}
@@ -196,8 +197,9 @@ func TestReplayAntigravityPrint(t *testing.T) {
 			out = ask(t, w, outs, "say hi")
 		})
 	requireOutput(t, out, turnoutput.KindFinal, "OK")
-	if out.Confidence != turnoutput.ConfidenceHeuristic {
-		t.Fatalf("Output = %+v, want heuristic confidence", out)
+	// agy's result.response rides on turn.completed as text.
+	if out.Confidence != turnoutput.ConfidenceExact {
+		t.Fatalf("Output = %+v, want exact confidence", out)
 	}
 }
 

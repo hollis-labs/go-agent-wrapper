@@ -1,12 +1,15 @@
 package wrapper
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	llmtypes "github.com/hollis-labs/go-llm-types"
 	pevents "github.com/hollis-labs/go-providers/provider/events"
 	runtimeevents "github.com/hollis-labs/go-runtime-events/runtimeevents"
+
+	"github.com/hollis-labs/go-agent-wrapper/activity"
 )
 
 func TestTranslateDelta(t *testing.T) {
@@ -125,6 +128,24 @@ func TestTranslateDoneEmitsTurnCompleted(t *testing.T) {
 	}
 	if kind != runtimeevents.KindTurnCompleted {
 		t.Errorf("kind = %q, want turn.completed", kind)
+	}
+}
+
+// A done that carries the provider's own final message puts it on turn.completed
+// as text; one that carries none leaves the payload empty.
+func TestTranslateDoneCarriesTheFinalText(t *testing.T) {
+	kind, payload, ok := translateStreamEvent(llmtypes.StreamEvent{Type: llmtypes.EventDone, Content: "the answer"})
+	if !ok || kind != runtimeevents.KindTurnCompleted {
+		t.Fatalf("kind = %q (mapped %v), want turn.completed", kind, ok)
+	}
+	p, _ := payload.(map[string]any)
+	if got, _ := p["text"].(string); got != "the answer" {
+		t.Errorf("payload.text = %q, want the answer", got)
+	}
+
+	_, payload, _ = translateStreamEvent(llmtypes.StreamEvent{Type: llmtypes.EventDone})
+	if payload != nil {
+		t.Errorf("a done with no text has payload %v, want none", payload)
 	}
 }
 
@@ -302,5 +323,39 @@ func TestWithStopReason(t *testing.T) {
 	}
 	if got := withStopReason(nil, nil); got != nil {
 		t.Errorf("nil usage added a stop_reason: %v", got)
+	}
+}
+
+// A done's final text reaches the event stream as turn.completed's text, so the
+// agent_text filters that repair a delta repair it too, and an empty one is not
+// sent through them.
+func TestFilterStreamEventFiltersTheDoneText(t *testing.T) {
+	filter := &replacingFilter{from: "unsafe", to: "safe"}
+	w, err := New(Config{
+		App:      "test-filter-done",
+		Adapter:  &fakeRuntimeAdapter{cli: &fakeCLI{name: "fakecli"}},
+		Activity: activity.NewBridge(newCapturingSink()),
+		Workdir:  t.TempDir(),
+		Filters:  filter,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	got := w.filterStreamEvent(context.Background(), llmtypes.StreamEvent{Type: llmtypes.EventDone, Content: "unsafe text"})
+	if got.Type != llmtypes.EventDone || got.Content != "safe text" {
+		t.Fatalf("filtered done = %+v, want its text repaired", got)
+	}
+
+	filter.mu.Lock()
+	before := len(filter.kinds)
+	filter.mu.Unlock()
+	if got := w.filterStreamEvent(context.Background(), llmtypes.StreamEvent{Type: llmtypes.EventDone}); got.Content != "" {
+		t.Fatalf("an empty done became %+v", got)
+	}
+	filter.mu.Lock()
+	defer filter.mu.Unlock()
+	if len(filter.kinds) != before {
+		t.Fatalf("an empty done went through the filters: %v", filter.kinds)
 	}
 }

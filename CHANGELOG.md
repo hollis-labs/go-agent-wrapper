@@ -4,6 +4,31 @@ All notable changes to go-agent-wrapper are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.27.0 — 2026-10-02
+
+`turn.completed` carries the turn's own final message when the provider reports
+one (CW-20261002-0061, ADR 0049). Takes go-providers v0.44.0.
+
+### Added
+
+- **`turn.completed` `text`**: a native turn's final message, from the provider's
+  terminal event (`EventDone.Content`): Claude's `result.result` and agy's
+  `result.response` today (go-providers v0.44.0), the last step of an
+  `opencode run` once go-providers v0.45.0 is taken. Absent when the provider
+  reports none (Codex exec marks its final delta with phase `final` instead), and
+  the rest of the payload is unchanged.
+  - `turnoutput` reads it as the turn's exact text, so a Claude or agy turn now
+    reduces with `confidence: exact` where v0.26.0 reported `heuristic`.
+  - The text passes the same `agent_text` filters as the deltas that carried the
+    same words, so a repair that applies to the stream applies to it.
+
+### Tests
+
+- The captured Claude streaming transcript (two turns) and the agy print capture,
+  through the real wrapper into the reducer, now reduce as `exact`; OpenCode stays
+  `heuristic` until it takes go-providers v0.45.0. Unit tests for the payload and
+  for the filter. Dropping the payload text or the filter fails them.
+
 ## v0.26.0 — 2026-10-02
 
 A host can now ask a session for what each turn said to the user

@@ -15,7 +15,13 @@ func (w *Wrapper) filterStreamEvent(ctx context.Context, ev llmtypes.StreamEvent
 		return ev
 	}
 	switch ev.Type {
-	case llmtypes.EventDelta:
+	case llmtypes.EventDelta, llmtypes.EventDone:
+		// A done's Content is the turn's final text, which reaches the event
+		// stream as turn.completed's text, so it passes the same agent_text
+		// filters as the deltas that carried the same words.
+		if ev.Content == "" {
+			return ev
+		}
 		out, err := w.cfg.Filters.Process(ctx, filters.Input{
 			Kind:    "agent_text",
 			Content: []byte(ev.Content),
